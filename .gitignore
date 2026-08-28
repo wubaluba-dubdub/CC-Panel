@@ -17,6 +17,7 @@ build/
 
 # Local data volume
 data/
+.localdata/
 
 # Test coverage
 coverage/
