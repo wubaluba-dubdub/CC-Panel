@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Environment files — real secrets must never be committable
+.env
+.env.local
+.env.*.local
+
+# SQLite databases (local dev copies)
+*.db
+*.db-shm
+*.db-wal
+
+# Local data volume
+data/
+
+# Test coverage
+coverage/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/
+.idea/
