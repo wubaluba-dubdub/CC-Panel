@@ -1,9 +1,11 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { mkdirSync, existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { Env } from './env.js';
 import { initDb, closeDb } from './db.js';
+import securityHeadersPlugin from './plugins/security-headers.js';
+import basePathPlugin from './plugins/base-path.js';
 
 export interface ServerConfig {
   env: Env;
@@ -59,7 +61,7 @@ export function resolveBasePath(env: Env): string {
 
   // Only show banner if not in test environment
   if (env.NODE_ENV !== 'test') {
-    const resolvedInstancePath = join(dataDir, 'config', 'instance.json');
+    const resolvedInstancePath = resolve(join(dataDir, 'config', 'instance.json'));
     const lines = [
       'Panel base path (copy this URL — you will need it):',
       `/${generated}`,
@@ -100,22 +102,36 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   const dbPath = join(dataDir, 'panel.db');
   initDb(dbPath);
 
+  // Disable logger in test environments (including when NODE_ENV=production in tests)
+  const isTestEnv = env.NODE_ENV === 'test' || typeof process.env.VITEST !== 'undefined';
+
   const app = Fastify({
-    logger: env.NODE_ENV === 'test' ? false : {
+    logger: isTestEnv ? false : {
       level: 'info',
       redact: ['password', 'token', 'secret'],
     },
     trustProxy: env.PANEL_TRUST_PROXY,
   });
 
+  // ── Security headers (all routes) ──────────────────────────────────────────
+  await app.register(securityHeadersPlugin, { env });
+
   // ── Health check (outside base path) ───────────────────────────────────────
   app.get('/healthz', async (_req, reply) => {
     return reply.send({ ok: true });
   });
 
+  // ── Base path scoped routes ────────────────────────────────────────────────
+  await app.register(basePathPlugin, { basePath });
+
   // ── Generic 404 for anything outside the base path ─────────────────────────
+  // Must be byte-identical for all paths: same status, body, headers, timing
+  const generic404Body = JSON.stringify({ error: 'Not Found' });
   app.setNotFoundHandler((_req, reply) => {
-    return reply.code(404).header('Content-Type', 'application/json').send({ error: 'Not Found' });
+    return reply
+      .code(404)
+      .header('Content-Type', 'application/json')
+      .send(generic404Body);
   });
 
   // ── Graceful shutdown ──────────────────────────────────────────────────────
