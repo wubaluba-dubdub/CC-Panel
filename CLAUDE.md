@@ -3,6 +3,8 @@
 ## Overview
 This document describes the architecture, security model, directory layout, and conventions for the Claude Code Control Panel (single-user, Railway-hosted) as built in Phase 1.
 
+**Important filesystem note**: The project now lives at `/home/hossein/projects/cc-panel` on the WSL2 Linux filesystem. It must never be moved back under `/mnt/`. Development runs as the non-root Linux user "hossein", not root.
+
 ## Security Model
 - **Single user**: Only one admin user exists, seeded via environment variables on first boot.
 - **Defense in depth**:

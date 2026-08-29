@@ -174,4 +174,7 @@
 - Update `CLAUDE.md` with Phase 1 decisions and Phase 2 handoff notes.
 - **Commit:** `docs: phase 1 completion and deployment artifacts`
 
+## Phase 1 Exit Checklist
+- [ ] Docker build verified, container boots as uid 10001 with an empty volume
+
 </content>

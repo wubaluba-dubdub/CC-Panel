@@ -57,16 +57,29 @@ export function resolveBasePath(env: Env): string {
     }),
   );
 
-  console.log('');
-  console.log('╔══════════════════════════════════════════════════════════╗');
-  console.log('║  Panel base path (copy this URL — you will need it):    ║');
-  console.log(`║  /${generated}                                              ║`);
-  console.log('║                                                         ║');
-  console.log('║  This path is persisted in /data/config/instance.json   ║');
-  console.log('║  It will NOT be shown again. Set PANEL_BASE_PATH env   ║');
-  console.log('║  to override.                                           ║');
-  console.log('╚══════════════════════════════════════════════════════════╝');
-  console.log('');
+  // Only show banner if not in test environment
+  if (env.NODE_ENV !== 'test') {
+    const resolvedInstancePath = join(dataDir, 'config', 'instance.json');
+    const lines = [
+      'Panel base path (copy this URL — you will need it):',
+      `/${generated}`,
+      '',
+      `This path is persisted in ${resolvedInstancePath}`,
+      'It will NOT be shown again. Set PANEL_BASE_PATH env',
+      'to override.',
+    ];
+    const maxWidth = Math.max(...lines.map((l) => l.length));
+    const border = '═'.repeat(maxWidth + 4);
+
+    console.log('');
+    console.log(`╔${border}╗`);
+    lines.forEach((line) => {
+      const padding = ' '.repeat(maxWidth - line.length);
+      console.log(`║  ${line}${padding}  ║`);
+    });
+    console.log(`╚${border}╝`);
+    console.log('');
+  }
 
   return generated;
 }
@@ -88,7 +101,7 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   initDb(dbPath);
 
   const app = Fastify({
-    logger: {
+    logger: env.NODE_ENV === 'test' ? false : {
       level: 'info',
       redact: ['password', 'token', 'secret'],
     },
