@@ -114,7 +114,7 @@
 ### Production
 - `fastify` ^5
 - `@fastify/cookie`
-- `@fastify/static`
+- `@fastify/static` ^10       # v10 is the Fastify 5 line; v7 targets Fastify 4
 - `@fastify/websocket`
 - `better-sqlite3`
 - `argon2`
@@ -129,12 +129,44 @@
 - `@vitejs/plugin-react`
 - `tailwindcss` ^4
 - `@tailwindcss/vite`
-- `vitest`
+- `vitest` ^4
 - `supertest`
 - `@types/better-sqlite3`
 - `@types/supertest`
 - `eslint` + `@typescript-eslint/*`
 - `tsx`                       # dev server runner
+
+### Installed versions (verified on disk, 2026-08-29)
+
+Read back from `node_modules/*/package.json`, not from the range in
+`package.json`. `npm audit --omit=dev` reports **0 vulnerabilities** at these
+versions.
+
+| Package             | Range in package.json | Installed |
+| ------------------- | --------------------- | --------- |
+| `fastify`           | `^5.1.0`              | `5.12.1`  |
+| `@fastify/static`   | `^10.1.3`             | `10.1.3`  |
+| `@fastify/cookie`   | `^11.1.2`             | `11.1.2`  |
+| `@fastify/websocket`| `^10.0.1`             | `10.0.1`  |
+| `fastify-plugin`    | `^6.0.0`              | `6.0.0`   |
+| `vitest`            | `^4.1.11`             | `4.1.11`  |
+| `vite`              | `^6.0.11`             | `6.4.3`   |
+
+**Why `@fastify/static` had to move off v7:** v7 depends on `fastify-plugin@^4`,
+which encodes a Fastify 4 peer range, so registering it into this project's
+Fastify 5 instance fails the plugin version check at boot. v10 depends on
+`fastify-plugin@^6` and is developed against `fastify@^5.1.0`. v7 also carries
+two open high-severity advisories (GHSA-8pvw-jcv7-9cmj authorization bypass via
+non-canonical URL paths, GHSA-83w8-p2f5-377r route-guard bypass via path
+traversal) that are only fixed in 10.1.2+.
+
+**v7 → v10 API delta relevant to this project:** none. The default export is
+still a Fastify plugin registered as `app.register(fastifyStatic, { root, prefix })`,
+and `reply.sendFile()` keeps its signature. v10 adds `serveDotFiles`,
+`preCompressed`, and `suppressWarning` options and swaps the internal `send`
+implementation for `@fastify/send` v4. Nothing in `src/` imports the package yet
+— it is a Phase 2 dependency for serving the built Vite bundle — so there was no
+call site to migrate.
 
 ## Milestone Order
 

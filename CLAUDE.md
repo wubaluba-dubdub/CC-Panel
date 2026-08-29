@@ -34,6 +34,38 @@ This document describes the architecture, security model, directory layout, and 
 ```
 The container filesystem is ephemeral; all persistent state lives under `/data`.
 
+## Pinned Dependency Versions
+
+Ranges live in `package.json`; the table below records what is actually installed
+and verified on disk. Re-check with:
+
+```
+node -e "for (const n of ['fastify','@fastify/static','vitest','vite']) \
+  console.log(n, require('./node_modules/'+n+'/package.json').version)"
+```
+
+| Package              | Range        | Installed | Note                                   |
+| -------------------- | ------------ | --------- | -------------------------------------- |
+| `fastify`            | `^5.1.0`     | `5.12.1`  |                                        |
+| `@fastify/static`    | `^10.1.3`    | `10.1.3`  | v10 is the Fastify 5 line              |
+| `@fastify/cookie`    | `^11.1.2`    | `11.1.2`  |                                        |
+| `@fastify/websocket` | `^10.0.1`    | `10.0.1`  |                                        |
+| `fastify-plugin`     | `^6.0.0`     | `6.0.0`   |                                        |
+| `vitest`             | `^4.1.11`    | `4.1.11`  | `npm test` must print `RUN v4.x`        |
+| `vite`               | `^6.0.11`    | `6.4.3`   |                                        |
+
+`@fastify/static` must stay on the v10 line. v7 depends on `fastify-plugin@^4`,
+which carries a Fastify 4 peer range, so registering it into this Fastify 5
+instance fails the plugin version check at boot; v7 also carries two unfixed
+high-severity advisories (authorization bypass via non-canonical URL paths, and
+route-guard bypass via path traversal). Nothing in `src/` imports the package
+yet — it is needed in Phase 2 to serve the built Vite bundle — and the v10 API
+for that use (`register(fastifyStatic, { root, prefix })`, `reply.sendFile()`) is
+unchanged from v7.
+
+`npm audit --omit=dev` must report 0 vulnerabilities. Treat a non-zero count as a
+build failure, not a warning.
+
 ## Conventions
 ### Source Code
 - **Server** (`src/server/`): Fastify plugins, services, routes, DB, crypto, utils.
