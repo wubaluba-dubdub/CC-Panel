@@ -95,7 +95,40 @@ See `docs/SECURITY.md` for a detailed mapping of each control to the file(s) tha
 - All routes (API, SPA, assets) are mounted under `/${basePath}`.
 - `GET /healthz` is the only route outside the prefix, returning `{"ok":true}`.
 - Base path is generated on first boot if `PANEL_BASE_PATH` is not set, persisted to `/data/config/instance.json`, and logged once at startup.
-- The base path is injected into the SPA via `<script>window.__BASE__="/xxx"</script>` and passed to React Router as `basename`.
+- The prefix is gated **before routing** by `createBasePathGate()` (installed as
+  Fastify's `rewriteUrl` option), which compares the first path segment with
+  `crypto.timingSafeEqual` — length first, then bytes. Matching requests pass
+  through unchanged; every other request is collapsed onto one constant sink URL
+  so all rejections are byte- and timing-identical. Details and accepted
+  trade-offs in `docs/SECURITY.md`.
+- The base path reaches the SPA via `GET /${basePath}/bootstrap.js`
+  (`application/javascript; charset=utf-8`, `Cache-Control: no-store`), referenced
+  from the HTML with a plain `src` attribute. It is **not** an inline script: the
+  CSP is `script-src 'self'` with no `unsafe-inline`, and a CSP hash is not usable
+  because the script body embeds the per-install base path. React Router will take
+  `window.__BASE__` as its `basename` in Phase 2.
+
+## Response Headers
+The single source of truth is `SECURITY_HEADERS` in
+`src/server/plugins/security-headers.ts`; `docs/SECURITY.md` carries the full
+table with rationale. `tests/integration/perimeter.test.ts` asserts the complete
+map byte-for-byte on five response shapes (200 HTML, 200 JS, 404, `/healthz`,
+500), so it fails if a value changes, a header vanishes, or an unexpected header
+appears.
+
+`X-XSS-Protection` is deliberately **not** sent — the auditor it controlled is
+gone from every shipping browser and its legacy filtering was itself exploitable.
+`Server` and `X-Powered-By` are absent and there is a regression test to keep
+them that way.
+
+### Phase 3 follow-up: connect-src and the terminal WebSocket
+The CSP ships `connect-src 'self'` with no explicit `wss:` source. Modern browsers
+accept `'self'` for a same-origin WebSocket (the socket URL is matched against the
+document origin with the scheme upgraded), so this should be correct as written —
+but it has not been exercised, because there is no WebSocket yet. **In Phase 3,
+verify in a real browser that the terminal WebSocket connects, and only if it does
+not, add `wss://<self>` to `connect-src`.** Do not add it pre-emptively.
+
 
 ## Authentication Flow
 1. **First boot**: Seeded user created from `PANEL_ADMIN_USERNAME` and `PANEL_ADMIN_PASSWORD`.
@@ -132,12 +165,14 @@ script-src 'self';
 style-src 'self';
 img-src 'self' data:;
 font-src 'self';
-connect-src 'self' wss://<self>;
+connect-src 'self';
 frame-ancestors 'none';
 base-uri 'none';
 form-action 'self'
 ```
-Note: `wss://<self>` is dynamically set to the WebSocket origin of the same host.
+Byte-identical in development and production. No `unsafe-inline`, no
+`unsafe-eval`, no CSP hashes. See the Phase 3 follow-up note above for
+`connect-src` and the terminal WebSocket.
 
 ## Deployment (Railway)
 - Docker image runs as non-root user (uid 10001).

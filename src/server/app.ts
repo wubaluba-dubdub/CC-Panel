@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto';
 import type { Env } from './env.js';
 import { initDb, closeDb } from './db.js';
 import securityHeadersPlugin from './plugins/security-headers.js';
-import basePathPlugin from './plugins/base-path.js';
+import basePathPlugin, { createBasePathGate } from './plugins/base-path.js';
 
 export interface ServerConfig {
   env: Env;
@@ -111,6 +111,10 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
       redact: ['password', 'token', 'secret'],
     },
     trustProxy: env.PANEL_TRUST_PROXY,
+    // Constant-time base path gate. Runs before routing, so a wrong prefix never
+    // reaches find-my-way and cannot be brute-forced character by character
+    // through the router's traversal timing. See plugins/base-path.ts.
+    rewriteUrl: createBasePathGate(basePath),
   });
 
   // ── Security headers (all routes) ──────────────────────────────────────────
@@ -143,6 +147,14 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
 
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+
+  // Without this, every server built in a test run leaks two process listeners
+  // and Node starts printing MaxListenersExceededWarning at eleven instances.
+  app.addHook('onClose', (_instance, done) => {
+    process.removeListener('SIGTERM', shutdown);
+    process.removeListener('SIGINT', shutdown);
+    done();
+  });
 
   return app;
 }

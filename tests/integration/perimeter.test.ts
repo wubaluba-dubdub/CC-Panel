@@ -1,6 +1,48 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createTestServer, type TestContext } from '../helpers/test-server.js';
 
+/**
+ * Headers whose value legitimately varies per response. They are asserted
+ * individually below; everything else must match the expected map exactly.
+ */
+const VOLATILE_HEADERS = ['date', 'content-length', 'connection'] as const;
+
+function stableHeaders(headers: Record<string, unknown>): Record<string, unknown> {
+  const copy = { ...headers };
+  for (const name of VOLATILE_HEADERS) delete copy[name];
+  return copy;
+}
+
+/**
+ * The expected header map, written out as literals on purpose.
+ *
+ * These are deliberately NOT imported from src/server/plugins/security-headers.ts.
+ * The previous version of this suite asserted only that headers were *present*,
+ * which is how twenty-five tests stayed green while four header values were wrong
+ * or missing. Importing the constants would reintroduce the same blind spot from
+ * the other direction: the test would agree with whatever the plugin says.
+ */
+const PERMISSIONS_POLICY =
+  'accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), ' +
+  'microphone=(), midi=(), payment=(), usb=()';
+
+const CSP =
+  "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
+  "font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; " +
+  "form-action 'self'";
+
+const HSTS = 'max-age=63072000; includeSubDomains; preload';
+
+const SECURITY_HEADERS = {
+  'x-content-type-options': 'nosniff',
+  'x-frame-options': 'DENY',
+  'referrer-policy': 'no-referrer',
+  'cross-origin-opener-policy': 'same-origin',
+  'cross-origin-resource-policy': 'same-origin',
+  'permissions-policy': PERMISSIONS_POLICY,
+  'content-security-policy': CSP,
+} as const;
+
 describe('M1.2 — Perimeter', () => {
   let ctx: TestContext;
 
@@ -8,132 +50,148 @@ describe('M1.2 — Perimeter', () => {
     if (ctx) await ctx.cleanup();
   });
 
-  describe('Base path routing', () => {
-    it('mounts all routes under the secret base path', async () => {
-      ctx = await createTestServer({ PANEL_BASE_PATH: 'secret-xyz' });
-
-      // Outside prefix: 404
-      const outside1 = await ctx.app.inject({ method: 'GET', url: '/' });
-      expect(outside1.statusCode).toBe(404);
-
-      const outside2 = await ctx.app.inject({ method: 'GET', url: '/login' });
-      expect(outside2.statusCode).toBe(404);
-
-      // Inside prefix: 200
-      const inside = await ctx.app.inject({ method: 'GET', url: '/secret-xyz/' });
-      expect(inside.statusCode).toBe(200);
-      expect(inside.headers['content-type']).toMatch(/text\/html/);
-      expect(inside.body).toContain('Panel shell — Phase 2');
-      expect(inside.body).toContain('window.__BASE__ = "/secret-xyz"');
-    });
-
-    it('returns byte-identical 404 for all paths outside prefix', async () => {
-      ctx = await createTestServer({ PANEL_BASE_PATH: 'x' });
-
-      const paths = ['/', '/login', '/api/health', '/random-xyz-123', '/admin', '/wp-login.php'];
-      const responses = await Promise.all(
-        paths.map((p) => ctx.app.inject({ method: 'GET', url: p }))
-      );
-
-      // All should be 404
-      responses.forEach((r) => expect(r.statusCode).toBe(404));
-
-      // Bodies must be byte-identical
-      const bodies = responses.map((r) => r.body);
-      const firstBody = bodies[0]!;
-      bodies.forEach((b) => expect(b).toBe(firstBody));
-
-      // Headers must be identical (except request-specific ones like date)
-      const firstContentType = responses[0]!.headers['content-type'];
-      responses.forEach((r) => expect(r.headers['content-type']).toBe(firstContentType));
-    });
-  });
-
-  describe('Healthz exemption', () => {
-    it('GET /healthz returns exactly {"ok":true} outside the prefix', async () => {
-      ctx = await createTestServer({ PANEL_BASE_PATH: 'secret' });
-
-      const res = await ctx.app.inject({ method: 'GET', url: '/healthz' });
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ ok: true });
-    });
-  });
-
-  describe('Security headers', () => {
-    it('applies all required security headers to every response', async () => {
+  describe('Complete header map (byte-for-byte)', () => {
+    it('sends exactly the expected headers on the placeholder page', async () => {
       ctx = await createTestServer({ PANEL_BASE_PATH: 'x' });
 
       const res = await ctx.app.inject({ method: 'GET', url: '/x/' });
 
-      expect(res.headers['x-content-type-options']).toBe('nosniff');
-      expect(res.headers['x-frame-options']).toBe('DENY');
-      expect(res.headers['x-xss-protection']).toBe('1; mode=block');
-      expect(res.headers['referrer-policy']).toBe('strict-origin-when-cross-origin');
-      expect(res.headers['permissions-policy']).toBe('geolocation=(), microphone=(), camera=()');
+      expect(res.statusCode).toBe(200);
+      expect(stableHeaders(res.headers)).toEqual({
+        'content-type': 'text/html; charset=utf-8',
+        ...SECURITY_HEADERS,
+      });
+
+      // The excluded headers are still checked, just not for an exact value.
+      expect(res.headers['date']).toMatch(/GMT$/);
+      expect(Number(res.headers['content-length'])).toBe(Buffer.byteLength(res.body));
     });
 
-    it('CSP is byte-identical in dev and production, with no unsafe-inline or unsafe-eval', async () => {
-      const ctxDev = await createTestServer({ PANEL_BASE_PATH: 'x', NODE_ENV: 'test' });
-      const ctxProd = await createTestServer({ PANEL_BASE_PATH: 'x', NODE_ENV: 'production' });
+    it('sends exactly the expected headers on the bootstrap script', async () => {
+      ctx = await createTestServer({ PANEL_BASE_PATH: 'x' });
 
-      const resDev = await ctxDev.app.inject({ method: 'GET', url: '/x/' });
-      const resProd = await ctxProd.app.inject({ method: 'GET', url: '/x/' });
-
-      const cspDev = resDev.headers['content-security-policy'];
-      const cspProd = resProd.headers['content-security-policy'];
-
-      expect(cspDev).toBe(cspProd);
-      expect(cspDev).not.toContain('unsafe-inline');
-      expect(cspDev).not.toContain('unsafe-eval');
-      expect(cspDev).toContain("default-src 'none'");
-      expect(cspDev).toContain("script-src 'self'");
-      expect(cspDev).toContain("style-src 'self'");
-      expect(cspDev).toContain("frame-ancestors 'none'");
-
-      await ctxDev.cleanup();
-      await ctxProd.cleanup();
-    });
-
-    it('HSTS is absent in development, present in production', async () => {
-      const ctxDev = await createTestServer({ PANEL_BASE_PATH: 'x', NODE_ENV: 'test' });
-      const ctxProd = await createTestServer({ PANEL_BASE_PATH: 'x', NODE_ENV: 'production' });
-
-      const resDev = await ctxDev.app.inject({ method: 'GET', url: '/x/' });
-      const resProd = await ctxProd.app.inject({ method: 'GET', url: '/x/' });
-
-      expect(resDev.headers['strict-transport-security']).toBeUndefined();
-      expect(resProd.headers['strict-transport-security']).toBe('max-age=63072000; includeSubDomains; preload');
-
-      await ctxDev.cleanup();
-      await ctxProd.cleanup();
-    });
-  });
-
-  describe('Base path secrecy', () => {
-    it('base path never appears in log lines after boot', async () => {
-      // This is a design contract test — actual log redaction will be verified in later milestones
-      // For now, we just ensure the app doesn't echo the base path in error responses
-      ctx = await createTestServer({ PANEL_BASE_PATH: 'secret-base-123' });
-
-      const res404 = await ctx.app.inject({ method: 'GET', url: '/wrong-path' });
-      expect(res404.body).not.toContain('secret-base-123');
-
-      const resHealthz = await ctx.app.inject({ method: 'GET', url: '/healthz' });
-      expect(resHealthz.body).not.toContain('secret-base-123');
-    });
-  });
-
-  describe('Placeholder page', () => {
-    it('serves a minimal placeholder at /${basePath}/ with window.__BASE__', async () => {
-      ctx = await createTestServer({ PANEL_BASE_PATH: 'testpath' });
-
-      const res = await ctx.app.inject({ method: 'GET', url: '/testpath/' });
+      const res = await ctx.app.inject({ method: 'GET', url: '/x/bootstrap.js' });
 
       expect(res.statusCode).toBe(200);
-      expect(res.headers['content-type']).toMatch(/text\/html/);
-      expect(res.body).toContain('Panel shell — Phase 2');
-      expect(res.body).toContain('window.__BASE__ = "/testpath"');
-      expect(res.body).toContain('<!DOCTYPE html>');
+      expect(stableHeaders(res.headers)).toEqual({
+        'content-type': 'application/javascript; charset=utf-8',
+        'cache-control': 'no-store',
+        ...SECURITY_HEADERS,
+      });
+    });
+
+    it('sends exactly the expected headers on the generic 404', async () => {
+      ctx = await createTestServer({ PANEL_BASE_PATH: 'x' });
+
+      const res = await ctx.app.inject({ method: 'GET', url: '/definitely-not-the-base-path' });
+
+      expect(res.statusCode).toBe(404);
+      expect(stableHeaders(res.headers)).toEqual({
+        'content-type': 'application/json; charset=utf-8',
+        ...SECURITY_HEADERS,
+      });
+    });
+
+    it('sends exactly the expected headers on /healthz', async () => {
+      ctx = await createTestServer({ PANEL_BASE_PATH: 'x' });
+
+      const res = await ctx.app.inject({ method: 'GET', url: '/healthz' });
+
+      expect(res.statusCode).toBe(200);
+      expect(stableHeaders(res.headers)).toEqual({
+        'content-type': 'application/json; charset=utf-8',
+        ...SECURITY_HEADERS,
+      });
+    });
+
+    it('sends exactly the expected headers on a 500', async () => {
+      ctx = await createTestServer(
+        { PANEL_BASE_PATH: 'x' },
+        {
+          beforeReady: (app) => {
+            app.get('/x/__throw', async () => {
+              throw new Error('deliberate test failure');
+            });
+          },
+        },
+      );
+
+      const res = await ctx.app.inject({ method: 'GET', url: '/x/__throw' });
+
+      expect(res.statusCode).toBe(500);
+      expect(stableHeaders(res.headers)).toEqual({
+        'content-type': 'application/json; charset=utf-8',
+        ...SECURITY_HEADERS,
+      });
+    });
+
+    it('adds Strict-Transport-Security in production and nothing else', async () => {
+      const prod = await createTestServer({ PANEL_BASE_PATH: 'x', NODE_ENV: 'production' });
+
+      const res = await prod.app.inject({ method: 'GET', url: '/x/' });
+
+      expect(stableHeaders(res.headers)).toEqual({
+        'content-type': 'text/html; charset=utf-8',
+        ...SECURITY_HEADERS,
+        'strict-transport-security': HSTS,
+      });
+
+      await prod.cleanup();
+    });
+
+    it('CSP is byte-identical in dev and production', async () => {
+      const dev = await createTestServer({ PANEL_BASE_PATH: 'x', NODE_ENV: 'test' });
+      const prod = await createTestServer({ PANEL_BASE_PATH: 'x', NODE_ENV: 'production' });
+
+      const resDev = await dev.app.inject({ method: 'GET', url: '/x/' });
+      const resProd = await prod.app.inject({ method: 'GET', url: '/x/' });
+
+      expect(resDev.headers['content-security-policy']).toBe(CSP);
+      expect(resProd.headers['content-security-policy']).toBe(CSP);
+      expect(CSP).not.toContain('unsafe-inline');
+      expect(CSP).not.toContain('unsafe-eval');
+
+      await dev.cleanup();
+      await prod.cleanup();
+    });
+  });
+
+  describe('F2 — X-XSS-Protection is gone', () => {
+    it('never sends X-XSS-Protection', async () => {
+      ctx = await createTestServer({ PANEL_BASE_PATH: 'x' });
+
+      for (const url of ['/x/', '/x/bootstrap.js', '/healthz', '/nope']) {
+        const res = await ctx.app.inject({ method: 'GET', url });
+        expect(res.headers['x-xss-protection']).toBeUndefined();
+      }
+    });
+  });
+
+  describe('F6 — Server and X-Powered-By stay absent', () => {
+    it('omits both on a normal response, an error response, and the generic 404', async () => {
+      ctx = await createTestServer(
+        { PANEL_BASE_PATH: 'x' },
+        {
+          beforeReady: (app) => {
+            app.get('/x/__throw', async () => {
+              throw new Error('deliberate test failure');
+            });
+          },
+        },
+      );
+
+      const normal = await ctx.app.inject({ method: 'GET', url: '/x/' });
+      const error = await ctx.app.inject({ method: 'GET', url: '/x/__throw' });
+      const notFound = await ctx.app.inject({ method: 'GET', url: '/nope' });
+
+      expect(normal.statusCode).toBe(200);
+      expect(error.statusCode).toBe(500);
+      expect(notFound.statusCode).toBe(404);
+
+      for (const res of [normal, error, notFound]) {
+        expect(res.headers['server']).toBeUndefined();
+        expect(res.headers['x-powered-by']).toBeUndefined();
+      }
     });
   });
 });

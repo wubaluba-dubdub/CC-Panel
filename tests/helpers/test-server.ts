@@ -32,11 +32,17 @@ export function makeTestEnv(overrides: Partial<Env> = {}): Env {
 
 export async function createTestServer(
   envOverrides: Partial<Env> = {},
+  opts: { beforeReady?: (app: FastifyInstance) => void } = {},
 ): Promise<TestContext> {
   const env = makeTestEnv(envOverrides);
   const dataDir = env.PANEL_DATA_DIR;
 
   const app = await buildServer({ env });
+
+  // Routes must be added before the first inject(), which triggers ready().
+  // Used to register a deliberately-throwing route so the security-header
+  // assertions can cover a 500 as well as a 200 and a 404.
+  opts.beforeReady?.(app);
 
   const cleanup = async (): Promise<void> => {
     await app.close();
