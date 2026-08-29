@@ -1,11 +1,14 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { mkdirSync, existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { STATUS_CODES } from 'node:http';
 import type { Env } from './env.js';
 import { initDb, closeDb } from './db.js';
+import { initCrypto, resetCrypto } from './crypto.js';
 import securityHeadersPlugin from './plugins/security-headers.js';
 import basePathPlugin, { createBasePathGate } from './plugins/base-path.js';
+import { createRedactedLogger } from './plugins/logger-redaction.js';
 
 export interface ServerConfig {
   env: Env;
@@ -101,15 +104,21 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   const basePath = resolveBasePath(env);
   const dbPath = join(dataDir, 'panel.db');
   initDb(dbPath);
+  initCrypto(env.PANEL_MASTER_KEY);
 
   // Disable logger in test environments (including when NODE_ENV=production in tests)
   const isTestEnv = env.NODE_ENV === 'test' || typeof process.env.VITEST !== 'undefined';
 
+  // Second line of defence behind SecretString: every serialised log line is
+  // scrubbed of recognised credential shapes on its way to stdout.
+  // Typed as FastifyServerOptions so passing a concrete pino instance does not
+  // narrow the instance's logger generic away from FastifyBaseLogger.
+  const loggerOptions: FastifyServerOptions = isTestEnv
+    ? { logger: false }
+    : { loggerInstance: createRedactedLogger() };
+
   const app = Fastify({
-    logger: isTestEnv ? false : {
-      level: 'info',
-      redact: ['password', 'token', 'secret'],
-    },
+    ...loggerOptions,
     trustProxy: env.PANEL_TRUST_PROXY,
     // Constant-time base path gate. Runs before routing, so a wrong prefix never
     // reaches find-my-way and cannot be brute-forced character by character
@@ -128,6 +137,26 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   // ── Base path scoped routes ────────────────────────────────────────────────
   await app.register(basePathPlugin, { basePath });
 
+  // ── Generic error responses ────────────────────────────────────────────────
+  // Fastify's default handler puts the thrown Error's message straight into the
+  // response body. That is how a credential in an error message — "upstream
+  // rejected sk-ant-…" — reaches the client verbatim; the sentinel sweep in
+  // tests/integration/secret-leak.test.ts caught exactly that. The real error is
+  // logged (through the redacting destination) and the client gets nothing but
+  // the status's standard reason phrase.
+  app.setErrorHandler((err, req, reply) => {
+    const declared = (err as { statusCode?: number }).statusCode;
+    const status =
+      typeof declared === 'number' && declared >= 400 && declared <= 599 ? declared : 500;
+
+    req.log.error({ err }, 'request failed');
+
+    return reply
+      .code(status)
+      .header('Content-Type', 'application/json')
+      .send(JSON.stringify({ error: STATUS_CODES[status] ?? 'Error' }));
+  });
+
   // ── Generic 404 for anything outside the base path ─────────────────────────
   // Must be byte-identical for all paths: same status, body, headers, timing
   const generic404Body = JSON.stringify({ error: 'Not Found' });
@@ -142,6 +171,9 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   const shutdown = async (): Promise<void> => {
     await app.close();
     closeDb();
+    // Deliberately not in the onClose hook below: a test that builds two servers
+    // and closes one must not pull the key out from under the other.
+    resetCrypto();
     process.exit(0);
   };
 

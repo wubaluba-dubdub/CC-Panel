@@ -45,7 +45,7 @@ describe('Migration runner', () => {
       .all()
       .map((r) => (r as { version: number }).version);
 
-    expect(migrations).toEqual([1, 2, 3, 4, 5]);
+    expect(migrations).toEqual([1, 2, 3, 4, 5, 6]);
   });
 
   it('is idempotent — running twice does not fail', () => {
@@ -58,6 +58,6 @@ describe('Migration runner', () => {
     initDb(dbPath);
     const db = getDb();
     const count = db.prepare('SELECT COUNT(*) as c FROM schema_migrations').get() as { c: number };
-    expect(count.c).toBe(5);
+    expect(count.c).toBe(6);
   });
 });

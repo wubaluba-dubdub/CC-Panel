@@ -141,13 +141,145 @@ CSP, the header set, or the bootstrap path, and before any deployment.
 5. **Reduced motion.** With `prefers-reduced-motion: reduce` set at the OS level,
    confirm no animation runs (Phase 2, once there is anything animated).
 
+## Secrets
+
+### Key derivation
+
+`src/server/crypto.ts` holds the master key in a module-private binding. It is
+never exported, never returned, and never used directly for encryption. Consumers
+call `deriveSubkey(info)`, which runs HKDF-SHA256 over the master key with a
+constant application salt and a purpose-specific `info` label, producing a
+32-byte subkey. Labels live in `KeyPurpose`; a label is never reused for a second
+purpose, so a bug in one subsystem cannot mint a ciphertext another subsystem
+would accept.
+
+The HKDF salt is a constant, which is correct here: the master key is already 32
+bytes of CSPRNG output, so the salt has no low-entropy input material to spread,
+and a constant keeps derivation reproducible across restarts.
+
+### Encryption
+
+AES-256-GCM, a fresh 96-bit nonce per write, 128-bit authentication tag. Payloads
+are versioned and self-describing:
+
+```
+v1.<nonce>.<ciphertext>.<tag>     each part base64url
+```
+
+`decrypt()` rejects a version it does not recognise rather than guessing at the
+layout, and rejects a wrong-length nonce or tag before attempting anything.
+
+The AAD is `<table>:<rowId>:<column>`, built by `columnAad()`, which refuses parts
+containing `:` so the encoding cannot be made ambiguous. Binding to the row and
+column means an attacker with database write access cannot promote their own
+secret into another row, or another column, by copying bytes — the tag will not
+verify.
+
+Every authentication failure raises the same opaque `DecryptionError` with the
+same message. A wrong AAD, a flipped ciphertext bit, and a wrong master key are
+indistinguishable to the caller.
+
+### Secrets in memory
+
+`SecretString` holds the value in a private field reachable only through
+`.reveal()`, which makes every disclosure an explicit, greppable act. Every
+implicit escape route is overridden to yield `[redacted]`: `toString`, `toJSON`
+(which is what pino's serialisers go through), `Symbol.toPrimitive` (template
+interpolation and `+`), and `util.inspect.custom` (`console.log` and nested
+inspection). The object has no enumerable properties, so a spread or
+`Object.entries` yields nothing.
+
+`mask()` produces the display form — `sk-ant-…a1b2`. It reveals at most the last
+four characters. A recognised credential prefix is kept, because it tells an
+operator *which* credential they are looking at without disclosing any of it, and
+is dropped when too little material follows it. Values shorter than eight
+characters get a fixed placeholder.
+
+### Logger redaction
+
+`src/server/plugins/logger-redaction.ts` wraps the pino destination, so every
+fully-serialised log line is scrubbed on its way to stdout: message strings,
+nested object values, error stacks, and serialiser output alike, with no need to
+know which key a secret ended up under. Recognised shapes are `sk-ant-`,
+`github_pat_`, `ghp_`, `gho_`, generic `sk-`, and JWTs (anchored on the `eyJ` that
+a base64url-encoded JWT header always begins with). Each is replaced with its
+prefix plus `[redacted]`, so an operator can tell what kind of credential leaked
+and go fix the call site.
+
+This is the **second** line of defence. It is pattern-based, so it can only catch
+credentials whose shape it recognises — an opaque credential is invisible to it.
+`SecretString` is the control; anything this layer catches is a bug worth fixing
+at the source.
+
+### Storage
+
+`SecretsRepository` (`src/server/services/secrets.service.ts`) reads return
+`SecretString`, never a raw string, so a value cannot reach a log line or a
+response body by being passed along inattentively. `list()` returns metadata only.
+
+A row that exists but will not decrypt throws rather than reporting the secret as
+absent: that means a wrong master key or a tampered database, and answering
+"absent" would invite the caller to overwrite a secret that is still good.
+
+Migration `006_secrets_payload.sql` replaces the separate `ciphertext`/`nonce`
+columns from `004` with a single `payload` column, because separate columns cannot
+express the version prefix.
+
+### Generic error responses
+
+`app.setErrorHandler` in `src/server/app.ts` returns nothing but the status's
+standard reason phrase. Fastify's default handler puts the thrown `Error`'s
+message straight into the response body, which is how a credential inside an error
+message — "upstream rejected sk-ant-…" — reaches the client verbatim. The sentinel
+sweep below caught exactly that. The real error is still logged, through the
+redacting destination.
+
+### Tests
+
+- `tests/unit/crypto.test.ts` — round trip; subkey determinism, per-label and
+  per-master-key separation; AAD mismatch by row, column and table; single-byte
+  alteration of the nonce, the ciphertext and the tag, each separately; wrong
+  master key; nonce uniqueness across repeated encryptions; unknown version
+  prefixes; malformed payloads; and that every authentication failure reports
+  identically.
+- `tests/unit/secret-string.test.ts` — each override asserted individually as
+  well as through coercion (`Symbol.toPrimitive` shadows `toString` for every
+  implicit path, so a leaking `toString` would otherwise be invisible), plus
+  interpolation, `JSON.stringify`, `console.log`, `util.inspect`, enumerability,
+  masking bounds, and the redaction rules.
+- `tests/unit/secrets-repository.test.ts` — round trip through storage,
+  ciphertext-only rows, in-place overwrite, rollback on a failed write, and
+  transplanting a payload between rows and between columns.
+- `tests/integration/secret-leak.test.ts` — the sentinel sweep.
+
+### Sentinel sweep
+
+`tests/integration/secret-leak.test.ts` seeds two unique sentinels and asserts
+neither ever appears anywhere:
+
+- One patterned like a real Anthropic key, which both `SecretString` and the
+  redaction layer should stop.
+- One entirely opaque, which only `SecretString` can stop — which is the point of
+  it being the primary control.
+
+It then exercises every route (asserting the route table against a literal, so
+adding a route without extending the sweep fails the test) with both `GET` and
+`HEAD`, feeding the sentinels back in as query, header and cookie input; drives
+every log path, including an object, a nested object, an `Error`, and pino's error
+serialiser; and captures stdout, stderr, and `console` output. It asserts the
+sentinels appear in no captured output, no response body, and **not in
+`panel.db`, `panel.db-wal`, or `panel.db-shm` on disk** — at rest as well as in
+flight.
+
+The suite has been mutation-checked: leaking `toString`, leaking `toJSON`, a
+`mask()` that reveals twelve characters instead of four, an AAD that drops the row
+id, a changed header value, and an unexpected extra header each make it fail.
+
 ## Not Yet Implemented
 
 These are listed so the map stays complete; each will be filled in with its
 milestone.
 
-- HKDF subkey derivation, AES-256-GCM encryption, `SecretString`, secret
-  masking, logger redaction, secret repository — M1.3.
 - Password hashing (argon2id) and the constant-time dummy-hash path — M1.4.
 - Server-side sessions, opaque tokens, SHA-256-at-rest — M1.4.
 - TOTP and recovery codes — M1.4.

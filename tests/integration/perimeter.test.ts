@@ -123,6 +123,10 @@ describe('M1.2 — Perimeter', () => {
         'content-type': 'application/json; charset=utf-8',
         ...SECURITY_HEADERS,
       });
+
+      // Generic body: Fastify's default handler would echo the thrown message.
+      expect(res.body).toBe('{"error":"Internal Server Error"}');
+      expect(res.body).not.toContain('deliberate test failure');
     });
 
     it('adds Strict-Transport-Security in production and nothing else', async () => {

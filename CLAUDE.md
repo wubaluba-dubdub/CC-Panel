@@ -144,10 +144,28 @@ not, add `wss://<self>` to `connect-src`.** Do not add it pre-emptively.
 - Sessions page lists active sessions with revoke options.
 
 ## Secrets at Rest
-- Master key from `PANEL_MASTER_KEY` (32 bytes base64) is used via HKDF-SHA256 with distinct `info` labels to derive subkeys.
-- AES-256-GCM with 96-bit nonce per write, AAD = `<table>:<rowId>:<column>`.
-- `SecretString` wrapper redacts itself in `toString`, `toJSON`, and `util.inspect`.
-- Logger redacts common credential patterns as a second line of defense.
+Implemented in `src/server/crypto.ts`; full rationale in `docs/SECURITY.md`.
+- `PANEL_MASTER_KEY` (≥32 bytes base64) is held module-private, never used
+  directly for encryption and never exported. Consumers call
+  `deriveSubkey(info)` — HKDF-SHA256 with a constant application salt and one
+  `info` label per purpose (`KeyPurpose`). A label is never reused.
+- AES-256-GCM, fresh 96-bit nonce per write, 128-bit tag, AAD =
+  `<table>:<rowId>:<column>` via `columnAad()`.
+- Storage format is versioned and self-describing: `v1.<nonce>.<ciphertext>.<tag>`,
+  each part base64url. An unknown version is rejected, not guessed at.
+- Every authentication failure raises the same opaque `DecryptionError`, so a
+  wrong AAD, a tampered byte and a wrong master key are indistinguishable.
+- `SecretString` redacts itself in `toString`, `toJSON`, `Symbol.toPrimitive` and
+  `util.inspect.custom`; the value comes out only via `.reveal()`. `mask()` gives
+  the display form (`sk-ant-…a1b2`, last four characters at most).
+- `SecretsRepository` (`src/server/services/secrets.service.ts`) returns
+  `SecretString`, never a raw string.
+- `src/server/plugins/logger-redaction.ts` scrubs every serialised pino line as a
+  second line of defence. It is pattern-based and therefore cannot catch an
+  opaque credential — `SecretString` is the control.
+- `app.setErrorHandler` returns only the status's standard reason phrase.
+  Fastify's default handler echoes the thrown `Error`'s message into the response
+  body, which is a direct path from an error message to the client.
 
 ## Audit Log
 - Table: `audit_log` (id, ts, event, actorIp, userAgent, outcome, metaJson).
@@ -186,11 +204,22 @@ Byte-identical in development and production. No `unsafe-inline`, no
   - `PANEL_BASE_PATH` (if unset, generated and logged)
   - `PANEL_TRUST_PROXY` (default true)
 
-## Current State (End of Phase 1)
-- Security foundation complete (M1).
-- Application shell and design system complete (M2).
-- No terminal or Claude Code integration yet (reserved for later phases).
-- Clean seams left for future work: project directories, settings.json editor, etc.
+## Current State
+Phase 1 is **in progress**. This section tracks what actually exists on disk, not
+what the plan calls for.
+
+- **M1.1 — scaffold and boot: done.** `env.ts` with boot-time self-checks, `/data`
+  layout creation, `db.ts` with a numbered migration runner, migrations 001–006.
+- **M1.2 — perimeter: done.** Secret base path with a constant-time pre-routing
+  gate, generic 404, `/healthz`, the full response-header set, the bootstrap
+  script, generic error responses.
+- **M1.3 — crypto and secret handling: done.** HKDF subkeys, AES-256-GCM with
+  row-scoped AAD, `SecretString`, `mask()`, logger redaction, `SecretsRepository`.
+- **M1.4 — authentication: not started.** Password hashing, sessions, TOTP,
+  recovery codes, CSRF, `Origin` validation, lockout, rate limiting, audit log.
+- **M2 — application shell and design system: not started.** No React, no
+  Tailwind, no client code at all yet; `/${basePath}/` serves a placeholder page.
+- No terminal or Claude Code integration (Phase 3).
 
 ## Next Steps (Phase 2)
 - Implement project creation and management.

@@ -28,7 +28,8 @@
 │   │   │   ├── 002_sessions.sql
 │   │   │   ├── 003_audit.sql
 │   │   │   ├── 004_secrets.sql
-│   │   │   └── 005_lockout.sql
+│   │   │   ├── 005_lockout.sql
+│   │   │   └── 006_secrets_payload.sql
 │   │   ├── plugins/
 │   │   │   ├── security-headers.ts
 │   │   │   ├── csrf.ts
@@ -94,17 +95,20 @@
 │   │   └── test-server.ts        # supertest harness with seeded user
 │   ├── unit/
 │   │   ├── crypto.test.ts
+│   │   ├── secret-string.test.ts
+│   │   ├── secrets-repository.test.ts
+│   │   ├── timing-safe.test.ts
 │   │   ├── lockout.test.ts
-│   │   ├── totp.test.ts
-│   │   └── secret-string.test.ts
+│   │   └── totp.test.ts
 │   └── integration/
 │       ├── auth.test.ts
 │       ├── sessions.test.ts
 │       ├── csrf-origin.test.ts
 │       ├── base-path.test.ts
+│       ├── perimeter.test.ts
 │       ├── audit.test.ts
 │       ├── rate-limit.test.ts
-│       └── secret-leak.test.ts   # sentinel secret grep test
+│       └── secret-leak.test.ts   # sentinel secret sweep
 └── scripts/
     └── generate-fonts.sh         # downloads Inter + JetBrains Mono woff2
 ```
@@ -171,18 +175,38 @@ call site to migrate.
 ## Milestone Order
 
 ### M1 — Security Foundation
-1. Scaffold project: package.json, tsconfig, vite, vitest, eslint configs.
-2. `src/server/env.ts` + boot-time self-checks.
-3. `src/server/crypto.ts`: HKDF subkeys, AES-256-GCM encrypt/decrypt with AAD,
-   `SecretString` class, argon2id helpers with dummy-hash constant.
-4. `src/server/db.ts` + all five migrations.
-5. Services layer: user, session, totp, lockout, audit, secrets, instance.
-6. Fastify plugins: security-headers, csrf, rate-limit, auth, base-path,
-   logger-redaction.
-7. Routes: healthz, auth (login/setup/totp), sessions, security, audit, settings,
-   spa catch-all.
-8. Integration tests covering every acceptance criterion in the security section.
-9. **Commit:** `feat(m1): security foundation`
+
+Delivered as sub-milestones with one commit each, rather than the single commit
+this plan originally called for.
+
+- [x] **M1.1 — scaffold and boot** (`feat(m1.1): scaffold and boot`)
+      package.json, tsconfig, vite, vitest, eslint; `src/server/env.ts` with
+      boot-time self-checks; `/data` layout; `src/server/db.ts` and the numbered
+      migration runner.
+- [x] **M1.2 — perimeter** (`feat(m1.2): perimeter …`, then
+      `fix(m1.2): perimeter review`)
+      Secret base path with a constant-time pre-routing gate
+      (`src/server/utils/timing-safe.ts`), generic 404, `/healthz`, the full
+      response-header set (`plugins/security-headers.ts`), the client bootstrap
+      script, and generic error responses.
+- [x] **M1.3 — crypto and secret handling** (`feat(m1.3): crypto and secret handling`)
+      `src/server/crypto.ts`: HKDF-SHA256 subkeys per purpose, AES-256-GCM with a
+      per-write 96-bit nonce and `<table>:<rowId>:<column>` AAD, versioned
+      `v1.<nonce>.<ciphertext>.<tag>` payloads, `SecretString`, `mask()`.
+      `plugins/logger-redaction.ts` for the pattern-based second line of defence.
+      `services/secrets.service.ts` returning `SecretString`.
+      Migration `006_secrets_payload.sql`.
+- [ ] **M1.4 — authentication**
+      argon2id password hashing with the constant-time dummy-hash path; sessions
+      (opaque tokens, SHA-256 at rest); TOTP and recovery codes; CSRF
+      double-submit and strict `Origin` validation; progressive per-IP and
+      per-account lockout; rate limiting and request size limits; the audit log;
+      and the routes that use them.
+
+Note: migration 004 created `secrets` with separate `ciphertext`/`nonce` columns.
+006 replaces them with a single versioned `payload` column, because separate
+columns cannot express the version prefix. 004 is left as-is rather than edited —
+a migration that has already run somewhere must never change.
 
 ### M2 — Application Shell & Design System
 1. Tailwind v4 theme: colors, spacing, font stacks, animation keyframes in
