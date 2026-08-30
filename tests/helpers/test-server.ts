@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildServer, type ServerConfig } from '../../src/server/app.js';
+import { buildServer } from '../../src/server/app.js';
 import { closeDb } from '../../src/server/db.js';
 import type { Env } from '../../src/server/env.js';
 import type { FastifyInstance } from 'fastify';
@@ -11,6 +11,33 @@ export interface TestContext {
   dataDir: string;
   env: Env;
   cleanup: () => Promise<void>;
+}
+
+/** Collects everything the server's logger writes, so log lines can be asserted. */
+export interface LogCapture {
+  readonly target: { write(chunk: string): void };
+  /** Every line written so far, joined. */
+  text(): string;
+  /** Each JSON log line, parsed. Non-JSON lines are skipped. */
+  lines(): Record<string, unknown>[];
+}
+
+export function createLogCapture(): LogCapture {
+  const chunks: string[] = [];
+  return {
+    target: {
+      write(chunk: string): void {
+        chunks.push(chunk);
+      },
+    },
+    text: () => chunks.join(''),
+    lines: () =>
+      chunks
+        .join('')
+        .split('\n')
+        .filter((line) => line.startsWith('{'))
+        .map((line) => JSON.parse(line) as Record<string, unknown>),
+  };
 }
 
 export function makeTestEnv(overrides: Partial<Env> = {}): Env {
@@ -32,12 +59,18 @@ export function makeTestEnv(overrides: Partial<Env> = {}): Env {
 
 export async function createTestServer(
   envOverrides: Partial<Env> = {},
-  opts: { beforeReady?: (app: FastifyInstance) => void } = {},
+  opts: {
+    beforeReady?: (app: FastifyInstance) => void;
+    logTarget?: { write(chunk: string): void };
+  } = {},
 ): Promise<TestContext> {
   const env = makeTestEnv(envOverrides);
   const dataDir = env.PANEL_DATA_DIR;
 
-  const app = await buildServer({ env });
+  const app = await buildServer({
+    env,
+    ...(opts.logTarget ? { logTarget: opts.logTarget } : {}),
+  });
 
   // Routes must be added before the first inject(), which triggers ready().
   // Used to register a deliberately-throwing route so the security-header

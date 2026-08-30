@@ -6,12 +6,12 @@ import { join } from 'node:path';
 import { createTestServer, type TestContext } from '../helpers/test-server.js';
 import { SecretString, mask } from '../../src/server/crypto.js';
 import { SecretsRepository } from '../../src/server/services/secrets.service.js';
-import { createRedactedLogger } from '../../src/server/plugins/logger-redaction.js';
+import { createRedactedLogger, BASE_PATH_PLACEHOLDER } from '../../src/server/plugins/logger-redaction.js';
 
-const BASE = 'leaktest';
+const BASE = 'leaktest-base-path-sentinel';
 
 /**
- * Two sentinels, because the two defences have different reach.
+ * Two secret sentinels, because the two defences have different reach.
  *
  * `PATTERNED` looks like a real Anthropic key, so both `SecretString` and the
  * pattern-based logger redaction should stop it. `OPAQUE` matches no pattern at
@@ -22,6 +22,29 @@ const BASE = 'leaktest';
 const PATTERNED = `sk-ant-api03-${randomBytes(12).toString('hex')}`;
 const OPAQUE = `OPAQUE-SENTINEL-${randomBytes(12).toString('hex')}`;
 const SENTINELS = [PATTERNED, OPAQUE] as const;
+
+/**
+ * The base path is a third sentinel, with a different rule.
+ *
+ * It is obscurity, not a boundary — but this deploys to Railway, where stdout is
+ * retained and readable from the dashboard, so obscurity printed into a retained
+ * log is not obscurity. It must therefore never reach stdout or stderr at all.
+ *
+ * For response bodies the rule has to be narrower, and the exemption is listed
+ * explicitly below rather than waved at: a document served from *under* the
+ * prefix can only reference its own sibling assets by a path that contains it,
+ * and its reader necessarily already knows the prefix.
+ */
+const BASE_PATH_BODY_EXEMPT = new Set([
+  // The bootstrap script — its entire purpose is to hand the prefix to the SPA.
+  `/${BASE}/bootstrap.js`,
+  // The shell HTML, which must reference bootstrap.js by an absolute path: the
+  // CSP sets `base-uri 'none'` so `<base href>` is unavailable, and a relative
+  // `src` would resolve to `/bootstrap.js` when the document is fetched without
+  // a trailing slash.
+  `/${BASE}`,
+  `/${BASE}/`,
+]);
 
 /**
  * The full route table of the server under test — the application's routes plus
@@ -124,7 +147,7 @@ describe('M1.3 — sentinel leak sweep', () => {
     expect(ctx.app.printRoutes({ commonPrefix: false })).toBe(EXPECTED_ROUTE_TREE);
 
     const capture = captureOutput();
-    const bodies: string[] = [];
+    const responses: { url: string; body: string; headers: string }[] = [];
 
     try {
       // ── Every route, plus the shapes that bypass them ──────────────────────
@@ -149,12 +172,12 @@ describe('M1.3 — sentinel leak sweep', () => {
             headers: { 'x-test-echo': PATTERNED, cookie: `t=${OPAQUE}` },
             query: { q: OPAQUE },
           });
-          bodies.push(res.body, JSON.stringify(res.headers));
+          responses.push({ url, body: res.body, headers: JSON.stringify(res.headers) });
         }
       }
 
       // ── Every log path ────────────────────────────────────────────────────
-      const log = createRedactedLogger();
+      const log = createRedactedLogger({ basePath: BASE });
       const patternedSecret = repo.require('global', 'anthropic_auth_token');
       const opaqueSecret = repo.require('global', 'opaque_token');
 
@@ -166,6 +189,12 @@ describe('M1.3 — sentinel leak sweep', () => {
       log.error(new Error(`error message carrying ${PATTERNED}`), 'error path');
       log.info({ secrets: repo.list() }, 'repository metadata');
       log.warn({ err: { message: `nested error ${PATTERNED}` } }, 'nested error object');
+
+      // The base path on the same log paths.
+      log.info(`request for /${BASE}/api/foo`);
+      log.info({ url: `/${BASE}/api/foo` }, 'base path in an object');
+      log.info({ nested: { deep: [`/${BASE}/deep`] } }, 'base path nested in an object');
+      log.error(new Error(`upstream /${BASE}/api/foo failed`), 'base path in an error');
 
       // Non-pino paths, which the destination scrub does not cover and where
       // SecretString has to carry it alone.
@@ -179,7 +208,7 @@ describe('M1.3 — sentinel leak sweep', () => {
     }
 
     const logged = capture.text();
-    const responses = bodies.join('\n');
+    const allBodies = responses.map((r) => `${r.body}\n${r.headers}`).join('\n');
     const database = readFileSync(join(ctx.dataDir, 'panel.db'));
 
     // The sweep found something to look at.
@@ -188,7 +217,7 @@ describe('M1.3 — sentinel leak sweep', () => {
 
     for (const sentinel of SENTINELS) {
       expect(logged, `sentinel in stdout/stderr: ${sentinel}`).not.toContain(sentinel);
-      expect(responses, `sentinel in a response: ${sentinel}`).not.toContain(sentinel);
+      expect(allBodies, `sentinel in a response: ${sentinel}`).not.toContain(sentinel);
       // At rest as well as in flight: the database file must hold ciphertext only.
       expect(
         database.includes(Buffer.from(sentinel, 'utf8')),
@@ -196,13 +225,30 @@ describe('M1.3 — sentinel leak sweep', () => {
       ).toBe(false);
     }
 
+    // ── The base path sentinel ──────────────────────────────────────────────
+    expect(logged, 'base path in stdout/stderr').not.toContain(BASE);
+    // The elision happened rather than the lines simply not existing.
+    expect(logged).toContain(`/${BASE_PATH_PLACEHOLDER}/api/foo`);
+    expect(logged).toContain(`/${BASE_PATH_PLACEHOLDER}/deep`);
+
+    for (const { url, body } of responses) {
+      if (BASE_PATH_BODY_EXEMPT.has(url)) continue;
+      expect(body, `base path in the body of ${url}`).not.toContain(BASE);
+    }
+
+    // The exemption is real, not vacuous: those bodies do carry it.
+    const bootstrap = responses.find(
+      (r) => r.url === `/${BASE}/bootstrap.js` && r.body.length > 0,
+    );
+    expect(bootstrap?.body).toContain(BASE);
+
     // The masked form is allowed through — that is what it is for — but it must
     // not amount to the secret.
     expect(logged).toContain(mask(PATTERNED));
     expect(mask(PATTERNED)).not.toContain(PATTERNED.slice(0, -4));
   });
 
-  it('does not put the base path or a sentinel in a WAL or journal sidecar', async () => {
+  it('does not put a sentinel in a WAL or journal sidecar', async () => {
     ctx = await createTestServer({ PANEL_BASE_PATH: BASE });
 
     const repo = new SecretsRepository();

@@ -12,6 +12,12 @@ import { createRedactedLogger } from './plugins/logger-redaction.js';
 
 export interface ServerConfig {
   env: Env;
+  /**
+   * Test seam. When provided, the redacting logger is installed writing here,
+   * even under vitest where logging is otherwise off. Nothing in production
+   * passes this.
+   */
+  logTarget?: { write(chunk: string): void };
 }
 
 function ensureDir(dir: string): void {
@@ -110,12 +116,18 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   const isTestEnv = env.NODE_ENV === 'test' || typeof process.env.VITEST !== 'undefined';
 
   // Second line of defence behind SecretString: every serialised log line is
-  // scrubbed of recognised credential shapes on its way to stdout.
+  // scrubbed of recognised credential shapes on its way to stdout. The same
+  // destination also elides the secret base path, and the pino serialisers
+  // handed in with `basePath` replace Fastify's `req` serialiser so `req.url`
+  // never reaches a log line with the real prefix in it.
   // Typed as FastifyServerOptions so passing a concrete pino instance does not
   // narrow the instance's logger generic away from FastifyBaseLogger.
-  const loggerOptions: FastifyServerOptions = isTestEnv
-    ? { logger: false }
-    : { loggerInstance: createRedactedLogger() };
+  const loggerOptions: FastifyServerOptions =
+    config.logTarget !== undefined
+      ? { loggerInstance: createRedactedLogger({ basePath, target: config.logTarget }) }
+      : isTestEnv
+        ? { logger: false }
+        : { loggerInstance: createRedactedLogger({ basePath }) };
 
   const app = Fastify({
     ...loggerOptions,

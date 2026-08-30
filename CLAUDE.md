@@ -92,6 +92,9 @@ build failure, not a warning.
 See `docs/SECURITY.md` for a detailed mapping of each control to the file(s) that implement it.
 
 ## Secret Base Path
+- The base path is **obscurity, not a security boundary**. Authentication is the
+  boundary. But obscurity is only worth having if it is kept, so it is kept out of
+  `Referer` (via `Referrer-Policy: no-referrer`) and out of logs (below).
 - All routes (API, SPA, assets) are mounted under `/${basePath}`.
 - `GET /healthz` is the only route outside the prefix, returning `{"ok":true}`.
 - Base path is generated on first boot if `PANEL_BASE_PATH` is not set, persisted to `/data/config/instance.json`, and logged once at startup.
@@ -101,6 +104,19 @@ See `docs/SECURITY.md` for a detailed mapping of each control to the file(s) tha
   through unchanged; every other request is collapsed onto one constant sink URL
   so all rejections are byte- and timing-identical. Details and accepted
   trade-offs in `docs/SECURITY.md`.
+- **Never printed into a log line.** This deploys to Railway, where stdout is
+  retained and readable from the dashboard, so pino's default `req` serialiser
+  writing `req.url` verbatim meant every valid request left the prefix in
+  long-lived storage. Two layers in `plugins/logger-redaction.ts` fix it:
+  `createBasePathSerializers()` replaces Fastify's `req`/`res`/`err` serialisers so
+  `/${basePath}/api/foo` is logged as `/<base>/api/foo`, and
+  `createRedactingDestination()` elides all three spellings (raw, JSON-escaped,
+  percent-encoded) from every serialised line — which is what covers response
+  logs, error logs, stacks, and hand-built messages. `<base>` is a fixed literal;
+  no truncated or hashed form of the real value is ever emitted.
+- Still carrying it, by necessity and by design: the first-boot banner (the
+  operator has no other way to learn it), the session cookie's `Path` attribute,
+  and the shell HTML's `<script src>`. All are documented in `docs/SECURITY.md`.
 - The base path reaches the SPA via `GET /${basePath}/bootstrap.js`
   (`application/javascript; charset=utf-8`, `Cache-Control: no-store`), referenced
   from the HTML with a plain `src` attribute. It is **not** an inline script: the
@@ -212,7 +228,8 @@ what the plan calls for.
   layout creation, `db.ts` with a numbered migration runner, migrations 001–006.
 - **M1.2 — perimeter: done.** Secret base path with a constant-time pre-routing
   gate, generic 404, `/healthz`, the full response-header set, the bootstrap
-  script, generic error responses.
+  script, generic error responses. Follow-up `fix(m1.2): elide base path from
+  logs` keeps the prefix out of every log line.
 - **M1.3 — crypto and secret handling: done.** HKDF subkeys, AES-256-GCM with
   row-scoped AAD, `SecretString`, `mask()`, logger redaction, `SecretsRepository`.
 - **M1.4 — authentication: not started.** Password hashing, sessions, TOTP,

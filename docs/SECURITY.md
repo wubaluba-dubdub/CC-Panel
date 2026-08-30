@@ -49,12 +49,78 @@ plugin happened to say.
 
 ## Secret Base Path
 
+### What it is, and what it is not
+
+The base path is **obscurity, not a security boundary**. It keeps the panel out of
+opportunistic scanners and out of anyone's browser history who was handed a link
+by accident. It is not a credential: authentication is the boundary, and every
+route that matters is behind a session. Nothing in this design assumes an attacker
+who learns the base path is thereby locked out of anything.
+
+That said, obscurity is only worth having if it is actually kept. Two places
+previously gave it away for free, and both are now closed:
+
+- **`Referer` on outbound navigation.** Handled by `Referrer-Policy: no-referrer`
+  (see the header table above).
+- **Retained logs.** This deploys to Railway, where stdout is retained and
+  readable from the project dashboard for as long as the deployment exists. Pino's
+  default `req` serialiser writes `req.url` verbatim, so every valid request
+  printed the prefix into a log that outlives the request by weeks. An obscurity
+  measure printed into a retained log is not obscurity, so it is elided — see
+  below.
+
+Deliberately still printed, once: the first-boot banner in `resolveBasePath()`
+prints the generated base path to the console, because the operator has no other
+way to learn it. That is a single line at first boot, not a per-request record,
+and it is suppressed under `NODE_ENV=test`.
+
+Also unavoidably carrying it: the `Path` attribute of the session `Set-Cookie`
+header, and the shell HTML's `<script src>` (see *Client Bootstrap*). Both go only
+to a client that fetched a URL containing the prefix, so neither discloses
+anything the recipient did not already have.
+
+### Resolution and routing
+
 - Resolution and persistence: `resolveBasePath()` in `src/server/app.ts`,
   persisted to `/data/config/instance.json`, printed once at first boot.
 - Route mounting: `src/server/plugins/base-path.ts` registers the whole
   application under `/${basePath}`. `GET /healthz` is the only route outside it.
 - Generic 404: `app.setNotFoundHandler` in `src/server/app.ts` returns a fixed
   `{"error":"Not Found"}` body with no hint that a prefix exists.
+
+### Elision from logs
+
+Two layers, the same shape as the secret-redaction design: a structural control
+plus a catch-all.
+
+**Structural — pino serialisers.** `createBasePathSerializers()` in
+`src/server/plugins/logger-redaction.ts` replaces Fastify's `req`, `res`, and
+`err` serialisers. `req.url` is rewritten so `/<basePath>/api/foo` is logged as
+`/<base>/api/foo`, with `<base>` as a fixed literal — never a truncated or hashed
+form of the real value, which would still be a stable per-install identifier. The
+path *after* the prefix survives, so the log stays useful. Fastify merges an
+instance's own serialisers over its defaults (`fastify/lib/logger-pino.js`), which
+is why setting them on the pino instance is what takes effect.
+
+**Catch-all — the redacting destination.** `createRedactingDestination()` elides
+the base path from every fully-serialised log line on its way to stdout, alongside
+the credential-shape scrub. This is what covers everything a serialiser cannot:
+the `request completed` line, an error message, a stack frame, a nested object
+value, and any string a call site built by hand. Three spellings are matched —
+the raw value, the JSON-escaped body of the value (`PANEL_BASE_PATH` is
+operator-supplied and unvalidated, so it may contain a quote or a backslash), and
+the percent-encoded value.
+
+The match is on the bare base path rather than on `/<basePath>`, so it also
+catches the value where it appears without a leading slash. The accepted cost is
+that a very short operator-supplied `PANEL_BASE_PATH` will also elide unrelated
+text from log lines; that is the right trade for a value that must not be printed,
+and generated base paths are 22 characters.
+
+The scrub covers the **logger**, not stdout in general. A `console.log` or a bare
+`process.stdout.write` bypasses it — which is why the first-boot banner still
+prints, and why the sentinel sweep below is the thing that keeps any other direct
+write from creeping in.
 
 ### Constant-time gate
 
@@ -85,8 +151,10 @@ Two properties are accepted rather than fixed:
 
 Covered by `tests/unit/timing-safe.test.ts` (the gate function against raw
 request targets, including non-normalised `..` paths that `app.inject()` cannot
-express) and `tests/integration/base-path.test.ts` (near-miss prefixes of
-increasing accuracy all producing a byte-identical 404).
+express), `tests/integration/base-path.test.ts` (near-miss prefixes of
+increasing accuracy all producing a byte-identical 404), and
+`tests/integration/base-path-logging.test.ts` (the elider's four spellings, and
+the request, response, error and hand-built log paths through a real server).
 
 ## Client Bootstrap
 
@@ -204,7 +272,8 @@ know which key a secret ended up under. Recognised shapes are `sk-ant-`,
 `github_pat_`, `ghp_`, `gho_`, generic `sk-`, and JWTs (anchored on the `eyJ` that
 a base64url-encoded JWT header always begins with). Each is replaced with its
 prefix plus `[redacted]`, so an operator can tell what kind of credential leaked
-and go fix the call site.
+and go fix the call site. The same destination elides the secret base path — see
+*Secret Base Path → Elision from logs*.
 
 This is the **second** line of defence. It is pattern-based, so it can only catch
 credentials whose shape it recognises — an opaque credential is invisible to it.
@@ -254,26 +323,36 @@ redacting destination.
 
 ### Sentinel sweep
 
-`tests/integration/secret-leak.test.ts` seeds two unique sentinels and asserts
-neither ever appears anywhere:
+`tests/integration/secret-leak.test.ts` seeds three unique sentinels and asserts
+none of them ever appears where it should not:
 
 - One patterned like a real Anthropic key, which both `SecretString` and the
   redaction layer should stop.
 - One entirely opaque, which only `SecretString` can stop — which is the point of
   it being the primary control.
+- **The configured base path.** Rule: it must never appear in stdout or stderr at
+  all, and must not appear in any response body except the two that are served
+  from under the prefix and cannot avoid it — the bootstrap script, whose whole
+  purpose is to carry it, and the shell HTML that references the script by
+  absolute path. Those two exemptions are an explicit allowlist in the test, and
+  the test also asserts the exemption is not vacuous (the bootstrap body really
+  does contain it), so an exemption cannot quietly grow to cover a genuine leak.
+  Response *headers* are excluded from the base-path rule: the session cookie's
+  `Path` attribute necessarily carries it.
 
 It then exercises every route (asserting the route table against a literal, so
 adding a route without extending the sweep fails the test) with both `GET` and
 `HEAD`, feeding the sentinels back in as query, header and cookie input; drives
 every log path, including an object, a nested object, an `Error`, and pino's error
-serialiser; and captures stdout, stderr, and `console` output. It asserts the
-sentinels appear in no captured output, no response body, and **not in
-`panel.db`, `panel.db-wal`, or `panel.db-shm` on disk** — at rest as well as in
-flight.
+serialiser, for both the credential sentinels and the base path; and captures
+stdout, stderr, and `console` output. It asserts the credential sentinels appear
+in no captured output, no response body, and **not in `panel.db`, `panel.db-wal`,
+or `panel.db-shm` on disk** — at rest as well as in flight.
 
 The suite has been mutation-checked: leaking `toString`, leaking `toJSON`, a
 `mask()` that reveals twelve characters instead of four, an AAD that drops the row
-id, a changed header value, and an unexpected extra header each make it fail.
+id, a changed header value, an unexpected extra header, and a base-path elider
+turned into the identity function each make it fail.
 
 ## Not Yet Implemented
 
