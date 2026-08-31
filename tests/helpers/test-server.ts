@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { buildServer } from '../../src/server/app.js';
 import { closeDb } from '../../src/server/db.js';
 import type { Env } from '../../src/server/env.js';
+import type { Clock, Sleep } from '../../src/server/utils/clock.js';
 import type { FastifyInstance } from 'fastify';
 
 export interface TestContext {
@@ -40,7 +41,16 @@ export function createLogCapture(): LogCapture {
   };
 }
 
-export function makeTestEnv(overrides: Partial<Env> = {}): Env {
+/**
+ * Env overrides for a test server.
+ *
+ * A key set explicitly to `undefined` *removes* the default rather than being
+ * ignored, which is how a test exercises "no `PANEL_ADMIN_PASSWORD` in the
+ * environment" or "no `PANEL_BASE_PATH`, so generate one".
+ */
+export type EnvOverrides = { [K in keyof Env]?: Env[K] | undefined };
+
+export function makeTestEnv(overrides: EnvOverrides = {}): Env {
   const dataDir = mkdtempSync(join(tmpdir(), 'panel-test-'));
   const result: Env = {
     PANEL_MASTER_KEY: Buffer.from('a'.repeat(32)).toString('base64'),
@@ -50,26 +60,47 @@ export function makeTestEnv(overrides: Partial<Env> = {}): Env {
     PANEL_DATA_DIR: dataDir,
     PORT: 0,
     NODE_ENV: 'test',
-    ...overrides,
   };
-  // PANEL_BASE_PATH intentionally omitted by default so base-path generation
-  // is exercised. Pass { PANEL_BASE_PATH: 'x' } to pin it.
+
+  const mutable = result as unknown as Record<string, unknown>;
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) delete mutable[key];
+    else mutable[key] = value;
+  }
+
+  // PANEL_BASE_PATH intentionally has no default, so base-path generation is
+  // exercised. Pass { PANEL_BASE_PATH: 'x' } to pin it.
   return result;
 }
 
+export interface CreateTestServerOptions {
+  beforeReady?: (app: FastifyInstance) => void;
+  logTarget?: { write(chunk: string): void };
+  clock?: Clock;
+  sleep?: Sleep;
+  authQueueLimit?: number;
+  /** Reuse an existing data directory, to simulate a restart against the same volume. */
+  dataDir?: string;
+  /** Skip removing the data directory on cleanup, so a restart can reuse it. */
+  keepDataDir?: boolean;
+}
+
 export async function createTestServer(
-  envOverrides: Partial<Env> = {},
-  opts: {
-    beforeReady?: (app: FastifyInstance) => void;
-    logTarget?: { write(chunk: string): void };
-  } = {},
+  envOverrides: EnvOverrides = {},
+  opts: CreateTestServerOptions = {},
 ): Promise<TestContext> {
-  const env = makeTestEnv(envOverrides);
+  const env = makeTestEnv({
+    ...envOverrides,
+    ...(opts.dataDir ? { PANEL_DATA_DIR: opts.dataDir } : {}),
+  });
   const dataDir = env.PANEL_DATA_DIR;
 
   const app = await buildServer({
     env,
     ...(opts.logTarget ? { logTarget: opts.logTarget } : {}),
+    ...(opts.clock ? { clock: opts.clock } : {}),
+    ...(opts.sleep ? { sleep: opts.sleep } : {}),
+    ...(opts.authQueueLimit !== undefined ? { authQueueLimit: opts.authQueueLimit } : {}),
   });
 
   // Routes must be added before the first inject(), which triggers ready().
@@ -80,7 +111,7 @@ export async function createTestServer(
   const cleanup = async (): Promise<void> => {
     await app.close();
     closeDb();
-    rmSync(dataDir, { recursive: true, force: true });
+    if (!opts.keepDataDir) rmSync(dataDir, { recursive: true, force: true });
   };
 
   return { app, dataDir, env, cleanup };

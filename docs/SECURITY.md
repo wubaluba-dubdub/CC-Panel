@@ -340,6 +340,20 @@ none of them ever appears where it should not:
   Response *headers* are excluded from the base-path rule: the session cookie's
   `Path` attribute necessarily carries it.
 
+A second sweep covers the M1.4 credentials, and uses the *real* values the running
+server generated rather than planted sentinels — a sweep against a value we planted
+only proves the plumbing we planted it through. Each has one legitimate exit and no
+others:
+
+| Credential | May appear in | Must not appear in |
+| --- | --- | --- |
+| Session token | the `Set-Cookie` **header** | any response body, any log line, the database (only `sha256` of it) |
+| TOTP secret | the enrolment response body, once | every other body, any log line, the database (only the AES-GCM payload) |
+| Recovery codes | the enrolment-confirmation and regeneration bodies, once | every other body, any log line, the database (only argon2 hashes), in either the displayed or canonical spelling |
+
+The counterpart test asserts those disclosures really do happen, so the exemptions
+cannot pass by the secrets never being produced at all.
+
 It then exercises every route (asserting the route table against a literal, so
 adding a route without extending the sweep fails the test) with both `GET` and
 `HEAD`, feeding the sentinels back in as query, header and cookie input; drives
@@ -354,15 +368,340 @@ The suite has been mutation-checked: leaking `toString`, leaking `toJSON`, a
 id, a changed header value, an unexpected extra header, and a base-path elider
 turned into the identity function each make it fail.
 
-## Not Yet Implemented
+## Authentication
 
-These are listed so the map stays complete; each will be filled in with its
-milestone.
+### No per-IP anything, and no lockout
 
-- Password hashing (argon2id) and the constant-time dummy-hash path — M1.4.
-- Server-side sessions, opaque tokens, SHA-256-at-rest — M1.4.
-- TOTP and recovery codes — M1.4.
-- CSRF double-submit token and strict `Origin` validation — M1.4.
-- Progressive per-IP and per-account lockout — M1.4.
-- Rate limiting and request size limits — M1.4.
-- Audit log — M1.4.
+**Operator decision, and the single most load-bearing design choice in this
+milestone: nothing in the authentication path branches on the client IP address,
+and nothing locks out.**
+
+The reasoning is not that per-IP throttling is useless in general — it is that it
+is worse than useless *here*:
+
+- The operator reaches this panel through tunnels with rotating addresses. Per-IP
+  throttling would inconvenience the one legitimate user on a schedule they cannot
+  predict.
+- An attacker rotates addresses for free. Per-IP throttling would cost them
+  nothing.
+- An account lockout on a single-user panel is a denial-of-service primitive
+  handed to anyone who can reach the login endpoint. There is no second
+  administrator to unlock it.
+- With `PANEL_TRUST_PROXY` on (the Railway default) the address comes from
+  `X-Forwarded-For`, which the client sets. A security decision made from it is a
+  security decision made from attacker-supplied input.
+
+The address is still *recorded*, on the session row and on the audit row, because
+the operator needs to recognise their own sessions. `src/server/utils/client-ip.ts`
+is the single place it is read, and that is enforced rather than asserted:
+`tests/integration/no-ip-decisions.test.ts` scans every file under `src/server`
+for `req.ip`, `req.ips`, `remoteAddress`, `socket.remote*` and `x-forwarded-for`,
+and fails if any file outside that one and the log serialiser touches them. It also
+proves the property behaviourally — four failures from four different addresses
+raise one shared counter, and the fourth is already delayed — and asserts the
+`lockouts` table from migration 005 is gone and `auth_failures` has no `scope` or
+`ip` column to key on.
+
+Migration 005 is left exactly as written; `007_auth.sql` drops the table. A
+migration that has already run somewhere is never edited in place.
+
+### Progressive delay
+
+`src/server/services/auth-delay.service.ts`. One persisted counter of consecutive
+failed authentication attempts, keyed on nothing at all — which is precisely why
+changing address, changing username, or restarting the process does not clear it.
+
+| consecutive failure | target total response time |
+| --- | --- |
+| 1, 2, 3 | none — argon2id already costs ~250 ms, and a typo should not be punished |
+| 4 | 500 ms |
+| 5 → 9 | 1 s, 2 s, 4 s, 8 s, 16 s |
+| 10 and beyond | 30 s (hard cap) |
+
+The cap is not arbitrary. Past roughly half a minute, proxy and client read
+timeouts start firing, and a client that has given up does not stay queued behind
+the single-flight gate — so a longer delay would *reduce* the cost of an attempt.
+
+Four properties, each of which the mechanism is worthless without:
+
+**It is a target total time, not work plus sleep.** `pad()` measures from the
+start of the attempt and sleeps only the remainder. argon2's own variance —
+which differs measurably between the real-hash and dummy-hash paths on a loaded
+machine — is absorbed into the target rather than added on top of it. Observed on
+a real boot: a 16 s target with argon2 taking 188 ms slept 15,812 ms.
+
+**A success is delayed exactly as much as a failure.** The target is priced from
+the counter as it stands on arrival, as though the attempt were about to fail. A
+failure takes the counter to *n+1* and lands on that target; a success resets the
+counter to zero and lands on the *same* target. Price it from the post-outcome
+counter and a correct password becomes the one guess that comes back fast — a
+cleaner oracle than the one the delay was added to close.
+
+**The counter resets only on a complete login.** Password *and* second factor. A
+correct password followed by a wrong code leaves it higher than it started, so the
+expensive half of a guess cannot be spent clearing the cheap half's accumulated
+cost. `AuthDelayService.reset()` has exactly three call sites: the second-factor
+step, enrolment confirmation, and step-up — all of which require both factors.
+
+**Attempts do not overlap.** `src/server/utils/single-flight.ts` admits one
+running attempt plus one queued; a third concurrent attempt gets 429 before any
+credential is looked at, so the rejection reveals nothing. Without this, a
+thousand parallel requests all serve the same delay simultaneously and a thousand
+guesses cost one delay period.
+
+Where the clock starts is a deliberate departure from "measure from request
+receipt", because the two requirements conflict: if a queued attempt's target were
+measured from its arrival, the time it spent waiting for the gate would count
+towards its own target, it would need no padding, and N parallel attempts would
+again cost one period. The clock therefore starts when the attempt acquires the
+gate. The reason "measure from receipt" existed — a total time that absorbs
+argon2's variance — is preserved in full.
+
+The clock and the sleep function are injected (`src/server/utils/clock.ts`), so the
+suite asserts the computed target rather than wall-clock elapsed time. A suite that
+actually slept would take minutes and would be flaky on a loaded machine.
+
+### Password hashing and the username oracle
+
+`src/server/services/user.service.ts`. argon2id, 64 MiB, t=3, p=1 (OWASP's second
+recommended configuration; `p=1` because the container has one meaningful core).
+The parameters are recorded in the encoded hash, so raising them later is a
+re-hash on next login, not a migration.
+
+`verifyCredentials()` performs a **full** argon2 verification on every call. When
+the submitted username does not match, it verifies against a dummy hash computed
+at boot from a discarded random string. Without that, an unknown username returns
+in microseconds and a known one in a quarter of a second, which is a username
+oracle readable over the network with no statistics at all. The dummy path
+increments a counter that `tests/integration/auth.test.ts` asserts on, so the
+branch is *proven* taken rather than inferred from the response looking the same.
+
+The username itself is compared with `timingSafeEqualStrings`, so it cannot be
+walked a character at a time. Its length leaks, which is unavoidable and
+irrelevant — the username is not the secret.
+
+Recovery codes use lighter argon2id parameters (19 MiB, t=2), and that is a
+considered choice: a recovery code is 50 bits of CSPRNG output, so there is no
+dictionary to run and the memory-hard parameter buys nothing, while ten sequential
+64 MiB hashes on the one flow an operator uses when already locked out would cost
+seconds.
+
+### TOTP
+
+`src/server/services/totp.service.ts`. RFC 6238, HMAC-SHA1, 6 digits, 30-second
+step, ±1 step of accepted drift. `tests/unit/totp.test.ts` pins the RFC 6238
+Appendix B SHA-1 reference vectors, which is what catches a wrong period or a
+wrong truncation — a round trip against our own generator would agree with itself
+whatever those were set to.
+
+The secret is 160 bits from `node:crypto.randomBytes`, base32-encoded, stored
+encrypted with the M1.3 module under AAD `users:1:totp_secret`. Enrolment leaves
+`totp_enabled` at 0 until a code generated from the new secret comes back, which is
+what proves the operator's authenticator actually holds it.
+
+**Replay protection** is the piece most often left out and the one that matters
+most here. A code is valid for a whole step plus drift, so without it a code seen
+over a shoulder, in a screenshot, or from a compromised authenticator is replayable
+for up to ninety seconds. The last accepted step number is persisted and every new
+code must come from a **strictly greater** step, so a code accepted once is dead
+even inside its own window — and stays dead across a restart. A rejection that
+would have matched but for the replay bound is audited as `replayed_totp_code`
+rather than as a bad code, because the two mean different things to an operator.
+
+Once `totp_enabled` is 1, a password alone can never produce a usable session.
+
+### Recovery codes
+
+Ten codes, shown exactly once at enrolment, stored only as argon2id hashes.
+Format `ABCDE-FGHJK` from a 32-symbol alphabet (digits 2–9 plus the alphabet
+without `I` and `O`) — 50 bits, with no `0`/`O` or `1`/`I` pair to mistype off a
+printout. Exactly 32 symbols so a byte masked to five bits selects without bias.
+
+`consume()` verifies every unused code without short-circuiting on the match, so
+elapsed time does not reveal how far down the list the code sat. Marking used and
+recounting happen in one transaction, so a crash cannot leave a code spent but
+still counted, or counted but still spendable. Regeneration invalidates the whole
+previous set, used or not.
+
+### Sessions
+
+`src/server/services/session.service.ts`. Opaque 256-bit tokens from
+`randomBytes`, stored as `sha256(token)` — the plaintext exists in the cookie and
+nowhere else, ever. Not JWTs: revocation has to take effect on the next request,
+with no window in which a signed-but-revoked token is still honoured.
+
+`resolve()` scans every session row and compares each stored hash with
+`timingSafeEqual` rather than letting SQLite match on an indexed `=`. There are at
+most a handful of rows for a single user, so the scan is free, and it means no
+comparison against a stored credential anywhere in this codebase short-circuits on
+the first differing byte. The loop deliberately does not break early.
+
+| Property | Value |
+| --- | --- |
+| Cookie name | `__Secure-panel_session` |
+| Attributes | `HttpOnly; Secure; SameSite=Strict; Path=/${basePath}`, **no `Domain`** |
+| Idle timeout | 8 hours, sliding on use, clamped to the absolute deadline |
+| Absolute lifetime | 30 days from the moment both factors were satisfied |
+| Pre-auth lifetime | 5 minutes, not sliding |
+| Step-up window | 5 minutes, on that one session |
+
+`Secure` is set in development too. Browsers treat `http://localhost` as a secure
+context so it costs nothing there, and the `__Secure-` name prefix *requires* it —
+a dropped `Secure` attribute becomes an immediate visible failure rather than a
+silent downgrade. `__Host-` would be stronger still but requires `Path=/`, which
+this cookie cannot have. `Domain` is omitted rather than set to the exact host:
+setting it at all widens the cookie to every subdomain.
+
+The token rotates on every privilege change — the second factor being accepted, and
+a password change. The row keeps its identity across a rotation so the session list
+and revoke-others stay coherent, but the old cookie value stops working the instant
+the rotation returns. Promotion to `full` restarts the absolute lifetime and drops
+any step-up.
+
+A session past either deadline is deleted when it is next presented, not merely
+rejected, so the table does not accumulate dead rows waiting for a sweeper that
+would then be the only thing keeping this honest.
+
+### Two-stage login and the pre-auth session
+
+`POST /api/auth/login` verifies the password and issues a five-minute session at
+`authLevel: 'pre'`. That level can reach the second-factor endpoint, the enrolment
+endpoints, `me`, and logout — and nothing else. Everything else answers 401. It
+exists because first-run enrolment has to be reachable before there is any full
+session to be had, and because handing out a cookie between the two steps of a
+login needs the cookie to be worth almost nothing.
+
+`POST /api/auth/login/totp` accepts a six-digit TOTP code or a recovery code
+(dispatched on shape), rotates the token, promotes the row to `full`, and is the
+only place the failure counter resets.
+
+### Step-up re-authentication
+
+Password **plus** a fresh second-factor code, valid five minutes, on that session
+only. This is what makes a stolen session cookie a bounded loss: it can read the
+panel, but it cannot change the password, read a stored credential, disable the
+second factor, regenerate the base path, or reissue recovery codes.
+
+`requireStepUp` answers 403 rather than 401, and that is not a leak — the caller
+already holds a valid session and already knows whether it has stepped up. A
+password change spends the step-up as well as rotating the token, so one step-up
+does not authorise an unbounded chain of privileged actions.
+
+### CSRF and Origin
+
+`SameSite=Strict` on the session cookie is the primary control: no cross-site
+request of any method carries it. `src/server/plugins/origin-check.ts` is the
+second layer, rejecting a mutating request whose `Origin` is present and does not
+match the request's own origin. It covers what `SameSite` does not — a
+same-site-but-different-origin document (`http` versus `https`, another port) — and
+what it did not always cover, on browsers predating current SameSite semantics.
+
+A request with **no** `Origin` is allowed. Browsers attach `Origin` to every
+cross-origin request and to every same-origin mutating request, so an absent header
+means a non-browser client, which by definition is not being tricked into acting on
+someone else's behalf. Rejecting it would break every command-line client for no
+gain.
+
+**Deferred, and stated plainly:** the double-submit CSRF token this document
+previously listed for M1.4 is **not** implemented. It needs a non-`HttpOnly`
+cookie and a header that a browser client sets, and there is no client until M2.
+It is belt to the two controls above, not a replacement for either. It lands with
+the client.
+
+### Rate limiting and request size
+
+The global per-IP token bucket the original plan called for is **deliberately not
+built** — it is per-IP logic, which is exactly what the operator decision above
+rules out. The progressive delay plus the single-flight gate is the replacement,
+and it is strictly better against an attacker who can rotate addresses.
+
+Request size is bounded and that bound is IP-independent: `bodyLimit` of 64 KiB on
+the Fastify instance, plus per-field maxima in `src/server/utils/zod-schemas.ts` so
+a megabyte of "password" never reaches argon2.
+
+A note on the login password schema: it has a maximum but **no minimum length**.
+Rejecting a short password at the schema would return instantly, skipping both the
+argon2 verification and the delay — a length oracle, and a free attempt. Login
+accepts any non-empty password and lets it fail the hash comparison like any other
+wrong one. The minimum applies where it belongs, on *setting* a password.
+
+### Audit log
+
+`src/server/services/audit.service.ts`. Events: `setup.completed`,
+`two_factor.enrollment_started`, `login.success`, `login.failure`, `totp.failure`,
+`recovery_code.used`, `auth.delay_applied`, `session.created`, `session.revoked`,
+`password.changed`, `stepup.granted`, `two_factor.disabled`,
+`recovery_codes.regenerated`, `secret.revealed`, `secret.changed`,
+`base_path.regenerated`.
+
+A failure row carries the reason **category** only — `bad_credentials`,
+`bad_totp_code`, `bad_recovery_code`, `replayed_totp_code`,
+`two_factor_not_enrolled` — never the attempted username, never the attempted
+password, never the code.
+
+Metadata is validated on the way in, and the validation **throws** rather than
+scrubbing and continuing: a `SecretString`, a non-primitive value, or anything
+matching the credential-shape patterns is rejected outright. Metadata is built from
+fixed shapes by this application's own code, so a violation is a programming error,
+and the append-only audit log is not the place to discover months later that a
+credential has been sitting in it. String values also have the base path elided.
+
+A `secret.revealed` row records the scope and name and neither the value nor its
+masked form — a mask repeated into an append-only log accumulates into a partial
+disclosure.
+
+The paginated query API and the non-authentication event types are M1.5.
+
+### Generic error responses, and a bug this milestone exposed
+
+`app.setErrorHandler` returns nothing but the status's standard reason phrase, so
+a thrown `HttpError(401, 'invalid credentials')` answers `{"error":"Unauthorized"}`.
+
+The handler is registered **before** any `register()` call, and that ordering is
+load-bearing: a child encapsulation context inherits the error handler its parent
+had at the moment the child was created. Registering it after the routes left every
+route under `/api` on Fastify's default handler, which puts the thrown error's
+`message` straight into the response body — so the API was answering with
+"invalid credentials", "step-up re-authentication required", and
+"an authentication attempt is already in flight" as literal strings. Caught by the
+integration suite asserting exact bodies; fixed by moving the registration. It is
+the same class of leak the M1.3 sentinel sweep caught, arriving through a different
+door.
+
+### Tests
+
+- `tests/unit/auth-delay.test.ts` — the schedule, the cap, monotonicity, the
+  arriving-attempt pricing, counter persistence across a restart, and the padding
+  arithmetic including the case where the work already overran the target.
+- `tests/unit/single-flight.test.ts` — strict serialisation in admission order,
+  capacity and the 429, a failing task not wedging the queue, and the N-tasks-cost-
+  N-periods property in miniature.
+- `tests/unit/totp.test.ts` — the RFC 6238 SHA-1 vectors, encryption at rest under
+  the specified AAD, enrolment not enabling until confirmed, re-enrolment clearing
+  the watermark, ±1 accepted and ±2 rejected, replay inside the window, replay
+  across a restart, and malformed codes rejected rather than throwing.
+- `tests/unit/recovery-codes.test.ts` — alphabet bias and confusable pairs, hashes
+  only at rest, exactly-once consumption in any order, formatting tolerance, and
+  regeneration invalidating the previous set.
+- `tests/integration/auth.test.ts` — seeding and non-re-seeding, the fatal boot with
+  no user and no credentials, byte-identical answers for a wrong password and an
+  unknown username with the dummy path proven taken, the pre-auth session reaching
+  nothing, replay and recovery codes over HTTP, the full delay schedule and cap
+  observed through the API, success and failure delayed identically, the counter
+  surviving a restart, N parallel attempts costing N periods, the 429, origin
+  validation, and nothing sensitive at rest or in the audit log.
+- `tests/integration/sessions.test.ts` — every cookie attribute including the
+  absence of `Domain`, rotation on both privilege changes, idle and absolute
+  expiry and the clamp between them, the pre-auth session not sliding, listing,
+  revoke-one, revoke-others, the step-up window and its session scoping, and every
+  step-up-gated route rejected without one.
+- `tests/integration/no-ip-decisions.test.ts` — the static scan, the absent
+  lockout table and file, and the behavioural proof.
+- `tests/integration/secret-leak.test.ts` — the sentinel sweep, extended.
+
+Mutation-checked for this milestone: replacing `hashToken` with the identity
+function, storing the TOTP secret unencrypted, and storing recovery codes
+unhashed each make the sweep fail. The sweep's database check reads `panel.db`,
+`panel.db-wal` **and** `panel.db-shm`, because in WAL mode a write made moments ago
+has not reached the main file — a check against `panel.db` alone passed with token
+hashing removed entirely, which is how that hole was found.

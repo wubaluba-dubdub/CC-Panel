@@ -120,9 +120,6 @@ const basePathPlugin: FastifyPluginAsync<BasePathOptions> = async (fastify, opts
           .header('Cache-Control', 'no-store')
           .send(bootstrapScript);
       });
-
-      // Decorate the scoped app with basePath for use by other plugins
-      scopedApp.decorate('basePath', basePath);
     },
     { prefix: `/${basePath}` }
   );

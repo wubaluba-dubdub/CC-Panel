@@ -30,8 +30,14 @@ describe('Migration runner', () => {
     expect(tables).toContain('sessions');
     expect(tables).toContain('audit_log');
     expect(tables).toContain('secrets');
-    expect(tables).toContain('lockouts');
     expect(tables).toContain('schema_migrations');
+    // M1.4 additions.
+    expect(tables).toContain('auth_failures');
+    expect(tables).toContain('recovery_codes');
+    // 005 created `lockouts`; 007 dropped it. There is no per-IP or per-account
+    // lockout anywhere in this application, and the absence of the table is the
+    // cheapest way to keep one from being reintroduced by habit.
+    expect(tables).not.toContain('lockouts');
   });
 
   it('records applied migrations', () => {
@@ -45,7 +51,7 @@ describe('Migration runner', () => {
       .all()
       .map((r) => (r as { version: number }).version);
 
-    expect(migrations).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(migrations).toEqual([1, 2, 3, 4, 5, 6, 7]);
   });
 
   it('is idempotent — running twice does not fail', () => {
@@ -58,6 +64,6 @@ describe('Migration runner', () => {
     initDb(dbPath);
     const db = getDb();
     const count = db.prepare('SELECT COUNT(*) as c FROM schema_migrations').get() as { c: number };
-    expect(count.c).toBe(6);
+    expect(count.c).toBe(7);
   });
 });

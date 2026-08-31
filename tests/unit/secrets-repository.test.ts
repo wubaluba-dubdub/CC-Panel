@@ -193,6 +193,6 @@ describe('migration 006', () => {
       .prepare('SELECT version FROM schema_migrations ORDER BY version')
       .all() as { version: number }[];
 
-    expect(applied.map((r) => r.version)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(applied.map((r) => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
   });
 });

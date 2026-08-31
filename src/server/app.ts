@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
+import fastifyCookie from '@fastify/cookie';
 import { mkdirSync, existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -9,6 +10,29 @@ import { initCrypto, resetCrypto } from './crypto.js';
 import securityHeadersPlugin from './plugins/security-headers.js';
 import basePathPlugin, { createBasePathGate } from './plugins/base-path.js';
 import { createRedactedLogger } from './plugins/logger-redaction.js';
+import apiRoutes from './routes/api.js';
+import { createAuthRuntime, type AuthRuntime } from './services/auth-runtime.js';
+import { seedAdminUser } from './services/user.service.js';
+import type { Clock, Sleep } from './utils/clock.js';
+
+/**
+ * Global request body limit.
+ *
+ * 64 KiB is enormous for an authentication payload and comfortable for the
+ * `settings.json` editor in Phase 2. The point is that it is bounded at all: the
+ * per-field bounds in `utils/zod-schemas.ts` stop a megabyte reaching argon2, and
+ * this stops a megabyte reaching the JSON parser.
+ */
+export const BODY_LIMIT_BYTES = 64 * 1024;
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    /** The secret prefix everything is mounted under. */
+    basePath: string;
+    /** The authentication services, for tests and for later milestones. */
+    auth: AuthRuntime;
+  }
+}
 
 export interface ServerConfig {
   env: Env;
@@ -18,6 +42,14 @@ export interface ServerConfig {
    * passes this.
    */
   logTarget?: { write(chunk: string): void };
+  /**
+   * Injected time and sleep. The delay schedule tops out at thirty seconds, so
+   * the suite drives both rather than waiting. Production uses the real ones.
+   */
+  clock?: Clock;
+  sleep?: Sleep;
+  /** One running authentication attempt plus this many queued. Default 1. */
+  authQueueLimit?: number;
 }
 
 function ensureDir(dir: string): void {
@@ -132,30 +164,61 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   const app = Fastify({
     ...loggerOptions,
     trustProxy: env.PANEL_TRUST_PROXY,
+    bodyLimit: BODY_LIMIT_BYTES,
     // Constant-time base path gate. Runs before routing, so a wrong prefix never
     // reaches find-my-way and cannot be brute-forced character by character
     // through the router's traversal timing. See plugins/base-path.ts.
     rewriteUrl: createBasePathGate(basePath),
   });
 
-  // ── Security headers (all routes) ──────────────────────────────────────────
-  await app.register(securityHeadersPlugin, { env });
-
-  // ── Health check (outside base path) ───────────────────────────────────────
-  app.get('/healthz', async (_req, reply) => {
-    return reply.send({ ok: true });
+  // ── Authentication services ────────────────────────────────────────────────
+  const runtime = createAuthRuntime({
+    env,
+    basePath,
+    ...(config.clock ? { clock: config.clock } : {}),
+    ...(config.sleep ? { sleep: config.sleep } : {}),
+    ...(config.authQueueLimit !== undefined ? { queueLimit: config.authQueueLimit } : {}),
   });
 
-  // ── Base path scoped routes ────────────────────────────────────────────────
-  await app.register(basePathPlugin, { basePath });
+  app.decorate('basePath', basePath);
+  app.decorate('auth', runtime);
+
+  // Before the server listens, so the first unknown-username login is not
+  // measurably slower than the ones after it.
+  await runtime.users.initDummyHash();
+
+  // First boot seeds the one user; every boot after that only nags about the
+  // password still being in the environment. Throws if there is no user and no
+  // credentials to make one from — a panel nobody can log into is not a
+  // recoverable state, so it fails at boot rather than at first login.
+  await seedAdminUser({
+    users: runtime.users,
+    username: env.PANEL_ADMIN_USERNAME,
+    password: env.PANEL_ADMIN_PASSWORD,
+    warn: (message) => {
+      if (isTestEnv) return;
+      app.log.warn(message);
+    },
+    info: (message) => {
+      if (isTestEnv) return;
+      app.log.info(message);
+    },
+  });
 
   // ── Generic error responses ────────────────────────────────────────────────
-  // Fastify's default handler puts the thrown Error's message straight into the
-  // response body. That is how a credential in an error message — "upstream
-  // rejected sk-ant-…" — reaches the client verbatim; the sentinel sweep in
-  // tests/integration/secret-leak.test.ts caught exactly that. The real error is
-  // logged (through the redacting destination) and the client gets nothing but
-  // the status's standard reason phrase.
+  //
+  // Registered *before* any `register()` call, and that ordering is load-bearing:
+  // a child encapsulation context inherits the error handler its parent had at the
+  // moment the child was created. Setting this after the routes were registered
+  // left every route under `/api` on Fastify's default handler, which puts the
+  // thrown Error's `message` straight into the response body — so `throw new
+  // HttpError(401, 'invalid credentials')` was answering with the string
+  // "invalid credentials" instead of the reason phrase.
+  //
+  // That is the same class of leak the sentinel sweep caught in M1.3: an error
+  // message is how a credential reaches a client verbatim. The real error is
+  // logged (through the redacting destination) and the client gets nothing but the
+  // status's standard reason phrase.
   app.setErrorHandler((err, req, reply) => {
     const declared = (err as { statusCode?: number }).statusCode;
     const status =
@@ -170,7 +233,7 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   });
 
   // ── Generic 404 for anything outside the base path ─────────────────────────
-  // Must be byte-identical for all paths: same status, body, headers, timing
+  // Must be byte-identical for all paths: same status, body, headers, timing.
   const generic404Body = JSON.stringify({ error: 'Not Found' });
   app.setNotFoundHandler((_req, reply) => {
     return reply
@@ -178,6 +241,25 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
       .header('Content-Type', 'application/json')
       .send(generic404Body);
   });
+
+  // ── Security headers (all routes) ──────────────────────────────────────────
+  await app.register(securityHeadersPlugin, { env });
+
+  // ── Cookies ────────────────────────────────────────────────────────────────
+  // Unsigned on purpose: the session token is 256 bits of CSPRNG output looked up
+  // by hash server-side, so a signature would add a key to lose and prove nothing
+  // the lookup does not already prove.
+  await app.register(fastifyCookie);
+
+  // ── Health check (outside base path) ───────────────────────────────────────
+  app.get('/healthz', async (_req, reply) => {
+    return reply.send({ ok: true });
+  });
+
+  // ── Base path scoped routes ────────────────────────────────────────────────
+  await app.register(basePathPlugin, { basePath });
+  await app.register(apiRoutes, { runtime, prefix: `/${basePath}` });
+
 
   // ── Graceful shutdown ──────────────────────────────────────────────────────
   const shutdown = async (): Promise<void> => {

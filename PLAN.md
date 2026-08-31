@@ -28,8 +28,9 @@
 │   │   │   ├── 002_sessions.sql
 │   │   │   ├── 003_audit.sql
 │   │   │   ├── 004_secrets.sql
-│   │   │   ├── 005_lockout.sql
-│   │   │   └── 006_secrets_payload.sql
+│   │   │   ├── 005_lockout.sql   # table dropped again by 007 — there is no lockout
+│   │   │   ├── 006_secrets_payload.sql
+│   │   │   └── 007_auth.sql
 │   │   ├── plugins/
 │   │   │   ├── security-headers.ts
 │   │   │   ├── csrf.ts
@@ -122,7 +123,7 @@
 - `@fastify/websocket`
 - `better-sqlite3`
 - `argon2`
-- `otplib`                    # RFC 6238 TOTP
+- `otplib` ^13                # RFC 6238 TOTP (upgraded from v12 in M1.4)
 - `qrcode`                    # QR for TOTP setup
 - `zod`
 - `pino` + `pino-pretty`      # structured logging with redaction
@@ -155,6 +156,9 @@ versions.
 | `fastify-plugin`    | `^6.0.0`              | `6.0.0`   |
 | `vitest`            | `^4.1.11`             | `4.1.11`  |
 | `vite`              | `^6.0.11`             | `6.4.3`   |
+| `otplib`            | `^13.5.0`             | `13.5.0`  |
+| `argon2`            | `^0.41.0`             | `0.41.1`  |
+| `better-sqlite3`    | `^11.3.0`             | `11.10.0` |
 
 **Why `@fastify/static` had to move off v7:** v7 depends on `fastify-plugin@^4`,
 which encodes a Fastify 4 peer range, so registering it into this project's
@@ -196,12 +200,39 @@ this plan originally called for.
       `plugins/logger-redaction.ts` for the pattern-based second line of defence.
       `services/secrets.service.ts` returning `SecretString`.
       Migration `006_secrets_payload.sql`.
-- [ ] **M1.4 — authentication**
-      argon2id password hashing with the constant-time dummy-hash path; sessions
-      (opaque tokens, SHA-256 at rest); TOTP and recovery codes; CSRF
-      double-submit and strict `Origin` validation; progressive per-IP and
-      per-account lockout; rate limiting and request size limits; the audit log;
-      and the routes that use them.
+- [x] **M1.4 — authentication** (`feat(m1.4): authentication`)
+      API only; no UI. argon2id password hashing with the constant-time
+      dummy-hash path; two-stage login with a limited `pre` session; mandatory
+      TOTP (RFC 6238, replay-protected) and single-use recovery codes; opaque
+      server-side sessions with rotation, sliding idle and absolute deadlines;
+      step-up re-authentication; the audit log; strict `Origin` validation;
+      IP-independent request size limits; migration `007_auth.sql`.
+
+      **Two departures from this plan, both by operator decision, both recorded
+      in `CLAUDE.md` and `docs/SECURITY.md`:**
+
+      1. **No per-IP tracking and no lockout, anywhere.** The plan's "progressive
+         per-IP and per-account lockout" and "global per-IP token bucket" are
+         deliberately not built. The operator connects through tunnels with
+         rotating addresses, so per-IP logic penalises the only legitimate user
+         while an attacker rotates for free, and an account lockout on a
+         single-user panel is a denial-of-service primitive. Replaced by a single
+         global consecutive-failure counter driving a target response time, with
+         single-flight execution so parallel attempts cannot share one delay
+         period. `005_lockout.sql` is left as written and `007_auth.sql` drops the
+         table; `tests/integration/no-ip-decisions.test.ts` enforces the property
+         statically and behaviourally.
+      2. **The double-submit CSRF token is deferred to M2.** It needs a
+         non-`HttpOnly` cookie and a header a browser client sets, and there is no
+         client yet. `SameSite=Strict` plus strict `Origin` validation are in
+         place and are the actual controls.
+
+      `otplib` upgraded 12.0.1 → 13.5.0 as part of this milestone; rationale in
+      `CLAUDE.md`. `lockout.service.ts` from the file tree above does not exist;
+      `auth-delay.service.ts`, `auth-runtime.ts`, `auth-attempt.ts`,
+      `recovery-codes.service.ts`, `instance.service.ts`, `utils/clock.ts`,
+      `utils/single-flight.ts`, `utils/client-ip.ts` and `plugins/origin-check.ts`
+      do.
 
 Note: migration 004 created `secrets` with separate `ciphertext`/`nonce` columns.
 006 replaces them with a single versioned `payload` column, because separate

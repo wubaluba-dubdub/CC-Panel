@@ -3,7 +3,16 @@ import { randomBytes } from 'node:crypto';
 import { format } from 'node:util';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createTestServer, type TestContext } from '../helpers/test-server.js';
+import { createTestServer, createLogCapture, type TestContext } from '../helpers/test-server.js';
+import {
+  createAuthTestServer,
+  enrollAccount,
+  loginFully,
+  postLogin,
+  totpCodeAt,
+  type AuthTestContext,
+} from '../helpers/auth-harness.js';
+import { SESSION_COOKIE } from '../../src/server/services/session.service.js';
 import { SecretString, mask } from '../../src/server/crypto.js';
 import { SecretsRepository } from '../../src/server/services/secrets.service.js';
 import { createRedactedLogger, BASE_PATH_PLACEHOLDER } from '../../src/server/plugins/logger-redaction.js';
@@ -57,7 +66,43 @@ const EXPECTED_ROUTE_TREE =
   `└── /${BASE} (GET, HEAD)\n` +
   '    └── / (GET, HEAD)\n' +
   '        ├── bootstrap.js (GET, HEAD)\n' +
+  '        ├── api/auth/login (POST)\n' +
+  '        │   └── /totp (POST)\n' +
+  '        ├── api/auth/logout (POST)\n' +
+  '        ├── api/auth/totp/enroll (POST)\n' +
+  '        │   └── /verify (POST)\n' +
+  '        ├── api/auth/step-up (POST)\n' +
+  '        ├── api/auth/me (GET, HEAD)\n' +
+  '        ├── api/sessions (GET, HEAD)\n' +
+  '        │   ├── /revoke-others (POST)\n' +
+  '        │   └── /:id (DELETE)\n' +
+  '        ├── api/security/password (POST)\n' +
+  '        ├── api/security/recovery-codes (POST)\n' +
+  '        ├── api/security/2fa/disable (POST)\n' +
+  '        ├── api/security/base-path/regenerate (POST)\n' +
+  '        ├── api/secrets (GET, HEAD, PUT)\n' +
+  '        │   └── /reveal (POST)\n' +
   '        └── __throw (GET, HEAD)\n';
+
+/**
+ * Every byte SQLite has on disk for this database.
+ *
+ * Reading `panel.db` alone is not enough and quietly makes the check vacuous:
+ * the journal is in WAL mode, so a write made moments ago is in `panel.db-wal`
+ * and has not been checkpointed into the main file yet. A sweep that only looked
+ * at `panel.db` passed even with token hashing removed entirely.
+ */
+function databaseBytes(dataDir: string): Buffer {
+  const parts: Buffer[] = [];
+  for (const suffix of ['', '-wal', '-shm']) {
+    try {
+      parts.push(readFileSync(join(dataDir, `panel.db${suffix}`)));
+    } catch {
+      // Sidecar not present; nothing to read.
+    }
+  }
+  return Buffer.concat(parts);
+}
 
 interface Captured {
   stdout: string;
@@ -209,7 +254,7 @@ describe('M1.3 — sentinel leak sweep', () => {
 
     const logged = capture.text();
     const allBodies = responses.map((r) => `${r.body}\n${r.headers}`).join('\n');
-    const database = readFileSync(join(ctx.dataDir, 'panel.db'));
+    const database = databaseBytes(ctx.dataDir);
 
     // The sweep found something to look at.
     expect(logged.length).toBeGreaterThan(0);
@@ -264,5 +309,158 @@ describe('M1.3 — sentinel leak sweep', () => {
       }
       expect(bytes.includes(Buffer.from(PATTERNED, 'utf8')), `panel.db${suffix}`).toBe(false);
     }
+  });
+});
+
+/**
+ * The M1.4 credentials, swept the same way.
+ *
+ * These are not seeded sentinels — they are the real thing the running server
+ * generated, which is stronger: a sweep against a value we planted only proves the
+ * plumbing we planted it through.
+ *
+ * Each has a different legitimate exit. The session token goes out in a
+ * `Set-Cookie` *header* and nowhere else. The TOTP secret goes out in the
+ * enrolment response body, once. The recovery codes go out in the
+ * enrolment-confirmation body, once. Every other body, every log line, and the
+ * database file must be clean of all three.
+ */
+describe('M1.4 — session token, TOTP secret and recovery codes as sentinels', () => {
+  let authCtx: AuthTestContext;
+
+  afterEach(async () => {
+    if (authCtx) await authCtx.cleanup();
+  });
+
+  it('keeps all three out of the logs, out of every other body, and out of the database', async () => {
+    const logs = createLogCapture();
+    authCtx = await createAuthTestServer({}, { logTarget: logs.target });
+
+    const capture = captureOutput();
+    const bodies: { label: string; body: string; headers: string }[] = [];
+    let account: Awaited<ReturnType<typeof enrollAccount>>;
+    let rotatedToken = '';
+
+    try {
+      account = await enrollAccount(authCtx);
+
+      // Every route reachable with a full session, plus a repeat of the login
+      // flow so the token rotation path is exercised too.
+      const probes: { label: string; method: 'GET' | 'POST' | 'PUT'; path: string; payload?: Record<string, unknown> }[] = [
+        { label: 'me', method: 'GET', path: '/api/auth/me' },
+        { label: 'sessions', method: 'GET', path: '/api/sessions' },
+        { label: 'secrets', method: 'GET', path: '/api/secrets' },
+        { label: 'revoke-others', method: 'POST', path: '/api/sessions/revoke-others' },
+      ];
+
+      for (const probe of probes) {
+        const res = await authCtx.app.inject({
+          method: probe.method,
+          url: authCtx.url(probe.path),
+          cookies: { [SESSION_COOKIE]: account.cookie },
+          ...(probe.payload ? { payload: probe.payload } : {}),
+        });
+        bodies.push({ label: probe.label, body: res.body, headers: JSON.stringify(res.headers) });
+      }
+
+      // A failed login and a failed second factor, which are the paths most
+      // likely to echo a submitted credential back.
+      const failed = await postLogin(authCtx, { password: 'wrong-password-here' });
+      bodies.push({ label: 'failed-login', body: failed.body, headers: JSON.stringify(failed.headers) });
+
+      const relogin = await loginFully(authCtx, account.secret);
+      rotatedToken = relogin.cookie;
+      bodies.push({
+        label: 'relogin',
+        body: relogin.response.body,
+        headers: JSON.stringify(relogin.response.headers),
+      });
+
+      const badCode = await authCtx.app.inject({
+        method: 'POST',
+        url: authCtx.url('/api/auth/login/totp'),
+        cookies: { [SESSION_COOKIE]: rotatedToken },
+        payload: { code: account.recoveryCodes[0] },
+      });
+      bodies.push({ label: 'bad-code', body: badCode.body, headers: JSON.stringify(badCode.headers) });
+
+      // And the deliberate log paths: a credential handed to the logger by hand.
+      const log = createRedactedLogger({ basePath: authCtx.app.basePath });
+      log.info({ note: 'a session was created' }, 'session');
+      log.error(new Error('authentication failed'), 'auth');
+    } finally {
+      capture.restore();
+    }
+
+    const sentinels: [string, string][] = [
+      ['session token', account!.cookie],
+      ['rotated session token', rotatedToken],
+      ['TOTP secret', account!.secret],
+      ...account!.recoveryCodes.map((code, i): [string, string] => [`recovery code ${i}`, code]),
+    ];
+
+    const logged = capture.text() + logs.text();
+    const database = databaseBytes(authCtx.dataDir);
+    const allBodies = bodies.map((b) => `${b.label}: ${b.body}`).join('\n');
+
+    // The sweep looked at something.
+    expect(logged.length).toBeGreaterThan(0);
+    expect(bodies.length).toBeGreaterThan(4);
+
+    for (const [label, value] of sentinels) {
+      if (value === '') continue;
+      expect(logged, `${label} in stdout/stderr or a log line`).not.toContain(value);
+      expect(allBodies, `${label} in a response body`).not.toContain(value);
+      expect(
+        database.includes(Buffer.from(value, 'utf8')),
+        `${label} in panel.db`,
+      ).toBe(false);
+      // A recovery code is stored canonicalised, so check that spelling too.
+      const canonical = value.replace(/-/g, '').toUpperCase();
+      expect(database.includes(Buffer.from(canonical, 'utf8')), `${label} canonical in panel.db`).toBe(
+        false,
+      );
+    }
+  });
+
+  it('does disclose the enrolment material exactly once, in the enrolment responses', async () => {
+    // The counterpart to the sweep above: the exemptions are real rather than the
+    // secrets simply never being produced.
+    authCtx = await createAuthTestServer();
+
+    const login = await postLogin(authCtx);
+    const pre = authCtx.cookieFrom(login)!;
+
+    const enroll = await authCtx.app.inject({
+      method: 'POST',
+      url: authCtx.url('/api/auth/totp/enroll'),
+      cookies: { [SESSION_COOKIE]: pre },
+    });
+    const { secret } = enroll.json() as { secret: string };
+    expect(enroll.body).toContain(secret);
+
+    const verify = await authCtx.app.inject({
+      method: 'POST',
+      url: authCtx.url('/api/auth/totp/enroll/verify'),
+      cookies: { [SESSION_COOKIE]: pre },
+      payload: { code: totpCodeAt(secret, authCtx.clock.now()) },
+    });
+    const { recoveryCodes } = verify.json() as { recoveryCodes: string[] };
+    expect(recoveryCodes).toHaveLength(10);
+    expect(verify.body).toContain(recoveryCodes[0]);
+
+    // The session token leaves in a header, never in a body.
+    const token = authCtx.cookieFrom(verify)!;
+    expect(verify.body).not.toContain(token);
+    expect(JSON.stringify(verify.headers)).toContain(token);
+
+    // And asking again never re-discloses them.
+    const me = await authCtx.app.inject({
+      method: 'GET',
+      url: authCtx.url('/api/auth/me'),
+      cookies: { [SESSION_COOKIE]: token },
+    });
+    expect(me.body).not.toContain(secret);
+    for (const code of recoveryCodes) expect(me.body).not.toContain(code);
   });
 });
