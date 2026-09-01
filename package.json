@@ -6,9 +6,8 @@
   "type": "module",
   "scripts": {
     "dev": "node --env-file=.env node_modules/tsx/dist/cli.mjs watch src/server/index.ts",
-    "build": "tsc && vite build",
+    "build": "tsc -p tsconfig.build.json",
     "start": "node dist/server/index.js",
-    "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts,.tsx",
     "test": "node --env-file=.env node_modules/vitest/vitest.mjs run",

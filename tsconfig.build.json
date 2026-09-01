@@ -1,0 +1,17 @@
+{
+  // The shipped build: server only, and only until M2.1 introduces a real client.
+  //
+  // Separate from tsconfig.json for two reasons. The base config includes
+  // `tests/**` and sets `rootDir: "."`, so `tsc` emitted `dist/src/server/…` and
+  // `dist/tests/…` — while the Dockerfile's `CMD` is `node dist/server/index.js`,
+  // a path that never existed. And the shipped image has no business carrying the
+  // test suite. Type-checking still covers tests: `npm run typecheck` uses the
+  // base config.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "tests"]
+}
