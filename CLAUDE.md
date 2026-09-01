@@ -673,8 +673,18 @@ what the plan calls for.
   migration 008's append-only triggers and HMAC hash chain with `verify()`, retention
   writing an `audit.trimmed` checkpoint, and the paginated `GET /api/audit` query API
   behind a full session. **Nothing deferred from M1.5.**
-- **M1.6 — notifications: designed, not built.** The Telegram transport and the
-  Phase 3 "Claude Code finished" hook are specified in `PLAN.md`; no code exists.
+- **M1.6 — notifications: designed, not built.** The Telegram transport is specified
+  in `PLAN.md` under *M1.6 — Notifications (Telegram transport): the design*, and the
+  Phase 3 consumer it exists for under *Phase 3 preview*. No code exists: no
+  `notification_queue`, no migration 009, no transport, no route. Two things in that
+  design reach back into finished modules and should not come as a surprise when it
+  is built: the Telegram credentials want AAD `secrets:telegram:bot_token` /
+  `secrets:telegram:chat_id`, which is a **`v2` payload version for
+  `SecretsRepository`** binding a ciphertext to `(scope, name)` rather than to the row
+  id — strictly stronger given `UNIQUE (scope, name)`, and the reason is written out
+  there; and the Phase 3 hook endpoint is a **second Fastify listener bound to
+  `127.0.0.1`**, outside the base path, bearer-token only, that must never see a
+  session cookie.
 - **M2 — application shell and design system: not started.** No React, no
   Tailwind, no client code at all yet; `/${basePath}/` serves a placeholder page.
 - No terminal or Claude Code integration (Phase 3).
