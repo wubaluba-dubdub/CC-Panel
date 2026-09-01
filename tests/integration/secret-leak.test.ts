@@ -10,9 +10,11 @@ import {
   enrollAccount,
   loginFully,
   postLogin,
+  stepUp,
   totpCodeAt,
   type AuthTestContext,
 } from '../helpers/auth-harness.js';
+import { getDb } from '../../src/server/db.js';
 import { SecretString, mask } from '../../src/server/crypto.js';
 import { SecretsRepository } from '../../src/server/services/secrets.service.js';
 import { createRedactedLogger, BASE_PATH_PLACEHOLDER } from '../../src/server/plugins/logger-redaction.js';
@@ -73,6 +75,8 @@ const EXPECTED_ROUTE_TREE =
   '        │   └── /verify (POST)\n' +
   '        ├── api/auth/step-up (POST)\n' +
   '        ├── api/auth/me (GET, HEAD)\n' +
+  '        ├── api/audit (GET, HEAD)\n' +
+  '        │   └── /verify (GET, HEAD)\n' +
   '        ├── api/sessions (GET, HEAD)\n' +
   '        │   ├── /revoke-others (POST)\n' +
   '        │   └── /:id (DELETE)\n' +
@@ -354,7 +358,7 @@ describe('M1.4 — session token, TOTP secret and recovery codes as sentinels', 
       ];
 
       for (const probe of probes) {
-        const res = await authCtx.app.inject({
+        const res = await authCtx.inject({
           method: probe.method,
           url: authCtx.url(probe.path),
           cookies: { [SESSION_COOKIE]: account.cookie },
@@ -376,7 +380,7 @@ describe('M1.4 — session token, TOTP secret and recovery codes as sentinels', 
         headers: JSON.stringify(relogin.response.headers),
       });
 
-      const badCode = await authCtx.app.inject({
+      const badCode = await authCtx.inject({
         method: 'POST',
         url: authCtx.url('/api/auth/login/totp'),
         cookies: { [SESSION_COOKIE]: rotatedToken },
@@ -431,7 +435,7 @@ describe('M1.4 — session token, TOTP secret and recovery codes as sentinels', 
     const login = await postLogin(authCtx);
     const pre = authCtx.cookieFrom(login)!;
 
-    const enroll = await authCtx.app.inject({
+    const enroll = await authCtx.inject({
       method: 'POST',
       url: authCtx.url('/api/auth/totp/enroll'),
       cookies: { [SESSION_COOKIE]: pre },
@@ -439,7 +443,7 @@ describe('M1.4 — session token, TOTP secret and recovery codes as sentinels', 
     const { secret } = enroll.json() as { secret: string };
     expect(enroll.body).toContain(secret);
 
-    const verify = await authCtx.app.inject({
+    const verify = await authCtx.inject({
       method: 'POST',
       url: authCtx.url('/api/auth/totp/enroll/verify'),
       cookies: { [SESSION_COOKIE]: pre },
@@ -455,12 +459,138 @@ describe('M1.4 — session token, TOTP secret and recovery codes as sentinels', 
     expect(JSON.stringify(verify.headers)).toContain(token);
 
     // And asking again never re-discloses them.
-    const me = await authCtx.app.inject({
+    const me = await authCtx.inject({
       method: 'GET',
       url: authCtx.url('/api/auth/me'),
       cookies: { [SESSION_COOKIE]: token },
     });
     expect(me.body).not.toContain(secret);
     for (const code of recoveryCodes) expect(me.body).not.toContain(code);
+  });
+});
+
+/**
+ * The audit log as a sweep target.
+ *
+ * M1.5 gave the audit log a query API reachable with a full session, which changes
+ * what a row in it costs: anything written there is now readable from inside the
+ * panel, forever, by whoever holds a session. The two routes that legitimately
+ * handle a secret value — writing one and revealing one — both write an audit row,
+ * so they are the two places a credential would most plausibly end up in it.
+ *
+ * `databaseBytes` reads `panel.db`, `panel.db-wal` **and** `panel.db-shm`: the
+ * journal is in WAL mode, so a row written moments ago is in the sidecar and not
+ * in the main file. A sweep against `panel.db` alone is quietly vacuous.
+ */
+describe('M1.5 — the audit log accumulates no credential', () => {
+  let authCtx: AuthTestContext;
+
+  afterEach(async () => {
+    if (authCtx) await authCtx.cleanup();
+  });
+
+  function auditDump(): string {
+    return JSON.stringify(
+      getDb().prepare('SELECT id, event, outcome, meta_json FROM audit_log ORDER BY id').all(),
+    );
+  }
+
+  function auditEventNames(): string[] {
+    return (getDb().prepare('SELECT event FROM audit_log').all() as { event: string }[]).map(
+      (row) => row.event,
+    );
+  }
+
+  it('records writing and revealing a secret without the value, or its mask', async () => {
+    authCtx = await createAuthTestServer();
+    const account = await enrollAccount(authCtx);
+    expect((await stepUp(authCtx, account.cookie, account.secret)).statusCode).toBe(200);
+
+    const put = await authCtx.inject({
+      method: 'PUT',
+      url: authCtx.url('/api/secrets'),
+      cookies: { [SESSION_COOKIE]: account.cookie },
+      payload: { scope: 'global', name: 'anthropic_api_key', value: PATTERNED },
+    });
+    expect(put.statusCode, put.body).toBe(204);
+
+    const reveal = await authCtx.inject({
+      method: 'POST',
+      url: authCtx.url('/api/secrets/reveal'),
+      cookies: { [SESSION_COOKIE]: account.cookie },
+      payload: { scope: 'global', name: 'anthropic_api_key' },
+    });
+    expect(reveal.statusCode, reveal.body).toBe(200);
+    // The exemption is real: reveal is the one route that returns the value, which
+    // is what makes the sweep below a statement about the audit log and not about
+    // the value never having existed.
+    expect(reveal.body).toContain(PATTERNED);
+
+    // Both events were recorded, so the sweep is not passing on an empty table.
+    expect(auditEventNames()).toContain('secret.changed');
+    expect(auditEventNames()).toContain('secret.revealed');
+
+    const dump = auditDump();
+    expect(dump, 'the plaintext value in an audit row').not.toContain(PATTERNED);
+    // Not even the display form. A mask in an append-only log accumulates: enough
+    // masked rows for enough values is a partial disclosure that cannot be undone.
+    expect(dump, 'the masked value in an audit row').not.toContain(mask(PATTERNED));
+    expect(dump).not.toContain(PATTERNED.slice(-4));
+    // The scope and name are there, which is the whole point of the row.
+    expect(dump).toContain('anthropic_api_key');
+
+    // And the plaintext is nowhere in any of the three database files: the value
+    // itself lives in `secrets` under AES-256-GCM, so the only way the bytes appear
+    // is a leak.
+    expect(
+      databaseBytes(authCtx.dataDir).includes(Buffer.from(PATTERNED, 'utf8')),
+      'the plaintext value in panel.db, -wal or -shm',
+    ).toBe(false);
+
+    expect(authCtx.app.auth.audit.verify().ok).toBe(true);
+  });
+
+  it('records a failed login without the username or the password that was tried', async () => {
+    authCtx = await createAuthTestServer();
+    await enrollAccount(authCtx);
+
+    // The opaque sentinel deliberately: it matches no redaction pattern, so nothing
+    // but discipline at the call site keeps it out of the row.
+    const failed = await postLogin(authCtx, { username: OPAQUE, password: OPAQUE });
+    expect(failed.statusCode).toBe(401);
+    const wrongPassword = await postLogin(authCtx, { password: PATTERNED });
+    expect(wrongPassword.statusCode).toBe(401);
+
+    const dump = auditDump();
+    expect(auditEventNames()).toContain('login.failure');
+    for (const sentinel of SENTINELS) {
+      expect(dump, `an attempted credential in an audit row: ${sentinel}`).not.toContain(sentinel);
+    }
+    // The category is what a failure row carries instead.
+    expect(dump).toContain('bad_credentials');
+
+    expect(
+      databaseBytes(authCtx.dataDir).includes(Buffer.from(OPAQUE, 'utf8')),
+      'an attempted credential in panel.db, -wal or -shm',
+    ).toBe(false);
+    expect(authCtx.app.auth.audit.verify().ok).toBe(true);
+  });
+
+  it('keeps the base path out of the audit log as well as out of the logs', async () => {
+    // The audit log is readable through the panel, but it is also a file on a volume
+    // and it is the one table that grows without bound. `<base>` there for the same
+    // reason as in a log line.
+    authCtx = await createAuthTestServer({ PANEL_BASE_PATH: BASE });
+    await enrollAccount(authCtx);
+
+    authCtx.app.auth.audit.write({
+      event: 'session.created',
+      outcome: 'success',
+      meta: { path: `/${BASE}/api/sessions` },
+    });
+
+    const dump = auditDump();
+    expect(dump).not.toContain(BASE);
+    expect(dump).toContain(BASE_PATH_PLACEHOLDER);
   });
 });

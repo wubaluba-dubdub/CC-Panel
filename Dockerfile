@@ -9,7 +9,9 @@ RUN npm ci
 # Copy source
 COPY . .
 
-# Build TypeScript + Vite
+# Compile the server. There is no client bundle yet: `vite build` was in this
+# script a milestone before any client existed and failed with "Could not resolve
+# entry module", which is what tests/integration/build.test.ts now stops.
 RUN npm run build
 
 # Production image

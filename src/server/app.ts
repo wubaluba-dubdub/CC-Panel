@@ -9,6 +9,8 @@ import { initDb, closeDb } from './db.js';
 import { initCrypto, resetCrypto } from './crypto.js';
 import securityHeadersPlugin from './plugins/security-headers.js';
 import basePathPlugin, { createBasePathGate } from './plugins/base-path.js';
+import { createOriginPolicy, requireValidOriginAndHost } from './plugins/origin-check.js';
+import { RateLimiter } from './plugins/rate-limit.js';
 import { createRedactedLogger } from './plugins/logger-redaction.js';
 import apiRoutes from './routes/api.js';
 import { createAuthRuntime, type AuthRuntime } from './services/auth-runtime.js';
@@ -25,6 +27,18 @@ import { resolvePublicOrigin, type PublicOrigin } from './utils/public-origin.js
  * this stops a megabyte reaching the JSON parser.
  */
 export const BODY_LIMIT_BYTES = 64 * 1024;
+
+/**
+ * How long a client may take to *deliver* a request.
+ *
+ * Fastify's `requestTimeout` bounds receipt of the request — headers and body — not
+ * the handler, which is what makes it safe to set here at all: the progressive
+ * delay pads a failed login by up to thirty seconds inside the handler, and a
+ * timeout that counted handler time would cut every slow-path login off at the
+ * knees. Thirty seconds is generous for 64 KiB and closes the slow-loris shape
+ * where a socket dribbles a byte a minute and holds a connection open for free.
+ */
+export const REQUEST_TIMEOUT_MS = 30_000;
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -53,6 +67,15 @@ export interface ServerConfig {
   sleep?: Sleep;
   /** One running authentication attempt plus this many queued. Default 1. */
   authQueueLimit?: number;
+  /**
+   * Token-bucket sizes. Test seam only: the suite shrinks a bucket to three tokens
+   * so it can empty one in three requests instead of sixty. Production uses the
+   * defaults in `plugins/rate-limit.ts`.
+   */
+  rateLimit?: {
+    anonymous?: { capacity: number; refillPerSecond: number };
+    session?: { capacity: number; refillPerSecond: number };
+  };
 }
 
 function ensureDir(dir: string): void {
@@ -174,6 +197,7 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
     ...loggerOptions,
     trustProxy: env.PANEL_TRUST_PROXY,
     bodyLimit: BODY_LIMIT_BYTES,
+    requestTimeout: REQUEST_TIMEOUT_MS,
     // Constant-time base path gate. Runs before routing, so a wrong prefix never
     // reaches find-my-way and cannot be brute-forced character by character
     // through the router's traversal timing. See plugins/base-path.ts.
@@ -193,6 +217,17 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   app.decorate('basePath', basePath);
   app.decorate('auth', runtime);
   app.decorate('publicOrigin', origin);
+
+  // Chain any audit row written before migration 008 existed, so `verify()` fails
+  // only for tampering and not for history. No-op on every boot after the first.
+  runtime.audit.initChain();
+
+  const limiter = new RateLimiter({
+    basePath,
+    clock: runtime.clock,
+    ...(config.rateLimit?.anonymous ? { anonymous: config.rateLimit.anonymous } : {}),
+    ...(config.rateLimit?.session ? { session: config.rateLimit.session } : {}),
+  });
 
   // Before the server listens, so the first unknown-username login is not
   // measurably slower than the ones after it.
@@ -262,14 +297,31 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   // the lookup does not already prove.
   await app.register(fastifyCookie);
 
+  // ── Origin and Host validation (every route; /healthz exempts itself) ──────
+  //
+  // Root scope, and — like the error handler above — *before* the `register()` calls
+  // that create the base-path and API contexts, because a child encapsulation
+  // context only inherits the hooks its parent had when the child was created.
+  // Installed after those, it would cover nothing but the routes declared here.
+  //
+  // *After* the cookie plugin, deliberately. Root `onRequest` hooks run in
+  // registration order, so putting this first meant a rejected request never
+  // reached the cookie parser and `req.cookies` was still null when the API's
+  // `onSend` hook ran on the way out — which turned a clean 403 into a 500-shaped
+  // body carrying an internal error message.
+  //
+  // The expected origin comes from configuration, never from the request's own
+  // `Host` header. See plugins/origin-check.ts.
+  app.addHook('onRequest', requireValidOriginAndHost(createOriginPolicy(env, origin)));
+
   // ── Health check (outside base path) ───────────────────────────────────────
   app.get('/healthz', async (_req, reply) => {
     return reply.send({ ok: true });
   });
 
   // ── Base path scoped routes ────────────────────────────────────────────────
-  await app.register(basePathPlugin, { basePath });
-  await app.register(apiRoutes, { runtime, prefix: `/${basePath}` });
+  await app.register(basePathPlugin, { basePath, rateLimit: limiter.anonymousOnly() });
+  await app.register(apiRoutes, { runtime, limiter, prefix: `/${basePath}` });
 
 
   // ── Graceful shutdown ──────────────────────────────────────────────────────

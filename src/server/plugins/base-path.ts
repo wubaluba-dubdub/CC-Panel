@@ -1,10 +1,19 @@
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyPluginAsync, onRequestAsyncHookHandler } from 'fastify';
 import type { IncomingMessage } from 'node:http';
 import fp from 'fastify-plugin';
 import { firstPathSegment, pathnameOf, timingSafeEqualStrings } from '../utils/timing-safe.js';
 
 interface BasePathOptions {
   basePath: string;
+  /**
+   * Charged against the shared anonymous bucket for the shell and `bootstrap.js`.
+   *
+   * Handed in rather than installed by the caller because Fastify hooks are scoped:
+   * a hook added at the root would also cover the API, where the per-session bucket
+   * is the right one. Passing it here puts it inside this plugin's nested scope and
+   * nowhere else.
+   */
+  rateLimit?: onRequestAsyncHookHandler | undefined;
 }
 
 /**
@@ -107,6 +116,8 @@ const basePathPlugin: FastifyPluginAsync<BasePathOptions> = async (fastify, opts
   // Register a scoped plugin that all app routes will be registered under
   await fastify.register(
     async (scopedApp) => {
+      if (opts.rateLimit !== undefined) scopedApp.addHook('onRequest', opts.rateLimit);
+
       // Placeholder route for Phase 2
       scopedApp.get('/', async (_req, reply) => {
         return reply.type('text/html; charset=utf-8').send(placeholderHtml);

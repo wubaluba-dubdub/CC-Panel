@@ -12,11 +12,14 @@ This document describes the architecture, security model, directory layout, and 
   - Strong authentication (password argon2id + mandatory TOTP 2FA).
   - **Progressive response delay, not lockout. No per-IP logic anywhere** — see below.
   - Server-side sessions with opaque tokens, SHA-256 hashed in DB.
-  - `SameSite=Strict` cookies plus strict `Origin` validation on mutating requests.
+  - `SameSite=Strict` cookies, strict `Origin`/`Host` validation against a
+    *configured* public origin, and a session-bound double-submit CSRF token.
   - Response headers: CSP, HSTS, etc. (see below).
   - Secrets at rest encrypted with AES-256-GCM using HKDF-derived subkeys.
-  - Audit log append-only; metadata validation *throws* on anything secret-shaped.
-  - Request size limits (IP-independent).
+  - Audit log append-only through SQLite triggers *and* a keyed hash chain;
+    metadata validation *throws* on anything secret-shaped.
+  - Rate limiting with no address in it: one shared anonymous token bucket, one per
+    session. Request size and receipt-time limits (IP-independent).
   - Boot-time self-checks refuse to start if critical misconfigurations.
 
 ### No per-IP tracking, no lockout (operator decision)
@@ -126,9 +129,9 @@ build failure, not a warning.
 ### Naming
 - Files: `kebab-case` for configs and scripts, `PascalCase` for React components, `camelCase` for TS/JS.
 - Environment variables: `PANEL_*` prefix.
-- Database tables: `users`, `sessions`, `audit_log`, `secrets`, `auth_failures`,
-  `recovery_codes`. (`lockouts`, from migration 005, is dropped by 007 — there is no
-  lockout.)
+- Database tables: `users`, `sessions`, `audit_log`, `audit_chain`, `secrets`,
+  `auth_failures`, `recovery_codes`. (`lockouts`, from migration 005, is dropped by
+  007 — there is no lockout.)
 
 ### Error Handling
 - Server: Return generic error messages to avoid leaking info (e.g., "Invalid credentials").
@@ -138,6 +141,42 @@ build failure, not a warning.
 - Tailwind CSS v4 with a custom theme (see `src/client/styles/globals.css`).
 - Dark theme first, respecting `prefers-color-scheme`.
 - Animations only on `transform` and `opacity`, respecting `prefers-reduced-motion`.
+
+## Precedents (mistakes that cost a debugging session; do not repeat)
+
+### Fastify child contexts inherit hooks and handlers as of registration time
+`setErrorHandler`, `setNotFoundHandler` and root `addHook('onRequest', …)` must all
+be installed **before** any `register()` call. A child encapsulation context is
+snapshotted from its parent as the child is created, so anything installed afterwards
+covers only routes declared at the root.
+
+This was not theoretical. `setErrorHandler` sat after the route registrations, which
+left every route under `/api` on **Fastify's default error handler** — and that puts
+the thrown `Error`'s `message` straight into the response body. `throw new
+HttpError(401, 'invalid credentials')` was answering with the string
+`invalid credentials`. The M1.3 sentinel sweep passed only because no `/api` routes
+existed yet when it was written; an error message is exactly how a credential reaches
+a client verbatim.
+
+Two corollaries that cost their own debugging sessions:
+
+- **Root hook order is registration order.** The `Origin`/`Host` hook must be
+  installed *after* `@fastify/cookie`. Installed before it, a rejected request never
+  reached the cookie parser, so `req.cookies` was still `null` when the API's `onSend`
+  hook ran on the way out — turning a clean 403 into a 500-shaped body carrying an
+  internal error message.
+- **`req.session` is `undefined`, not `null`, in an `onSend` that follows a root-hook
+  rejection**, because `attachSession` never ran. Read it as `req.session ?? null`.
+  Throwing inside `onSend` is too late for the error handler: Fastify falls back to
+  its default serialiser and puts the internal message in the body.
+
+### An absence assertion against the database must read all three SQLite files
+`panel.db`, `panel.db-wal` **and** `panel.db-shm`. The database runs in WAL mode, so
+a freshly written row lives in `panel.db-wal` and may not be in `panel.db` at all
+until a checkpoint. A sweep that greps only `panel.db` for a plaintext secret passes
+while the secret sits in the WAL. `databaseBytes()` in
+`tests/integration/secret-leak.test.ts` concatenates all three; use it rather than
+re-deriving the path list.
 
 ## Security Details (Mapping to Implementation)
 See `docs/SECURITY.md` for a detailed mapping of each control to the file(s) that implement it.
@@ -195,6 +234,10 @@ document origin with the scheme upgraded), so this should be correct as written 
 but it has not been exercised, because there is no WebSocket yet. **In Phase 3,
 verify in a real browser that the terminal WebSocket connects, and only if it does
 not, add `wss://<self>` to `connect-src`.** Do not add it pre-emptively.
+
+The handshake's *server-side* obligation is separate and not optional: the upgrade
+handler must call `validateRequestOrigin` itself, because a raw HTTP upgrade never
+becomes a Fastify request. See **Origin and Host validation**.
 
 
 ## Authentication Flow
@@ -282,28 +325,163 @@ vectors are pinned in `tests/unit/totp.test.ts`.
 - Idle timeout 8 hours, sliding, clamped to the absolute deadline.
 - Absolute maximum 30 days from the moment both factors were satisfied.
 - Token rotates on every privilege change: second factor accepted, password changed.
-  The row keeps its identity so the list and revoke-others stay coherent.
+  The row keeps its identity so the list and revoke-others stay coherent. The CSRF
+  token is derived from the session token's hash, so it rotates with it and cannot
+  fail to.
+- **A password change revokes every other session.** Not just a rotation of the
+  caller's token — `POST /api/security/password` rotates the caller and then calls
+  `revokeOthers`, answers `{ok: true, revokedSessions: n}`, and writes a
+  `session.revoked` row with `reason: 'password_changed'`. The only reason to change
+  a password is fear that it leaked; rotating one token would leave whoever the
+  operator is afraid of holding a live session that the new password does nothing
+  about. Server-side sessions exist precisely so revocation lands on the very next
+  request.
 - `ip` and `userAgent` are recorded for display only. Nothing decides from them.
 - Endpoints to list, revoke one, and revoke all but the current.
 
 ## CSRF
-`SameSite=Strict` is the primary control. `plugins/origin-check.ts` adds strict
-`Origin` validation on mutating requests — a present-and-mismatched `Origin` is a
-403; an **absent** one is allowed, because browsers always send it on mutating and
-cross-origin requests, so absent means a non-browser client that cannot be tricked.
+Three controls, in order of how much they carry:
 
-**The double-submit CSRF token is deliberately not implemented yet.** It needs a
-non-`HttpOnly` cookie and a header a browser client sets, and there is no client
-until M2. Do not treat this section as complete; it is belt to the two controls
-above, and it lands with the client.
+1. **`SameSite=Strict`** on both cookies. Still the primary control.
+2. **Strict `Origin` validation** on mutating requests and on WebSocket handshakes
+   (`plugins/origin-check.ts`, below). A present-and-mismatched `Origin` is a 403;
+   an **absent** one is allowed, because browsers always send it on mutating and
+   cross-origin requests, so absent means a non-browser client that cannot be
+   tricked.
+3. **Double-submit token, bound to the session.** Implemented in M1.5.
+
+### The double-submit token
+`services/csrf.service.ts` derives it; `plugins/csrf.ts` enforces it.
+
+```
+csrfTokenFor(sessionId, sha256(sessionToken))
+  = HMAC-SHA256( deriveSubkey(KeyPurpose.CsrfToken), `${sessionId}:${hash}` )  → base64url
+```
+
+**Derived, not random, and that is the point.** A bare random value in a cookie
+compared against a header proves only that whoever set the cookie also set the
+header — which anyone who can write a cookie for this host can do (a sibling
+subdomain, an XSS elsewhere on the eTLD+1, a MITM on any http origin sharing the
+domain). This value cannot be produced without the HKDF subkey, and it is bound to
+two things:
+
+- the session **row id**, so a token minted for one session is rejected on another;
+- the SHA-256 hash of that session's **current** token, so it dies the instant the
+  session token rotates — second factor accepted, pre→full promotion, password
+  change — with no rotation bookkeeping of its own to forget. Nothing stores it:
+  the expected value is recomputed from the session cookie the client just
+  presented.
+
+On a mutating request three values must agree: the non-`HttpOnly` `…panel_csrf`
+cookie, the `X-CSRF-Token` header, and the value derived from the session cookie
+presented. Both comparisons are `timingSafeEqual`. The third leg is what a bare
+double-submit cannot do: an attacker who writes both halves matches (1) and (2)
+perfectly and still fails (3).
+
+Exempt: safe methods (`GET`, `HEAD`, `OPTIONS`) and **requests with no live
+session**. Login has no session to bind a token to, and a cookie that resolves to
+nothing is not a session — so the route's own guard answers 401 rather than 403,
+which also avoids telling an attacker their forged cookie was recognised as one.
+`SameSite=Strict` plus the `Origin` check already stop a cross-site login attempt,
+and there is exactly one account, so a forced login gains nothing.
+
+`tests/integration/csrf.test.ts` drives the accepting path and all four rejections
+with **real `curl` against a real listening socket and a real cookie jar**, so the
+pair under test is the one the server wrote and a client echoed back rather than one
+the test computed.
+
+## Origin and Host validation
+`plugins/origin-check.ts`. **The expected origin is never derived from the
+request.** The earlier implementation compared `Origin` against
+`` `${req.protocol}://${req.host}` ``, which is circular: an attacker who makes a
+browser send `Host: evil.example` and `Origin: https://evil.example` satisfies it,
+and every absolute URL built from `Host` points at them.
+
+- The expected value comes from `utils/public-origin.ts`, resolved **exactly once at
+  boot** — `PANEL_PUBLIC_URL`, then `RAILWAY_PUBLIC_DOMAIN` (always https), then a
+  loopback development fallback. The cookie profile reads the same resolved value,
+  so the two can never disagree about what this panel is.
+- **Host** is checked on every method, because Host poisoning is not a mutation-only
+  problem. Outside production any loopback authority is accepted, so `localhost`,
+  `127.0.0.1` and `[::1]` all work without configuration; in production the match is
+  exact.
+- **Origin** is checked on mutating methods *and on a WebSocket handshake*, matched
+  on the `Upgrade` header. A handshake is a `GET`, so a method test alone would wave
+  through the most state-changing request this panel will ever serve.
+- `X-Forwarded-Host` and `X-Forwarded-Proto` are honoured only when
+  `PANEL_TRUST_PROXY` is on, and only their **rightmost** value — the one written by
+  the proxy we are actually talking to. A forwarded request admitting `http` when the
+  public origin is https is a `scheme_downgrade` 403: the TLS terminator was bypassed.
+- A duplicated `Host` or `Origin` header (an array, in Node's parse) is refused
+  rather than guessed at.
+- `/healthz` is exempt from the Host check. Docker's `HEALTHCHECK` reaches the
+  container as `localhost:3000` while production's public host is something else, and
+  a health probe that 403s is a container-kill primitive.
+- The rejection reason (`host_missing`, `host_mismatch`, `origin_mismatch`,
+  `scheme_downgrade`) goes to the log only. The client gets the bare reason phrase.
+
+**Phase 3: the terminal WebSocket handler must call `validateRequestOrigin` itself.**
+The validator takes an `OriginCheckInput` shaped like a raw `http.IncomingMessage`
+rather than a `FastifyRequest` precisely so it can. A socket upgrade that arrives as
+a raw HTTP upgrade never becomes a Fastify request, so no `onRequest` hook will ever
+see it — and it is cookie-authenticated and state-changing.
 
 ## Rate limiting
-There is **no** global per-IP token bucket, and there must not be one — see the
-no-per-IP decision above. Request size is bounded IP-independently: `bodyLimit` 64
-KiB plus per-field maxima in `utils/zod-schemas.ts`. The login password schema has
-a maximum but deliberately **no minimum**: rejecting a short password at the schema
-would answer instantly, skipping both argon2 and the delay, which is a length
-oracle and a free attempt.
+There is **no per-IP bucket and no lockout** — see the no-per-IP decision above.
+What M1.5 added is two buckets keyed on things an attacker cannot rotate:
+`utils/token-bucket.ts` holds the mechanism, `plugins/rate-limit.ts` the policy.
+
+- **Anonymous bucket** — one bucket shared by every request with no live session.
+  60 tokens, one back per second. Shared on purpose: the only unauthenticated
+  surface is the shell, `bootstrap.js` and the login endpoints, so a legitimate
+  client draws on it a handful of times and then stops touching it.
+- **Session bucket** — one per session **row id**, 120 tokens, four back per second,
+  so a busy operator is never throttled by a stranger and vice versa. Keyed on the
+  *resolved* id, never on a raw cookie: keying on unvalidated input would let an
+  attacker mint a fresh bucket per request by sending fresh garbage.
+- Over the limit is `429` with `Retry-After` in whole seconds, never `0` (a
+  `Retry-After: 0` invites a retry guaranteed to fail).
+- Buckets that have refilled to capacity are evicted — a full bucket is
+  indistinguishable from a new one — so the map is bounded by sessions active within
+  one refill window, not by sessions that have ever existed.
+- The clock is injected, so the suite proves a refill without waiting for one.
+
+Two buckets rather than one, because either alone is a hole: a single global bucket
+lets an anonymous flood empty it and 429 the operator, and a purely per-session
+bucket cannot limit unauthenticated traffic at all.
+
+### How this interacts with the progressive delay
+**The four `runAuthAttempt` endpoints are exempt from the buckets**
+(`DELAYED_AUTH_PATHS`: login, login/totp, totp/enroll/verify, step-up). They already
+carry two stronger controls — the progressive delay, which prices guess *n* at up to
+thirty seconds, and single-flight execution, which admits one attempt at a time and
+429s the third concurrent one. Stacking a bucket on top would add nothing an
+attacker notices, because the delay is the binding constraint long before sixty
+tokens run out, while handing anyone who can reach the login endpoint a way to spend
+the operator's own tokens. `tests/integration/rate-limit.test.ts` asserts that set
+has exactly as many members as `routes/auth.ts` has `runAuthAttempt(` call sites, so
+a fifth delayed endpoint cannot be added without listing it or failing the suite.
+
+Also exempt: `/healthz` (a 429'd health probe is a container-kill primitive) and the
+out-of-prefix 404 sink, because the base-path gate collapses every miss onto one
+constant URL before routing and the handler writes a fixed body — a bucket there
+would let a stranger's scan spend tokens that matter.
+
+### Size and time bounds
+Both in `app.ts`, both IP-independent:
+
+- `bodyLimit` = 64 KiB (`BODY_LIMIT_BYTES`), plus per-field maxima in
+  `utils/zod-schemas.ts`. The field bounds stop a megabyte reaching argon2; the body
+  limit stops one reaching the JSON parser.
+- `requestTimeout` = 30 s (`REQUEST_TIMEOUT_MS`). This bounds *receipt* of the
+  request, not the handler, which is what makes it safe to set at all: the
+  progressive delay pads a failed login by up to thirty seconds inside the handler,
+  and a timeout counting handler time would cut every slow-path login off at the
+  knees. It closes the slow-loris shape where a socket dribbles a byte a minute.
+
+The login password schema has a maximum but deliberately **no minimum**: rejecting a
+short password at the schema would answer instantly, skipping both argon2 and the
+delay, which is a length oracle and a free attempt.
 
 ## Secrets at Rest
 Implemented in `src/server/crypto.ts`; full rationale in `docs/SECURITY.md`.
@@ -330,21 +508,101 @@ Implemented in `src/server/crypto.ts`; full rationale in `docs/SECURITY.md`.
   body, which is a direct path from an error message to the client.
 
 ## Audit Log
-- Table: `audit_log` (id, ts, event, actor_ip, user_agent, outcome, meta_json).
+- Table: `audit_log` (id, ts, event, actor_ip, user_agent, outcome, meta_json,
+  **prev_hash, row_hash**). `audit_chain` (one row) holds the anchor and the
+  retention floor.
 - Events (`AuditEvent` in `services/audit.service.ts`): `setup.completed`,
   `two_factor.enrollment_started`, `login.success`, `login.failure`,
   `totp.failure`, `recovery_code.used`, `auth.delay_applied`, `session.created`,
   `session.revoked`, `password.changed`, `stepup.granted`, `two_factor.disabled`,
   `recovery_codes.regenerated`, `secret.revealed`, `secret.changed`,
-  `base_path.regenerated`. No lockout event, because there is no lockout.
+  `base_path.regenerated`, `audit.trimmed`. No lockout event, because there is no
+  lockout.
 - A failure row carries the reason **category** only (`bad_credentials`,
-  `bad_totp_code`, `bad_recovery_code`, `replayed_totp_code`,
+  `bad_totp_code`, `bad_recovery_code`, `replayed_totp_code`, `no_pending_login`,
   `two_factor_not_enrolled`) — never the attempted username, password, or code.
-- `meta_json` validation **throws** on a `SecretString`, a non-primitive value, or
-  anything matching the credential-shape patterns. Metadata is built from fixed
-  shapes by our own code, so a violation is a bug and should fail loudly rather
-  than be scrubbed into an append-only log. Base paths in string values are elided.
-- The paginated query API and non-auth event types are M1.5.
+- `meta_json` validation **throws** (`AuditMetaError`) on a `SecretString`, a
+  non-primitive value, or anything matching the credential-shape patterns in
+  `plugins/logger-redaction.ts`. Metadata is built from fixed shapes by our own code,
+  so a violation is a bug and should fail loudly rather than be scrubbed into an
+  append-only log. Base paths in string values are elided to `<base>`.
+
+### Append-only: two independent controls (migration 008)
+Neither one is sufficient, which is why there are two.
+
+1. **SQLite triggers.** `audit_log_no_update` and `audit_log_no_delete` are
+   `BEFORE UPDATE` / `BEFORE DELETE` triggers that `RAISE(ABORT, 'audit_log is
+   append-only: … rejected')`. They stop *this process* — a bug, a well-meaning
+   migration, a compromised route — from touching a row at all. They do not stop
+   someone with the database file, who can simply `DROP TRIGGER`.
+   INSERT is deliberately **not** policed: a row must land before its hash can cover
+   its own `AUTOINCREMENT` id. A hand-written row is caught by the chain instead, as
+   `unchained_row`.
+2. **A keyed hash chain.** Each row stores `prev_hash` (the previous row's `row_hash`)
+   and `row_hash` = `HMAC-SHA256(deriveSubkey(KeyPurpose.AuditChain), prev_hash ‖ "\n"
+   ‖ canonicalRow)`. An **HMAC, not a bare digest**, precisely because the attacker
+   who can drop the triggers can also recompute a plain SHA-256. Without
+   `PANEL_MASTER_KEY` they cannot produce a hash that verifies.
+
+`canonicalRow()` is a JSON **array** — `[id, ts, event, actor_ip, user_agent,
+outcome, meta_json]` — so nothing depends on key order. It includes `id`, which is
+what makes a content swap between two rows detectable, and the **stored**
+`meta_json` string rather than a re-serialisation, so a whitespace-only edit inside
+it is a break.
+
+`audit_chain.anchor_hash` lives *outside* the chain and is the only thing that
+detects truncation of the newest rows: delete the head and every surviving row still
+chains to its predecessor, but nothing matches the anchor.
+
+### verify()
+`AuditService.verify(): AuditVerification` walks the whole table and reports the
+**first** break, one of `unchained_row | prev_hash_mismatch | row_hash_mismatch |
+head_mismatch`, with `brokenAtId` (the newest row for a head mismatch, `null` for an
+empty table), `checked`, `head`, `floor` and `floorId`. Exposed as
+`GET /api/audit/verify`, deliberately uncached: a cached answer to "has my audit log
+been tampered with" is worth nothing.
+
+### Retention
+`maxRows` (default 20 000, floored at 2) with a `trimCheckEvery` counter keeping
+`COUNT(*)` off the hot path. Trimming:
+
+- appends an `audit.trimmed` **checkpoint row** — `{removed, throughId, cap}` —
+  *inside the same transaction, before* the delete, so the checkpoint's id sits above
+  the range it describes. A gap in the ids with no checkpoint above it is evidence of
+  tampering rather than housekeeping.
+- moves `floor_hash`/`floor_id` to anchor the surviving rows, so a legitimate trim
+  still verifies while a hand-deletion above the floor fails as `prev_hash_mismatch`.
+- flips `trim_unlocked` to let the delete through the trigger (which is gated on
+  `(SELECT trim_unlocked FROM audit_chain WHERE id = 1) = 0`) and relocks it in a
+  `finally`, so a rollback leaves it locked.
+
+`services/auth-runtime.ts` constructs the service as
+`new AuditService({ db, clock, basePath })` — **`maxRows`/`trimCheckEvery` are not
+threaded through**, so a test exercising retention must build an `AuditService`
+directly against `getDb()`.
+
+### The query API
+`GET /api/audit` — cursor-based, newest first, `limit` 1–200, `cursor` = "id strictly
+below this", `event` repeatable, inclusive ISO-8601 `from`/`to` (`ts` sorts
+lexicographically). `GET /api/audit/verify` as above.
+
+Both require a **full** session, not a `pre` one: the log records every
+authentication attempt, every session and every secret access — exactly what an
+attacker holding a stolen password would want to read first. Neither is step-up
+gated, because reading is not a state change and demanding a fresh code to look at
+the log pushes the operator toward not looking. There is no write route and never
+will be.
+
+### Never a secret, and never the base path
+`tests/integration/secret-leak.test.ts` now sweeps the audit log too, because the
+query API changed what a row costs: a row is readable from inside the panel, forever.
+It asserts that writing and revealing a secret records the *reference*
+(`anthropic_api_key`) and neither the value, nor `mask(value)`, nor its last four
+characters; that a failed login records `bad_credentials` and neither the attempted
+username nor the attempted password; and that a base path in a metadata string is
+stored as `<base>`. Like every absence assertion against SQLite, it reads
+`panel.db`, `panel.db-wal` **and** `panel.db-shm` — see the WAL note under
+Precedents.
 
 ## CSP (Content Security Policy)
 ```
@@ -400,6 +658,23 @@ what the plan calls for.
   lockout; `Origin` validation; request size limits; the audit log; migration 007.
   otplib upgraded to v13. **Deferred with reason: the double-submit CSRF token
   (needs the M2 client) and the paginated audit query API (M1.5).**
+- **M1.5 — request integrity and audit: done (API only, no UI).** Part 0: two cookie
+  profiles chosen from the effective public origin, so the `__Secure-` prefix no
+  longer makes login impossible in Chrome over loopback http, with
+  `plugins/cookies.ts` the only file allowed to name a cookie. Part 1: a server-only
+  build (`tsc -p tsconfig.build.json`; `vite.config.ts` deleted, since there is no
+  client to bundle) with `tests/integration/build.test.ts` as the regression check.
+  Part 2: a password change now revokes every other session; the session-bound
+  double-submit CSRF token, tested end to end with `curl`; `Origin`/`Host` validation
+  against a configured public origin resolved in one place, with the WebSocket
+  handshake covered and `X-Forwarded-*` honoured only from the immediate hop under
+  `PANEL_TRUST_PROXY`; IP-free rate limiting (one shared anonymous bucket, one per
+  session, `Retry-After`, auth paths exempt) plus `bodyLimit` and `requestTimeout`;
+  migration 008's append-only triggers and HMAC hash chain with `verify()`, retention
+  writing an `audit.trimmed` checkpoint, and the paginated `GET /api/audit` query API
+  behind a full session. **Nothing deferred from M1.5.**
+- **M1.6 — notifications: designed, not built.** The Telegram transport and the
+  Phase 3 "Claude Code finished" hook are specified in `PLAN.md`; no code exists.
 - **M2 — application shell and design system: not started.** No React, no
   Tailwind, no client code at all yet; `/${basePath}/` serves a placeholder page.
 - No terminal or Claude Code integration (Phase 3).

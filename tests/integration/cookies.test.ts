@@ -255,7 +255,7 @@ describe('M1.5 part 0 — the cookie profile follows the public origin', () => {
       // refresh the browser would still hold the Max-Age issued at enrolment and
       // drop the cookie two hours early.
       authCtx.clock.advance(2 * 60 * 60 * 1000);
-      const me = await authCtx.app.inject({
+      const me = await authCtx.inject({
         method: 'GET',
         url: authCtx.url('/api/auth/me'),
         cookies: { [SESSION_COOKIE]: account.cookie },
@@ -276,7 +276,7 @@ describe('M1.5 part 0 — the cookie profile follows the public origin', () => {
       const tenMinutes = isoFrom(authCtx.clock.now() + 10 * 60 * 1000);
       getDb().prepare('UPDATE sessions SET absolute_expires_at = ?').run(tenMinutes);
 
-      const me = await authCtx.app.inject({
+      const me = await authCtx.inject({
         method: 'GET',
         url: authCtx.url('/api/auth/me'),
         cookies: { [SESSION_COOKIE]: account.cookie },
@@ -295,7 +295,7 @@ describe('M1.5 part 0 — the cookie profile follows the public origin', () => {
       // The refresh hook runs on every authenticated response, including the ones
       // that deliberately replaced the cookie. Exactly one Set-Cookie for the
       // session name, and it is the new token.
-      const logout = await authCtx.app.inject({
+      const logout = await authCtx.inject({
         method: 'POST',
         url: authCtx.url('/api/auth/logout'),
         cookies: { [SESSION_COOKIE]: account.cookie },

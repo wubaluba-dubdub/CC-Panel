@@ -79,6 +79,14 @@ export interface CreateTestServerOptions {
   clock?: Clock;
   sleep?: Sleep;
   authQueueLimit?: number;
+  /**
+   * Token-bucket sizes. Shrinking a bucket to a handful of tokens is what lets the
+   * rate-limit suite empty one in three requests instead of sixty.
+   */
+  rateLimit?: {
+    anonymous?: { capacity: number; refillPerSecond: number };
+    session?: { capacity: number; refillPerSecond: number };
+  };
   /** Reuse an existing data directory, to simulate a restart against the same volume. */
   dataDir?: string;
   /** Skip removing the data directory on cleanup, so a restart can reuse it. */
@@ -101,6 +109,7 @@ export async function createTestServer(
     ...(opts.clock ? { clock: opts.clock } : {}),
     ...(opts.sleep ? { sleep: opts.sleep } : {}),
     ...(opts.authQueueLimit !== undefined ? { authQueueLimit: opts.authQueueLimit } : {}),
+    ...(opts.rateLimit ? { rateLimit: opts.rateLimit } : {}),
   });
 
   // Routes must be added before the first inject(), which triggers ready().

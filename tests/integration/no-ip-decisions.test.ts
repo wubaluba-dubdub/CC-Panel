@@ -131,7 +131,7 @@ describe('M1.4 — nothing decides anything from the client IP', () => {
       const addresses = ['203.0.113.1', '198.51.100.7', '192.0.2.44', '203.0.113.99'];
       for (const [index, address] of addresses.entries()) {
         ctx.sleep.reset();
-        const res = await ctx.app.inject({
+        const res = await ctx.inject({
           method: 'POST',
           url: ctx.url('/api/auth/login'),
           headers: { 'x-forwarded-for': address },
@@ -148,7 +148,7 @@ describe('M1.4 — nothing decides anything from the client IP', () => {
 
       // A fifth, from yet another address, is priced from the shared counter.
       ctx.sleep.reset();
-      await ctx.app.inject({
+      await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/auth/login'),
         headers: { 'x-forwarded-for': '2001:db8::1' },
@@ -165,7 +165,7 @@ describe('M1.4 — nothing decides anything from the client IP', () => {
 
       // The correct credentials still work from the same address, just slowly.
       ctx.clock.advance(TOTP_PERIOD_SECONDS * 1000);
-      const login = await ctx.app.inject({
+      const login = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/auth/login'),
         headers: { 'x-forwarded-for': '203.0.113.1' },
@@ -173,7 +173,7 @@ describe('M1.4 — nothing decides anything from the client IP', () => {
       });
       expect(login.statusCode).toBe(200);
 
-      const totp = await ctx.app.inject({
+      const totp = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/auth/login/totp'),
         headers: { 'x-forwarded-for': '203.0.113.1' },
@@ -191,7 +191,7 @@ describe('M1.4 — nothing decides anything from the client IP', () => {
 
       const bodies = new Set<string>();
       for (const address of ['203.0.113.1', '', 'not-an-address', '2001:db8::1', '127.0.0.1']) {
-        const res = await ctx.app.inject({
+        const res = await ctx.inject({
           method: 'POST',
           url: ctx.url('/api/auth/login'),
           ...(address === '' ? {} : { headers: { 'x-forwarded-for': address } }),
@@ -208,7 +208,7 @@ describe('M1.4 — nothing decides anything from the client IP', () => {
       const account = await enrollAccount(ctx);
 
       ctx.clock.advance(TOTP_PERIOD_SECONDS * 1000);
-      const login = await ctx.app.inject({
+      const login = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/auth/login'),
         headers: { 'x-forwarded-for': '203.0.113.77', 'user-agent': 'curl/8.0' },
@@ -216,7 +216,7 @@ describe('M1.4 — nothing decides anything from the client IP', () => {
       });
       expect(login.statusCode).toBe(200);
 
-      const list = await ctx.app.inject({
+      const list = await ctx.inject({
         method: 'GET',
         url: ctx.url('/api/sessions'),
         cookies: { [SESSION_COOKIE]: account.cookie },

@@ -94,7 +94,7 @@ describe('M1.4 — authentication', () => {
       const account = await enrollAccount(ctx);
       expect(account.recoveryCodes).toHaveLength(10);
 
-      const me = await ctx.app.inject({
+      const me = await ctx.inject({
         method: 'GET',
         url: ctx.url('/api/auth/me'),
         cookies: { [SESSION_COOKIE]: account.cookie },
@@ -197,7 +197,7 @@ describe('M1.4 — authentication', () => {
         ['POST', '/api/security/base-path/regenerate'],
         ['POST', '/api/secrets/reveal'],
       ] as const) {
-        const res = await ctx.app.inject({
+        const res = await ctx.inject({
           method,
           url: ctx.url(path),
           cookies: { [SESSION_COOKIE]: pre! },
@@ -228,7 +228,7 @@ describe('M1.4 — authentication', () => {
 
       // Only the second factor promotes one.
       ctx.clock.advance(TOTP_PERIOD_SECONDS * 1000);
-      const totp = await ctx.app.inject({
+      const totp = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/auth/login/totp'),
         cookies: { [SESSION_COOKIE]: pre },
@@ -246,7 +246,7 @@ describe('M1.4 — authentication', () => {
       const login = await postLogin(ctx);
       const pre = ctx.cookieFrom(login)!;
 
-      const bad = await ctx.app.inject({
+      const bad = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/auth/login/totp'),
         cookies: { [SESSION_COOKIE]: pre },
@@ -256,7 +256,7 @@ describe('M1.4 — authentication', () => {
       expect(bad.body).toBe('{"error":"Unauthorized"}');
 
       // Still pre, so still useless.
-      const sessions = await ctx.app.inject({
+      const sessions = await ctx.inject({
         method: 'GET',
         url: ctx.url('/api/sessions'),
         cookies: { [SESSION_COOKIE]: pre },
@@ -278,7 +278,7 @@ describe('M1.4 — authentication', () => {
 
       const first = await postLogin(ctx);
       const firstPre = ctx.cookieFrom(first)!;
-      const ok = await ctx.app.inject({
+      const ok = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/auth/login/totp'),
         cookies: { [SESSION_COOKIE]: firstPre },
@@ -290,7 +290,7 @@ describe('M1.4 — authentication', () => {
       ctx.clock.advance(5_000);
       const second = await postLogin(ctx);
       const secondPre = ctx.cookieFrom(second)!;
-      const replay = await ctx.app.inject({
+      const replay = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/auth/login/totp'),
         cookies: { [SESSION_COOKIE]: secondPre },
@@ -311,7 +311,7 @@ describe('M1.4 — authentication', () => {
 
       ctx.clock.advance(TOTP_PERIOD_SECONDS * 1000);
       const first = await postLogin(ctx);
-      const usedOnce = await ctx.app.inject({
+      const usedOnce = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/auth/login/totp'),
         cookies: { [SESSION_COOKIE]: ctx.cookieFrom(first)! },
@@ -325,7 +325,7 @@ describe('M1.4 — authentication', () => {
       });
 
       const second = await postLogin(ctx);
-      const usedTwice = await ctx.app.inject({
+      const usedTwice = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/auth/login/totp'),
         cookies: { [SESSION_COOKIE]: ctx.cookieFrom(second)! },
@@ -401,7 +401,7 @@ describe('M1.4 — authentication', () => {
       // protection is doing its job.
       ctx.clock.advance(2 * TOTP_PERIOD_SECONDS * 1000);
       ctx.sleep.reset();
-      const totp = await ctx.app.inject({
+      const totp = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/auth/login/totp'),
         cookies: { [SESSION_COOKIE]: ctx.cookieFrom(succeeding)! },
@@ -440,7 +440,7 @@ describe('M1.4 — authentication', () => {
       const login = await postLogin(ctx);
       expect(failureCount(), 'a correct password neither counts nor resets').toBe(1);
 
-      await ctx.app.inject({
+      await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/auth/login/totp'),
         cookies: { [SESSION_COOKIE]: ctx.cookieFrom(login)! },
@@ -463,7 +463,7 @@ describe('M1.4 — authentication', () => {
       const login = await postLogin(ctx);
       const pre = ctx.cookieFrom(login)!;
 
-      const bad = await ctx.app.inject({
+      const bad = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/auth/login/totp'),
         cookies: { [SESSION_COOKIE]: pre },
@@ -547,7 +547,7 @@ describe('M1.4 — authentication', () => {
     it('rejects a mutating request from another origin', async () => {
       ctx = await createAuthTestServer();
 
-      const res = await ctx.app.inject({
+      const res = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/auth/login'),
         headers: { origin: 'https://evil.example' },
@@ -560,7 +560,7 @@ describe('M1.4 — authentication', () => {
     it('accepts a matching origin, and a request with none at all', async () => {
       ctx = await createAuthTestServer();
 
-      const matching = await ctx.app.inject({
+      const matching = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/auth/login'),
         headers: { origin: 'http://localhost:80', host: 'localhost:80' },

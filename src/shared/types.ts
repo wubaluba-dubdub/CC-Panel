@@ -106,6 +106,43 @@ export interface BasePathRegeneratedResponse {
   restartRequired: true;
 }
 
+export interface PasswordChangedResponse {
+  ok: true;
+  /**
+   * Other sessions killed by the change. Reported so the operator can see that a
+   * session they did not recognise is now gone.
+   */
+  revokedSessions: number;
+}
+
+export interface AuditEntryView {
+  id: number;
+  ts: string;
+  event: string;
+  outcome: string;
+  /** Display only, recorded from attacker-controllable input. Never decided from. */
+  actorIp: string | null;
+  userAgent: string | null;
+  meta: Record<string, string | number | boolean | null>;
+}
+
+export interface AuditPageResponse {
+  entries: AuditEntryView[];
+  /** Pass back as `?cursor=` for the next page. Null on the last page. */
+  nextCursor: number | null;
+}
+
+/** The tamper-evidence report. `ok: false` means the chain does not verify. */
+export interface AuditVerifyResponse {
+  ok: boolean;
+  checked: number;
+  head: string;
+  floor: string;
+  floorId: number;
+  reason: string | null;
+  brokenAtId: number | null;
+}
+
 /** Every error response in the application. Nothing else is ever returned. */
 export interface ErrorResponse {
   error: string;

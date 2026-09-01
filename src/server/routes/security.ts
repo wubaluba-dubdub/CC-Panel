@@ -8,6 +8,7 @@ import { changePasswordBody, parseBody, secretRefBody, secretSetBody } from '../
 import { WeakPasswordError } from '../utils/weak-passwords.js';
 import type {
   BasePathRegeneratedResponse,
+  PasswordChangedResponse,
   RecoveryCodesResponse,
   SecretMetadataResponse,
   SecretRevealResponse,
@@ -58,14 +59,34 @@ export default async function securityRoutes(
     runtime.sessions.clearStepUp(session.id);
     runtime.cookies.setSession(reply, token, rotated);
 
+    // Every other session dies, immediately.
+    //
+    // The only reason to change a password is fear that it leaked, and rotating
+    // just this one leaves whoever the operator is afraid of holding a live session
+    // that the new password does nothing about. Server-side sessions are the whole
+    // point: revocation takes effect on the very next request, with no window.
+    // The operator's own device is the one that keeps working — it is the one that
+    // just proved both factors and stepped up.
+    const revoked = runtime.sessions.revokeOthers(rotated.id);
+
     runtime.audit.write({
       event: AuditEvent.PasswordChanged,
       outcome: 'success',
       ...who(req),
-      meta: { sessionId: session.id },
+      meta: { sessionId: session.id, revokedSessions: revoked },
     });
 
-    return { ok: true };
+    if (revoked > 0) {
+      runtime.audit.write({
+        event: AuditEvent.SessionRevoked,
+        outcome: 'success',
+        ...who(req),
+        meta: { keptSessionId: rotated.id, revoked, reason: 'password_changed' },
+      });
+    }
+
+    const response: PasswordChangedResponse = { ok: true, revokedSessions: revoked };
+    return response;
   });
 
   // ── Recovery codes ─────────────────────────────────────────────────────────

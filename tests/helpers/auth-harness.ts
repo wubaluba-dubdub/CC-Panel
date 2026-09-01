@@ -1,9 +1,11 @@
 import { generateSync } from 'otplib';
 import type { FastifyInstance } from 'fastify';
-import type { Response as InjectResponse } from 'light-my-request';
+import type { InjectOptions, Response as InjectResponse } from 'light-my-request';
 import { createTestServer, type CreateTestServerOptions, type EnvOverrides, type TestContext } from './test-server.js';
 import { FakeClock, createRecordedSleep, type RecordedSleep } from './fake-clock.js';
 import { COOKIE_BASE_NAMES } from '../../src/server/plugins/cookies.js';
+import { CSRF_HEADER, csrfTokenFor } from '../../src/server/services/csrf.service.js';
+import { hashToken } from '../../src/server/services/session.service.js';
 
 /**
  * The session cookie's name in the test environment.
@@ -42,12 +44,50 @@ export function totpCodeAt(secret: string, epochMs: number, stepOffset = 0): str
   });
 }
 
+export const CSRF_COOKIE = COOKIE_BASE_NAMES.csrf;
+
+/**
+ * Adds the CSRF pair to an injected request that carries a session cookie.
+ *
+ * A real client gets both cookies from the same `Set-Cookie` batch and echoes the
+ * token in a header, so a test that only sends the session cookie is testing a
+ * client that does not exist. This is what `ctx.inject` does automatically; a test
+ * that wants to prove a *rejection* calls `ctx.app.inject` directly and controls
+ * the pair by hand.
+ *
+ * The session id comes from resolving the token, which is what the server does too
+ * — there is no way to compute the token from the cookie alone, by design.
+ */
+function withCsrf(app: FastifyInstance, opts: InjectOptions): InjectOptions {
+  const cookies = (opts as { cookies?: Record<string, string> }).cookies;
+  const token = cookies?.[SESSION_COOKIE];
+  if (token === undefined) return opts;
+
+  const session = app.auth.sessions.resolve(token);
+  if (session === null) return opts;
+
+  const csrf = csrfTokenFor(session.id, hashToken(token));
+  return {
+    ...opts,
+    cookies: { ...cookies, [CSRF_COOKIE]: csrf },
+    headers: {
+      ...((opts.headers as Record<string, string> | undefined) ?? {}),
+      [CSRF_HEADER]: csrf,
+    },
+  };
+}
+
 export interface AuthTestContext extends TestContext {
   clock: FakeClock;
   sleep: RecordedSleep;
   /** `/${basePath}` — every API path is built from this. */
   prefix: string;
   url(path: string): string;
+  /**
+   * `app.inject` with the CSRF pair filled in from the session cookie, which is what
+   * a browser client would send. Use `ctx.app.inject` to test the raw wire.
+   */
+  inject(opts: InjectOptions): Promise<InjectResponse>;
   /** The session cookie value from a response, or null when none was set. */
   cookieFrom(res: InjectResponse): string | null;
   /** Whether the response cleared the session cookie. */
@@ -80,6 +120,7 @@ export async function createAuthTestServer(
     sleep,
     prefix,
     url: (path: string) => `${prefix}${path}`,
+    inject: (opts: InjectOptions) => ctx.app.inject(withCsrf(ctx.app, opts)),
     cookieFrom: (res) => {
       const cookie = res.cookies.find((c) => c.name === SESSION_COOKIE);
       if (cookie === undefined || cookie.value === '') return null;
@@ -88,6 +129,11 @@ export async function createAuthTestServer(
     clearedCookie: (res) =>
       res.cookies.some((c) => c.name === SESSION_COOKIE && c.value === ''),
   };
+}
+
+/** `ctx.inject`, reachable from the helpers below before `ctx` is fully built. */
+function injectWithCsrf(ctx: AuthTestContext, opts: InjectOptions): Promise<InjectResponse> {
+  return ctx.app.inject(withCsrf(ctx.app, opts));
 }
 
 export interface EnrolledAccount {
@@ -126,7 +172,7 @@ export async function enrollAccount(ctx: AuthTestContext): Promise<EnrolledAccou
   const preCookie = ctx.cookieFrom(login);
   if (preCookie === null) throw new Error('password step set no cookie');
 
-  const enroll = await ctx.app.inject({
+  const enroll = await injectWithCsrf(ctx, {
     method: 'POST',
     url: ctx.url('/api/auth/totp/enroll'),
     cookies: { [SESSION_COOKIE]: preCookie },
@@ -136,7 +182,7 @@ export async function enrollAccount(ctx: AuthTestContext): Promise<EnrolledAccou
   }
   const { secret } = enroll.json() as { secret: string };
 
-  const verify = await ctx.app.inject({
+  const verify = await injectWithCsrf(ctx, {
     method: 'POST',
     url: ctx.url('/api/auth/totp/enroll/verify'),
     cookies: { [SESSION_COOKIE]: preCookie },
@@ -170,7 +216,7 @@ export async function loginFully(
   const preCookie = ctx.cookieFrom(login);
   if (preCookie === null) throw new Error(`password step set no cookie: ${login.body}`);
 
-  const response = await ctx.app.inject({
+  const response = await injectWithCsrf(ctx, {
     method: 'POST',
     url: ctx.url('/api/auth/login/totp'),
     cookies: { [SESSION_COOKIE]: preCookie },
@@ -189,7 +235,7 @@ export async function stepUp(
   secret: string,
 ): Promise<InjectResponse> {
   ctx.clock.advance(TOTP_PERIOD_SECONDS * 1000);
-  return ctx.app.inject({
+  return injectWithCsrf(ctx, {
     method: 'POST',
     url: ctx.url('/api/auth/step-up'),
     cookies: { [SESSION_COOKIE]: cookie },
@@ -210,11 +256,13 @@ export function authed(
   cookie: string,
 ): (req: AuthedRequest) => Promise<InjectResponse> {
   return (req) =>
-    app.inject({
-      method: req.method,
-      url: req.url,
-      cookies: { [SESSION_COOKIE]: cookie },
-      ...(req.payload !== undefined ? { payload: req.payload } : {}),
-      ...(req.headers !== undefined ? { headers: req.headers } : {}),
-    });
+    app.inject(
+      withCsrf(app, {
+        method: req.method,
+        url: req.url,
+        cookies: { [SESSION_COOKIE]: cookie },
+        ...(req.payload !== undefined ? { payload: req.payload } : {}),
+        ...(req.headers !== undefined ? { headers: req.headers } : {}),
+      }),
+    );
 }

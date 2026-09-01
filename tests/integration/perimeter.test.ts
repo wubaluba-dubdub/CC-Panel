@@ -52,6 +52,15 @@ const SECURITY_HEADERS = {
  */
 const PROD_URL = 'https://panel.example';
 
+/**
+ * A production server answers as its configured public origin and nothing else, so
+ * an injected request has to say so. `light-my-request` defaults to
+ * `Host: localhost:80`, which M1.5's Host check correctly rejects with a 403 — and
+ * a 403 carries the security headers too, so the assertions below would have gone
+ * on passing while measuring the wrong response.
+ */
+const PROD_HOST = { host: 'panel.example' };
+
 describe('M1.2 — Perimeter', () => {
   let ctx: TestContext;
 
@@ -141,8 +150,9 @@ describe('M1.2 — Perimeter', () => {
     it('adds Strict-Transport-Security in production and nothing else', async () => {
       const prod = await createTestServer({ PANEL_BASE_PATH: 'x', NODE_ENV: 'production', PANEL_PUBLIC_URL: PROD_URL });
 
-      const res = await prod.app.inject({ method: 'GET', url: '/x/' });
+      const res = await prod.app.inject({ method: 'GET', url: '/x/', headers: PROD_HOST });
 
+      expect(res.statusCode).toBe(200);
       expect(stableHeaders(res.headers)).toEqual({
         'content-type': 'text/html; charset=utf-8',
         ...SECURITY_HEADERS,
@@ -157,7 +167,8 @@ describe('M1.2 — Perimeter', () => {
       const prod = await createTestServer({ PANEL_BASE_PATH: 'x', NODE_ENV: 'production', PANEL_PUBLIC_URL: PROD_URL });
 
       const resDev = await dev.app.inject({ method: 'GET', url: '/x/' });
-      const resProd = await prod.app.inject({ method: 'GET', url: '/x/' });
+      const resProd = await prod.app.inject({ method: 'GET', url: '/x/', headers: PROD_HOST });
+      expect(resProd.statusCode).toBe(200);
 
       expect(resDev.headers['content-security-policy']).toBe(CSP);
       expect(resProd.headers['content-security-policy']).toBe(CSP);

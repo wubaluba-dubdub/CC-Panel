@@ -84,7 +84,7 @@ describe('M1.4 — sessions and step-up', () => {
       ctx = await createAuthTestServer();
       const account = await enrollAccount(ctx);
 
-      const logout = await ctx.app.inject({
+      const logout = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/auth/logout'),
         cookies: { [SESSION_COOKIE]: account.cookie },
@@ -93,7 +93,7 @@ describe('M1.4 — sessions and step-up', () => {
       expect(ctx.clearedCookie(logout)).toBe(true);
 
       // And the token is dead, not merely forgotten by the browser.
-      const after = await ctx.app.inject({
+      const after = await ctx.inject({
         method: 'GET',
         url: ctx.url('/api/auth/me'),
         cookies: { [SESSION_COOKIE]: account.cookie },
@@ -119,7 +119,7 @@ describe('M1.4 — sessions and step-up', () => {
 
       expect(full).not.toBe(pre);
       // The old value stops working immediately.
-      const withOld = await ctx.app.inject({
+      const withOld = await ctx.inject({
         method: 'GET',
         url: ctx.url('/api/auth/me'),
         cookies: { [SESSION_COOKIE]: pre },
@@ -133,7 +133,7 @@ describe('M1.4 — sessions and step-up', () => {
       const granted = await stepUp(ctx, account.cookie, account.secret);
       expect(granted.statusCode).toBe(200);
 
-      const changed = await ctx.app.inject({
+      const changed = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/security/password'),
         cookies: { [SESSION_COOKIE]: account.cookie },
@@ -146,14 +146,14 @@ describe('M1.4 — sessions and step-up', () => {
       expect(rotated).not.toBe(account.cookie);
 
       // The pre-change cookie is dead; the rotated one works.
-      const withOld = await ctx.app.inject({
+      const withOld = await ctx.inject({
         method: 'GET',
         url: ctx.url('/api/auth/me'),
         cookies: { [SESSION_COOKIE]: account.cookie },
       });
       expect(withOld.statusCode).toBe(401);
 
-      const withNew = await ctx.app.inject({
+      const withNew = await ctx.inject({
         method: 'GET',
         url: ctx.url('/api/auth/me'),
         cookies: { [SESSION_COOKIE]: rotated! },
@@ -170,13 +170,53 @@ describe('M1.4 — sessions and step-up', () => {
       expect(auditEvents()).toContain(AuditEvent.PasswordChanged);
     });
 
+    it('kills every other session when the password changes', async () => {
+      // The only reason to change a password is fear that it leaked. Rotating just
+      // the caller's token would leave whoever the operator is afraid of holding a
+      // live session that the new password does nothing about — and server-side
+      // sessions exist precisely so revocation lands on the very next request.
+      ctx = await createAuthTestServer();
+      const account = await enrollAccount(ctx);
+      const second = await loginFully(ctx, account.secret);
+      const third = await loginFully(ctx, account.secret);
+      expect(sessionCount()).toBe(3);
+
+      // The device that changes the password is the one that just proved both
+      // factors and stepped up, so it is the one that survives.
+      expect((await stepUp(ctx, account.cookie, account.secret)).statusCode).toBe(200);
+      const changed = await ctx.inject({
+        method: 'POST',
+        url: ctx.url('/api/security/password'),
+        cookies: { [SESSION_COOKIE]: account.cookie },
+        payload: { newPassword: 'a-password-nobody-else-has-seen' },
+      });
+      expect(changed.statusCode, changed.body).toBe(200);
+      expect(changed.json()).toEqual({ ok: true, revokedSessions: 2 });
+
+      const rotated = ctx.cookieFrom(changed)!;
+      expect((await me(ctx, rotated)).statusCode).toBe(200);
+
+      // Immediately, on the next request — not at expiry.
+      expect((await me(ctx, second.cookie)).statusCode).toBe(401);
+      expect((await me(ctx, third.cookie)).statusCode).toBe(401);
+      expect((await me(ctx, account.cookie)).statusCode).toBe(401);
+      expect(sessionCount()).toBe(1);
+
+      // And the revocation is in the record, with its reason.
+      const revocation = auditRows().find(
+        (row) => row.event === AuditEvent.SessionRevoked && row.meta.reason === 'password_changed',
+      );
+      expect(revocation, 'a session.revoked row explains why').toBeDefined();
+      expect(revocation!.meta.revoked).toBe(2);
+    });
+
     it('keeps the session row, so the list and revoke-others stay coherent', async () => {
       ctx = await createAuthTestServer();
       const account = await enrollAccount(ctx);
       const before = sessionIds();
 
       await stepUp(ctx, account.cookie, account.secret);
-      await ctx.app.inject({
+      await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/security/password'),
         cookies: { [SESSION_COOKIE]: account.cookie },
@@ -278,7 +318,7 @@ describe('M1.4 — sessions and step-up', () => {
       const account = await enrollAccount(ctx);
       const second = await loginFully(ctx, account.secret);
 
-      const list = await ctx.app.inject({
+      const list = await ctx.inject({
         method: 'GET',
         url: ctx.url('/api/sessions'),
         cookies: { [SESSION_COOKIE]: second.cookie },
@@ -304,7 +344,7 @@ describe('M1.4 — sessions and step-up', () => {
       const third = await loginFully(ctx, account.secret);
       expect(sessionCount()).toBe(3);
 
-      const revoked = await ctx.app.inject({
+      const revoked = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/sessions/revoke-others'),
         cookies: { [SESSION_COOKIE]: third.cookie },
@@ -328,7 +368,7 @@ describe('M1.4 — sessions and step-up', () => {
       const ids = sessionIds();
       const other = ids.find((id) => id !== currentSessionId(second.cookie))!;
 
-      const dropOther = await ctx.app.inject({
+      const dropOther = await ctx.inject({
         method: 'DELETE',
         url: ctx.url(`/api/sessions/${other}`),
         cookies: { [SESSION_COOKIE]: second.cookie },
@@ -339,7 +379,7 @@ describe('M1.4 — sessions and step-up', () => {
 
       // Revoking your own behaves as a logout, cookie cleared.
       const own = currentSessionId(second.cookie);
-      const dropSelf = await ctx.app.inject({
+      const dropSelf = await ctx.inject({
         method: 'DELETE',
         url: ctx.url(`/api/sessions/${own}`),
         cookies: { [SESSION_COOKIE]: second.cookie },
@@ -353,7 +393,7 @@ describe('M1.4 — sessions and step-up', () => {
       ctx = await createAuthTestServer();
       const account = await enrollAccount(ctx);
 
-      const res = await ctx.app.inject({
+      const res = await ctx.inject({
         method: 'DELETE',
         url: ctx.url('/api/sessions/99999'),
         cookies: { [SESSION_COOKIE]: account.cookie },
@@ -393,7 +433,7 @@ describe('M1.4 — sessions and step-up', () => {
       const account = await enrollAccount(ctx);
       const before = failureCount();
 
-      const wrongPassword = await ctx.app.inject({
+      const wrongPassword = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/auth/step-up'),
         cookies: { [SESSION_COOKIE]: account.cookie },
@@ -403,7 +443,7 @@ describe('M1.4 — sessions and step-up', () => {
       expect(failureCount()).toBe(before + 1);
 
       ctx.clock.advance(TOTP_PERIOD_SECONDS * 1000);
-      const wrongCode = await ctx.app.inject({
+      const wrongCode = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/auth/step-up'),
         cookies: { [SESSION_COOKIE]: account.cookie },
@@ -446,7 +486,7 @@ describe('M1.4 — sessions and step-up', () => {
       ];
 
       for (const [path, payload] of attempts) {
-        const res = await ctx.app.inject({
+        const res = await ctx.inject({
           method: 'POST',
           url: ctx.url(path),
           cookies: { [SESSION_COOKIE]: account.cookie },
@@ -456,7 +496,7 @@ describe('M1.4 — sessions and step-up', () => {
         expect(res.body, path).toBe('{"error":"Forbidden"}');
       }
 
-      const put = await ctx.app.inject({
+      const put = await ctx.inject({
         method: 'PUT',
         url: ctx.url('/api/secrets'),
         cookies: { [SESSION_COOKIE]: account.cookie },
@@ -473,7 +513,7 @@ describe('M1.4 — sessions and step-up', () => {
       const account = await enrollAccount(ctx);
       await stepUp(ctx, account.cookie, account.secret);
 
-      const weak = await ctx.app.inject({
+      const weak = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/security/password'),
         cookies: { [SESSION_COOKIE]: account.cookie },
@@ -481,7 +521,7 @@ describe('M1.4 — sessions and step-up', () => {
       });
       expect(weak.statusCode).toBe(400);
 
-      const known = await ctx.app.inject({
+      const known = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/security/password'),
         cookies: { [SESSION_COOKIE]: account.cookie },
@@ -496,7 +536,7 @@ describe('M1.4 — sessions and step-up', () => {
       const account = await enrollAccount(ctx);
       await stepUp(ctx, account.cookie, account.secret);
 
-      const res = await ctx.app.inject({
+      const res = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/security/recovery-codes'),
         cookies: { [SESSION_COOKIE]: account.cookie },
@@ -509,7 +549,7 @@ describe('M1.4 — sessions and step-up', () => {
       // An old code no longer logs anyone in.
       ctx.clock.advance(TOTP_PERIOD_SECONDS * 1000);
       const login = await postLogin(ctx);
-      const withOld = await ctx.app.inject({
+      const withOld = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/auth/login/totp'),
         cookies: { [SESSION_COOKIE]: ctx.cookieFrom(login)! },
@@ -523,7 +563,7 @@ describe('M1.4 — sessions and step-up', () => {
       const account = await enrollAccount(ctx);
       await stepUp(ctx, account.cookie, account.secret);
 
-      const res = await ctx.app.inject({
+      const res = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/security/2fa/disable'),
         cookies: { [SESSION_COOKIE]: account.cookie },
@@ -550,7 +590,7 @@ describe('M1.4 — sessions and step-up', () => {
 
       // The harness pins PANEL_BASE_PATH, which wins on every boot, so writing a
       // new instance.json would be silently ignored.
-      const refused = await ctx.app.inject({
+      const refused = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/security/base-path/regenerate'),
         cookies: { [SESSION_COOKIE]: pinned.cookie },
@@ -566,7 +606,7 @@ describe('M1.4 — sessions and step-up', () => {
       const account = await enrollAccount(ctx);
       await stepUp(ctx, account.cookie, account.secret);
 
-      const done = await ctx.app.inject({
+      const done = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/security/base-path/regenerate'),
         cookies: { [SESSION_COOKIE]: account.cookie },
@@ -577,7 +617,7 @@ describe('M1.4 — sessions and step-up', () => {
       expect(body.basePath).toHaveLength(22);
       expect(body.basePath).not.toBe(generated);
       // The running server still answers on the old prefix, as advertised.
-      expect((await ctx.app.inject({ method: 'GET', url: `/${generated}/` })).statusCode).toBe(200);
+      expect((await ctx.inject({ method: 'GET', url: `/${generated}/` })).statusCode).toBe(200);
       expect(auditEvents()).toContain(AuditEvent.BasePathRegenerated);
     });
 
@@ -586,7 +626,7 @@ describe('M1.4 — sessions and step-up', () => {
       const account = await enrollAccount(ctx);
       await stepUp(ctx, account.cookie, account.secret);
 
-      const set = await ctx.app.inject({
+      const set = await ctx.inject({
         method: 'PUT',
         url: ctx.url('/api/secrets'),
         cookies: { [SESSION_COOKIE]: account.cookie },
@@ -594,7 +634,7 @@ describe('M1.4 — sessions and step-up', () => {
       });
       expect(set.statusCode).toBe(204);
 
-      const list = await ctx.app.inject({
+      const list = await ctx.inject({
         method: 'GET',
         url: ctx.url('/api/secrets'),
         cookies: { [SESSION_COOKIE]: account.cookie },
@@ -603,7 +643,7 @@ describe('M1.4 — sessions and step-up', () => {
       // Metadata only — the value is not in the listing.
       expect(list.body).not.toContain('opaque-value-12345');
 
-      const reveal = await ctx.app.inject({
+      const reveal = await ctx.inject({
         method: 'POST',
         url: ctx.url('/api/secrets/reveal'),
         cookies: { [SESSION_COOKIE]: account.cookie },
@@ -628,7 +668,7 @@ describe('M1.4 — sessions and step-up', () => {
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function me(ctx: AuthTestContext, cookie: string): Promise<InjectResponse> {
-  return ctx.app.inject({
+  return ctx.inject({
     method: 'GET',
     url: ctx.url('/api/auth/me'),
     cookies: { [SESSION_COOKIE]: cookie },
@@ -636,7 +676,7 @@ function me(ctx: AuthTestContext, cookie: string): Promise<InjectResponse> {
 }
 
 async function recoveryCodesStatus(ctx: AuthTestContext, cookie: string): Promise<number> {
-  const res = await ctx.app.inject({
+  const res = await ctx.inject({
     method: 'POST',
     url: ctx.url('/api/security/recovery-codes'),
     cookies: { [SESSION_COOKIE]: cookie },
@@ -649,7 +689,7 @@ function loginFullyFrom(
   preCookie: string,
   secret: string,
 ): Promise<InjectResponse> {
-  return ctx.app.inject({
+  return ctx.inject({
     method: 'POST',
     url: ctx.url('/api/auth/login/totp'),
     cookies: { [SESSION_COOKIE]: preCookie },

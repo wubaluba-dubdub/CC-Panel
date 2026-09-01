@@ -63,6 +63,25 @@ export const sessionIdParams = z.object({
 });
 
 /**
+ * The audit query string.
+ *
+ * `limit` is capped here as well as in the service: the query is authenticated, but
+ * "authenticated" is not "allowed to ask for a million rows in one response".
+ * `event` accepts either one value or several (`?event=a&event=b`, which Fastify
+ * hands over as an array), and the ISO bounds are validated as datetimes so a
+ * malformed `from` is a 400 rather than a silently empty page.
+ */
+export const auditQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  cursor: z.coerce.number().int().positive().optional(),
+  event: z
+    .union([z.string().min(1).max(64), z.array(z.string().min(1).max(64)).max(32)])
+    .optional(),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+});
+
+/**
  * Parses a request body, turning a schema failure into a 400 with the standard
  * reason phrase and nothing else.
  *

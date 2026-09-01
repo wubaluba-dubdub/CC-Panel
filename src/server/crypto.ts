@@ -32,6 +32,16 @@ export const KeyPurpose = {
   SecretColumn: 'cc-panel/v1/secret-column',
   /** HMAC key for the double-submit CSRF token. Signing, not encryption. */
   CsrfToken: 'cc-panel/v1/csrf-token',
+  /**
+   * HMAC key for the audit log's hash chain.
+   *
+   * Its own label, so the chain is not forgeable by anyone who learns any other
+   * derived key, and — more to the point — so an attacker who has the database file
+   * but not `PANEL_MASTER_KEY` cannot recompute a row's hash after editing it. A
+   * bare SHA-256 chain would be recomputable by whoever can read the rows, which is
+   * exactly the attacker the chain exists to catch.
+   */
+  AuditChain: 'cc-panel/v1/audit-chain',
 } as const;
 
 export class CryptoNotInitializedError extends Error {

@@ -115,8 +115,8 @@ interface CookieAttributes {
  * The clamp is what keeps this honest: a `full` session refreshed at every request
  * would otherwise hand out an eight-hour cookie for a session with ten minutes of
  * absolute lifetime left. Never more than {@link ABSOLUTE_LIFETIME_MS}, and
- * `tests/integration/cookie-policy.test.ts` asserts that on a session near its
- * absolute deadline.
+ * `tests/integration/cookies.test.ts` asserts that on a session near its absolute
+ * deadline.
  */
 export function cookieMaxAgeSeconds(session: SessionRecord, nowMs: number): number {
   const idleMs = session.authLevel === 'pre' ? PRE_AUTH_LIFETIME_MS : IDLE_TIMEOUT_MS;
