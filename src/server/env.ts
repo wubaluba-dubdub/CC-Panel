@@ -15,6 +15,13 @@ const envSchema = z.object({
     .min(MIN_PASSWORD_LENGTH, `PANEL_ADMIN_PASSWORD must be at least ${MIN_PASSWORD_LENGTH} characters`)
     .optional(),
   PANEL_BASE_PATH: z.string().optional(),
+  // The origin the panel is reached at. Read only by utils/public-origin.ts,
+  // which is the one place that decides both the cookie profile and the expected
+  // Origin/Host — see the comment there for why that must be a single decision.
+  PANEL_PUBLIC_URL: z.string().min(1).optional(),
+  // Injected by Railway. Always fronted by its TLS terminator, so it implies
+  // https. Used only as a fallback when PANEL_PUBLIC_URL is absent.
+  RAILWAY_PUBLIC_DOMAIN: z.string().min(1).optional(),
   PANEL_TRUST_PROXY: z.string().optional(),
   PANEL_DATA_DIR: z.string().optional(),
   PORT: z.string().optional(),
@@ -26,6 +33,8 @@ export interface Env {
   PANEL_ADMIN_USERNAME?: string;
   PANEL_ADMIN_PASSWORD?: string;
   PANEL_BASE_PATH?: string;
+  PANEL_PUBLIC_URL?: string;
+  RAILWAY_PUBLIC_DOMAIN?: string;
   PANEL_TRUST_PROXY: boolean;
   PANEL_DATA_DIR: string;
   PORT: number;
@@ -81,6 +90,12 @@ export function loadEnv(): Env {
   }
   if (raw.PANEL_BASE_PATH !== undefined) {
     result.PANEL_BASE_PATH = raw.PANEL_BASE_PATH;
+  }
+  if (raw.PANEL_PUBLIC_URL !== undefined) {
+    result.PANEL_PUBLIC_URL = raw.PANEL_PUBLIC_URL;
+  }
+  if (raw.RAILWAY_PUBLIC_DOMAIN !== undefined) {
+    result.RAILWAY_PUBLIC_DOMAIN = raw.RAILWAY_PUBLIC_DOMAIN;
   }
 
   return result;

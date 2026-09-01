@@ -262,10 +262,23 @@ vectors are pinned in `tests/unit/totp.test.ts`.
   Not JWTs — revocation must take effect on the next request.
 - `resolve()` compares stored hashes with `timingSafeEqual` across all rows rather
   than an indexed `=`, so no credential comparison in this codebase short-circuits.
-- Cookie: `__Secure-panel_session`, `HttpOnly; Secure; SameSite=Strict;
-  Path=/${basePath}`, **no `Domain`**. `Secure` in development too — the
-  `__Secure-` prefix requires it, which turns a dropped attribute into a visible
-  failure. `__Host-` is not usable because the cookie is not at `Path=/`.
+- Cookie: `HttpOnly; SameSite=Strict; Path=/${basePath}`, **no `Domain`**, and a
+  `Max-Age` mirroring the sliding idle window clamped to the absolute deadline,
+  re-stamped on every authenticated response.
+- **Two cookie profiles, chosen from the effective public origin.** https →
+  `__Secure-panel_session` with `Secure`. Loopback http outside production →
+  `panel_session` with neither. The reason is that Chrome accepts the `Secure`
+  *attribute* over `http://127.0.0.1` but not the `__Secure-` *name prefix*, and
+  drops the cookie silently — correct header on the wire, nothing in the console,
+  no cookie in the jar — so login could never succeed in Chrome over plain http.
+  Anything else (http on a routable host, or production without an https origin) is
+  a **fatal boot error**, never a silent downgrade. `__Host-` is deliberately not
+  used: it mandates `Path=/`, and the path scoping is worth more here.
+- **`src/server/plugins/cookies.ts` is the only file that may name a cookie or
+  assemble its attributes**, enforced by the static scan in
+  `tests/integration/cookie-discipline.test.ts` (same mechanism as the client-IP
+  rule). Do not spell a cookie name, call `setCookie`/`clearCookie`, or read
+  `req.cookies` anywhere else — go through `runtime.cookies`.
 - Idle timeout 8 hours, sliding, clamped to the absolute deadline.
 - Absolute maximum 30 days from the moment both factors were satisfied.
 - Token rotates on every privilege change: second factor accepted, password changed.
@@ -357,6 +370,12 @@ Byte-identical in development and production. No `unsafe-inline`, no
   - `PANEL_MASTER_KEY` (32 bytes base64)
   - `PANEL_ADMIN_USERNAME`
   - `PANEL_ADMIN_PASSWORD` (min 12 chars, not in weak list)
+  - `PANEL_PUBLIC_URL` — the https origin the panel is served on. **Required in
+    production** unless `RAILWAY_PUBLIC_DOMAIN` is present (Railway sets it, and it
+    always implies https). Resolved in exactly one place,
+    `src/server/utils/public-origin.ts`, and read from there by both the cookie
+    profile and the Origin/Host validator so the two cannot disagree. Never derived
+    from a request header.
 - Optional:
   - `PANEL_BASE_PATH` (if unset, generated and logged)
   - `PANEL_TRUST_PROXY` (default true)

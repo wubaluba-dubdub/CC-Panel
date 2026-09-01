@@ -1,9 +1,5 @@
-import type { FastifyReply, FastifyRequest, onRequestAsyncHookHandler, preHandlerAsyncHookHandler } from 'fastify';
-import {
-  SESSION_COOKIE,
-  type AuthLevel,
-  type SessionRecord,
-} from '../services/session.service.js';
+import type { FastifyRequest, onRequestAsyncHookHandler, preHandlerAsyncHookHandler } from 'fastify';
+import type { AuthLevel, SessionRecord } from '../services/session.service.js';
 import type { AuthRuntime } from '../services/auth-runtime.js';
 
 declare module 'fastify' {
@@ -24,46 +20,6 @@ export class HttpError extends Error {
 }
 
 /**
- * Cookie attributes.
- *
- * - `httpOnly`: script cannot read it, so an XSS that gets past the CSP still
- *   cannot exfiltrate the session.
- * - `secure`: set in development too. Modern browsers treat `http://localhost` as
- *   a secure context, so this costs nothing there, and the `__Secure-` name
- *   prefix requires it — a browser will refuse the cookie outright rather than
- *   silently accept an insecure one, which is the failure mode we want.
- * - `sameSite: 'strict'`: the primary CSRF control. No cross-site request, of any
- *   method, carries this cookie.
- * - `path`: scoped to the base path, so the cookie is not sent to `/healthz`.
- * - **no `domain`**: omitting it makes the cookie host-only. Setting it, even to
- *   the exact host, would widen it to every subdomain.
- */
-export function sessionCookieOptions(basePath: string): {
-  httpOnly: true;
-  secure: true;
-  sameSite: 'strict';
-  path: string;
-} {
-  return {
-    httpOnly: true,
-    secure: true,
-    sameSite: 'strict',
-    path: `/${basePath}`,
-  };
-}
-
-export function setSessionCookie(reply: FastifyReply, token: string, basePath: string): void {
-  // No maxAge / expires: a session cookie, gone when the browser closes. The
-  // server-side row is what actually bounds the lifetime, and it is the only
-  // bound that an attacker holding a stolen cookie cannot extend.
-  reply.setCookie(SESSION_COOKIE, token, sessionCookieOptions(basePath));
-}
-
-export function clearSessionCookie(reply: FastifyReply, basePath: string): void {
-  reply.clearCookie(SESSION_COOKIE, sessionCookieOptions(basePath));
-}
-
-/**
  * Resolves the cookie into `request.session` for every request in the scope.
  *
  * Runs as `onRequest` so it is in place before any route's own `preHandler`, and
@@ -74,8 +30,8 @@ export function clearSessionCookie(reply: FastifyReply, basePath: string): void 
 export function attachSession(runtime: AuthRuntime): onRequestAsyncHookHandler {
   return async function attachSessionHook(req: FastifyRequest): Promise<void> {
     req.session = null;
-    const token = req.cookies[SESSION_COOKIE];
-    if (typeof token !== 'string' || token.length === 0) return;
+    const token = runtime.cookies.readSession(req);
+    if (token === null) return;
     req.session = runtime.sessions.resolve(token);
   };
 }

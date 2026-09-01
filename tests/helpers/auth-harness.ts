@@ -3,7 +3,17 @@ import type { FastifyInstance } from 'fastify';
 import type { Response as InjectResponse } from 'light-my-request';
 import { createTestServer, type CreateTestServerOptions, type EnvOverrides, type TestContext } from './test-server.js';
 import { FakeClock, createRecordedSleep, type RecordedSleep } from './fake-clock.js';
-import { SESSION_COOKIE } from '../../src/server/services/session.service.js';
+import { COOKIE_BASE_NAMES } from '../../src/server/plugins/cookies.js';
+
+/**
+ * The session cookie's name in the test environment.
+ *
+ * Tests run against a loopback http origin, which is the profile that drops the
+ * `__Secure-` prefix, so the bare name is the correct one here.
+ * `tests/integration/cookies.test.ts` is what pins the prefixed spelling under an
+ * https public origin; nothing else should hard-code either form.
+ */
+export const SESSION_COOKIE = COOKIE_BASE_NAMES.session;
 import {
   TOTP_ALGORITHM,
   TOTP_DIGITS,

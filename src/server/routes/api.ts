@@ -25,6 +25,18 @@ export default async function apiRoutes(
   app.addHook('onRequest', requireSameOrigin());
   app.addHook('onRequest', attachSession(runtime));
 
+  // Keep the client's copy of the cookie on the same schedule as the row.
+  //
+  // `resolve()` slid the server-side idle deadline during `attachSession`; without
+  // this the browser would still be holding the Max-Age issued at login and would
+  // discard the cookie eight hours after that, mid-session. `refreshSession`
+  // declines to act when the response already carries a session `Set-Cookie`, so a
+  // rotation or a logout is never overwritten with the value it just replaced.
+  app.addHook('onSend', async (req, reply, payload) => {
+    if (req.session !== null) runtime.cookies.refreshSession(req, reply, req.session);
+    return payload;
+  });
+
   await app.register(authRoutes, { runtime });
   await app.register(sessionRoutes, { runtime });
   await app.register(securityRoutes, { runtime });

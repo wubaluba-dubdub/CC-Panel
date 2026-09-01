@@ -1,6 +1,8 @@
 import type { Database } from 'better-sqlite3';
 import type { Env } from '../env.js';
 import { getDb } from '../db.js';
+import { createCookieJar, type CookieJar } from '../plugins/cookies.js';
+import type { PublicOrigin } from '../utils/public-origin.js';
 import { type Clock, type Sleep, realSleep, systemClock } from '../utils/clock.js';
 import { SingleFlight } from '../utils/single-flight.js';
 import { AuditService } from './audit.service.js';
@@ -24,6 +26,14 @@ import { UserService } from './user.service.js';
 export interface AuthRuntime {
   readonly env: Env;
   readonly basePath: string;
+  /**
+   * The configured public origin. Decided once, in `utils/public-origin.ts`, and
+   * read from here by both the cookie jar and the Origin/Host validator so the two
+   * cannot disagree about what this panel's own origin is.
+   */
+  readonly origin: PublicOrigin;
+  /** The only thing in this process that names or attributes a cookie. */
+  readonly cookies: CookieJar;
   readonly clock: Clock;
   readonly sleep: Sleep;
   readonly db: Database;
@@ -45,6 +55,7 @@ export interface AuthRuntime {
 export interface AuthRuntimeOptions {
   env: Env;
   basePath: string;
+  origin: PublicOrigin;
   clock?: Clock;
   sleep?: Sleep;
   db?: Database;
@@ -60,6 +71,13 @@ export function createAuthRuntime(opts: AuthRuntimeOptions): AuthRuntime {
   return {
     env: opts.env,
     basePath: opts.basePath,
+    origin: opts.origin,
+    cookies: createCookieJar({
+      origin: opts.origin,
+      basePath: opts.basePath,
+      nodeEnv: opts.env.NODE_ENV,
+      clock,
+    }),
     clock,
     sleep,
     db,

@@ -2,9 +2,9 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { getDb } from '../../src/server/db.js';
-import { SESSION_COOKIE } from '../../src/server/services/session.service.js';
 import { TOTP_PERIOD_SECONDS } from '../../src/server/services/totp.service.js';
 import {
+  SESSION_COOKIE,
   createAuthTestServer,
   enrollAccount,
   totpCodeAt,

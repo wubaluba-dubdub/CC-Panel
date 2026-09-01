@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { AuditEvent } from '../services/audit.service.js';
 import type { AuthRuntime } from '../services/auth-runtime.js';
-import { HttpError, requireStepUp, setSessionCookie } from '../plugins/auth.js';
+import { HttpError, requireStepUp } from '../plugins/auth.js';
 import { regenerateBasePath } from '../services/instance.service.js';
 import { clientIpForDisplay, userAgentForDisplay } from '../utils/client-ip.js';
 import { changePasswordBody, parseBody, secretRefBody, secretSetBody } from '../utils/zod-schemas.js';
@@ -27,7 +27,6 @@ export default async function securityRoutes(
   opts: { runtime: AuthRuntime },
 ): Promise<void> {
   const { runtime } = opts;
-  const { basePath } = runtime;
   const stepUp = { preHandler: requireStepUp(runtime) };
 
   const who = (
@@ -55,9 +54,9 @@ export default async function securityRoutes(
     // A privilege change: rotate. The step-up is spent at the same time, so the
     // new password cannot be immediately followed by another privileged action on
     // the strength of the old step-up.
-    const token = runtime.sessions.rotate(session.id);
+    const { token, session: rotated } = runtime.sessions.rotate(session.id);
     runtime.sessions.clearStepUp(session.id);
-    setSessionCookie(reply, token, basePath);
+    runtime.cookies.setSession(reply, token, rotated);
 
     runtime.audit.write({
       event: AuditEvent.PasswordChanged,

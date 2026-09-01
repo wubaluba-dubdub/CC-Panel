@@ -30,6 +30,8 @@ const SUBKEY_LENGTH = 32;
 export const KeyPurpose = {
   /** Encrypting secret columns at rest. */
   SecretColumn: 'cc-panel/v1/secret-column',
+  /** HMAC key for the double-submit CSRF token. Signing, not encryption. */
+  CsrfToken: 'cc-panel/v1/csrf-token',
 } as const;
 
 export class CryptoNotInitializedError extends Error {

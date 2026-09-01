@@ -43,6 +43,15 @@ const SECURITY_HEADERS = {
   'content-security-policy': CSP,
 } as const;
 
+/**
+ * A production boot needs a configured https public origin or it refuses to start —
+ * `resolvePublicOrigin` treats the alternative as a fatal misconfiguration rather
+ * than shipping a session cookie the browser would drop. Supplied here so these
+ * two cases exercise the production *headers*, which is what they are about;
+ * `tests/integration/cookies.test.ts` is where the guard itself is tested.
+ */
+const PROD_URL = 'https://panel.example';
+
 describe('M1.2 — Perimeter', () => {
   let ctx: TestContext;
 
@@ -130,7 +139,7 @@ describe('M1.2 — Perimeter', () => {
     });
 
     it('adds Strict-Transport-Security in production and nothing else', async () => {
-      const prod = await createTestServer({ PANEL_BASE_PATH: 'x', NODE_ENV: 'production' });
+      const prod = await createTestServer({ PANEL_BASE_PATH: 'x', NODE_ENV: 'production', PANEL_PUBLIC_URL: PROD_URL });
 
       const res = await prod.app.inject({ method: 'GET', url: '/x/' });
 
@@ -145,7 +154,7 @@ describe('M1.2 — Perimeter', () => {
 
     it('CSP is byte-identical in dev and production', async () => {
       const dev = await createTestServer({ PANEL_BASE_PATH: 'x', NODE_ENV: 'test' });
-      const prod = await createTestServer({ PANEL_BASE_PATH: 'x', NODE_ENV: 'production' });
+      const prod = await createTestServer({ PANEL_BASE_PATH: 'x', NODE_ENV: 'production', PANEL_PUBLIC_URL: PROD_URL });
 
       const resDev = await dev.app.inject({ method: 'GET', url: '/x/' });
       const resProd = await prod.app.inject({ method: 'GET', url: '/x/' });

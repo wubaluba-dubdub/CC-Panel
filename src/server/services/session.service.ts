@@ -5,15 +5,11 @@ import { type Clock, isoFrom, msFromIso, systemClock } from '../utils/clock.js';
 import { timingSafeEqualStrings } from '../utils/timing-safe.js';
 
 /**
- * The session cookie name.
- *
- * The `__Secure-` prefix makes the browser refuse the cookie unless it carries
- * `Secure` and arrives over a secure channel, which turns an accidentally
- * dropped `Secure` attribute into an immediate, visible failure instead of a
- * silent downgrade. `__Host-` would be stronger still, but it requires `Path=/`
- * and this panel's cookie is scoped to `/${basePath}`.
+ * The cookie name and every cookie attribute live in `plugins/cookies.ts`, which
+ * is the single owner of both. They were here, next to the lifetimes they mirror,
+ * until the `__Secure-` name prefix turned out to be unusable over loopback http
+ * and it became clear that no one place owned the decision.
  */
-export const SESSION_COOKIE = '__Secure-panel_session';
 
 /** Sliding. Every authenticated request pushes it out. */
 export const IDLE_TIMEOUT_MS = 8 * 60 * 60 * 1000;
@@ -101,6 +97,9 @@ export interface CreatedSession {
   token: string;
   session: SessionRecord;
 }
+
+/** What {@link SessionService.rotate} hands back: the new token and the row as it now stands. */
+export type RotatedSession = CreatedSession;
 
 export class SessionService {
   readonly #db: Database;
@@ -225,7 +224,7 @@ export class SessionService {
    * thirty days should be counted from the point both factors were satisfied, and
    * a step-up granted at a lower privilege level must not survive the promotion.
    */
-  rotate(id: number, opts: { toLevel?: AuthLevel } = {}): string {
+  rotate(id: number, opts: { toLevel?: AuthLevel } = {}): RotatedSession {
     const existing = this.#byId(id);
     if (existing === null) throw new Error(`no session ${id}`);
 
@@ -263,7 +262,12 @@ export class SessionService {
         .run(tokenHash, isoFrom(now), isoFrom(slid), id);
     }
 
-    return token;
+    // Re-read rather than patching the object we already have: the caller needs the
+    // deadlines the row actually carries now, because the cookie's Max-Age is
+    // computed from them.
+    const session = this.#byId(id);
+    if (session === null) throw new Error(`session ${id} vanished during rotation`);
+    return { token, session };
   }
 
   grantStepUp(id: number): string {

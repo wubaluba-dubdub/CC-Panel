@@ -4,10 +4,8 @@ import { runAuthAttempt } from '../services/auth-attempt.js';
 import type { AuthRuntime } from '../services/auth-runtime.js';
 import {
   HttpError,
-  clearSessionCookie,
   requireFullSession,
   requireLevel,
-  setSessionCookie,
 } from '../plugins/auth.js';
 import { clientIpForDisplay, userAgentForDisplay } from '../utils/client-ip.js';
 import { codeBody, loginBody, parseBody, stepUpBody } from '../utils/zod-schemas.js';
@@ -55,7 +53,6 @@ export default async function authRoutes(
   opts: { runtime: AuthRuntime },
 ): Promise<void> {
   const { runtime } = opts;
-  const { basePath } = runtime;
 
   /** Audit helper: the two display-only fields, from the request, every time. */
   const who = (req: FastifyRequest): { actorIp: string | null; userAgent: string | null } => ({
@@ -110,7 +107,7 @@ export default async function authRoutes(
         ip: clientIpForDisplay(req),
         userAgent: userAgentForDisplay(req),
       });
-      setSessionCookie(reply, token, basePath);
+      runtime.cookies.setSession(reply, token, session);
 
       runtime.audit.write({
         event: AuditEvent.SessionCreated,
@@ -176,8 +173,10 @@ export default async function authRoutes(
 
         // Privilege change: new token, same row. The 'pre' cookie value stops
         // working the instant this returns.
-        const token = runtime.sessions.rotate(session.id, { toLevel: 'full' });
-        setSessionCookie(reply, token, basePath);
+        const { token, session: promoted } = runtime.sessions.rotate(session.id, {
+          toLevel: 'full',
+        });
+        runtime.cookies.setSession(reply, token, promoted);
 
         // Both factors accepted — and this is the only place the counter resets.
         runtime.delay.reset();
@@ -255,8 +254,10 @@ export default async function authRoutes(
         // Shown exactly once. Only the argon2 hashes are kept.
         const codes = await runtime.recovery.regenerate();
 
-        const token = runtime.sessions.rotate(session.id, { toLevel: 'full' });
-        setSessionCookie(reply, token, basePath);
+        const { token, session: promoted } = runtime.sessions.rotate(session.id, {
+          toLevel: 'full',
+        });
+        runtime.cookies.setSession(reply, token, promoted);
 
         // Password (stage 1, or the existing full session) plus second factor.
         runtime.delay.reset();
@@ -348,7 +349,7 @@ export default async function authRoutes(
     async (req, reply: FastifyReply) => {
       const session = req.session!;
       runtime.sessions.revoke(session.id);
-      clearSessionCookie(reply, basePath);
+      runtime.cookies.clearSession(reply);
 
       runtime.audit.write({
         event: AuditEvent.SessionRevoked,

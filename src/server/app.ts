@@ -14,6 +14,7 @@ import apiRoutes from './routes/api.js';
 import { createAuthRuntime, type AuthRuntime } from './services/auth-runtime.js';
 import { seedAdminUser } from './services/user.service.js';
 import type { Clock, Sleep } from './utils/clock.js';
+import { resolvePublicOrigin, type PublicOrigin } from './utils/public-origin.js';
 
 /**
  * Global request body limit.
@@ -31,6 +32,8 @@ declare module 'fastify' {
     basePath: string;
     /** The authentication services, for tests and for later milestones. */
     auth: AuthRuntime;
+    /** The configured public origin — the one this panel answers as. */
+    publicOrigin: PublicOrigin;
   }
 }
 
@@ -134,6 +137,12 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   ensureDataLayout(dataDir);
   checkDataWritable(dataDir);
 
+  // Resolved here, before anything is opened, because two of its outcomes are
+  // fatal: a production deployment with no configured public URL, and a production
+  // deployment whose public URL is not https. Both would otherwise surface as a
+  // session cookie the browser quietly refuses, or one sent in the clear.
+  const origin = resolvePublicOrigin(env);
+
   // Production guard
   if (env.NODE_ENV !== 'production' && process.env.PANEL_REQUIRE_PROD === '1') {
     throw new Error('NODE_ENV must be "production" when PANEL_REQUIRE_PROD=1');
@@ -175,6 +184,7 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   const runtime = createAuthRuntime({
     env,
     basePath,
+    origin,
     ...(config.clock ? { clock: config.clock } : {}),
     ...(config.sleep ? { sleep: config.sleep } : {}),
     ...(config.authQueueLimit !== undefined ? { queueLimit: config.authQueueLimit } : {}),
@@ -182,6 +192,7 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
 
   app.decorate('basePath', basePath);
   app.decorate('auth', runtime);
+  app.decorate('publicOrigin', origin);
 
   // Before the server listens, so the first unknown-username login is not
   // measurably slower than the ones after it.

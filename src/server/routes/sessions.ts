@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { AuditEvent } from '../services/audit.service.js';
 import type { AuthRuntime } from '../services/auth-runtime.js';
-import { HttpError, clearSessionCookie, requireFullSession } from '../plugins/auth.js';
+import { HttpError, requireFullSession } from '../plugins/auth.js';
 import { clientIpForDisplay, userAgentForDisplay } from '../utils/client-ip.js';
 import { parseBody, sessionIdParams } from '../utils/zod-schemas.js';
 import { toSessionSummary } from './auth.js';
@@ -24,7 +24,6 @@ export default async function sessionRoutes(
   opts: { runtime: AuthRuntime },
 ): Promise<void> {
   const { runtime } = opts;
-  const { basePath } = runtime;
 
   app.get('/api/sessions', { preHandler: requireFullSession }, async (req) => {
     const current = req.session!;
@@ -51,7 +50,7 @@ export default async function sessionRoutes(
       meta: { sessionId: id, self: id === current.id },
     });
 
-    if (id === current.id) clearSessionCookie(reply, basePath);
+    if (id === current.id) runtime.cookies.clearSession(reply);
     return reply.code(204).send();
   });
 

@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createTestServer, createLogCapture, type TestContext } from '../helpers/test-server.js';
 import {
+  SESSION_COOKIE,
   createAuthTestServer,
   enrollAccount,
   loginFully,
@@ -12,7 +13,6 @@ import {
   totpCodeAt,
   type AuthTestContext,
 } from '../helpers/auth-harness.js';
-import { SESSION_COOKIE } from '../../src/server/services/session.service.js';
 import { SecretString, mask } from '../../src/server/crypto.js';
 import { SecretsRepository } from '../../src/server/services/secrets.service.js';
 import { createRedactedLogger, BASE_PATH_PLACEHOLDER } from '../../src/server/plugins/logger-redaction.js';

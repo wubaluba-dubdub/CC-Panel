@@ -1,11 +1,11 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { getDb } from '../../src/server/db.js';
-import { SESSION_COOKIE } from '../../src/server/services/session.service.js';
 import { SINGLE_USER_ID } from '../../src/server/services/user.service.js';
 import { MAX_DELAY_MS } from '../../src/server/services/auth-delay.service.js';
 import { AuditEvent } from '../../src/server/services/audit.service.js';
 import { TOTP_PERIOD_SECONDS } from '../../src/server/services/totp.service.js';
 import {
+  SESSION_COOKIE,
   TEST_PASSWORD,
   TEST_USERNAME,
   createAuthTestServer,

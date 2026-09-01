@@ -208,6 +208,25 @@ CSP, the header set, or the bootstrap path, and before any deployment.
    appears.
 5. **Reduced motion.** With `prefers-reduced-motion: reduce` set at the OS level,
    confirm no animation runs (Phase 2, once there is anything animated).
+6. **The session cookie is actually in the jar.** In DevTools → Application →
+   Cookies, confirm a cookie named `panel_session` exists after login in local
+   development, and `__Secure-panel_session` in production. This is the check the
+   test suite structurally cannot make: `inject()` reports the header the server
+   sent, and the failure mode here is a browser silently declining a header that is
+   correct on the wire.
+
+   Two things will mislead an operator reading that panel:
+
+   - **Cookies are not isolated by port.** Every application running on
+     `127.0.0.1` shares one cookie jar regardless of port, so the list will contain
+     cookies set by unrelated local development servers. Filter by name. A stale
+     `panel_session` from another project on another port is also a real
+     possibility — clear it rather than reasoning about it.
+   - **`localhost` and `127.0.0.1` are different jars.** A cookie set while
+     browsing `http://localhost:3000` is not sent to `http://127.0.0.1:3000`.
+     Whichever host `PANEL_PUBLIC_URL` names is the one to browse; mixing them
+     produces a login that appears to succeed and then 401s, which looks exactly
+     like the `__Secure-` prefix bug and is not it.
 
 ## Secrets
 
@@ -538,19 +557,105 @@ the first differing byte. The loop deliberately does not break early.
 
 | Property | Value |
 | --- | --- |
-| Cookie name | `__Secure-panel_session` |
-| Attributes | `HttpOnly; Secure; SameSite=Strict; Path=/${basePath}`, **no `Domain`** |
+| Cookie name | `__Secure-panel_session` over https; `panel_session` over loopback http |
+| Attributes | `HttpOnly; SameSite=Strict; Path=/${basePath}`, plus `Secure` over https, **no `Domain`** |
+| Max-Age | the sliding idle window, clamped to what is left of the absolute deadline |
 | Idle timeout | 8 hours, sliding on use, clamped to the absolute deadline |
 | Absolute lifetime | 30 days from the moment both factors were satisfied |
 | Pre-auth lifetime | 5 minutes, not sliding |
 | Step-up window | 5 minutes, on that one session |
 
-`Secure` is set in development too. Browsers treat `http://localhost` as a secure
-context so it costs nothing there, and the `__Secure-` name prefix *requires* it —
-a dropped `Secure` attribute becomes an immediate visible failure rather than a
-silent downgrade. `__Host-` would be stronger still but requires `Path=/`, which
-this cookie cannot have. `Domain` is omitted rather than set to the exact host:
-setting it at all widens the cookie to every subdomain.
+`Domain` is omitted rather than set to the exact host: setting it at all widens the
+cookie to every subdomain.
+
+#### One owner for every cookie
+
+`src/server/plugins/cookies.ts` is the only file in `src/server` that names a
+cookie or assembles an attribute set, and
+`tests/integration/cookie-discipline.test.ts` enforces that by scanning every
+source file for a name literal, a prefix, a `setCookie`/`clearCookie` call, a
+direct `req.cookies` read, or an attribute name — the same static-scan mechanism as
+the client-IP rule. The scan also asserts its own patterns still match the shapes
+they are meant to catch, so a typo cannot quietly make it vacuous.
+
+The rule exists because of what it replaced. The name was a constant in
+`services/session.service.ts` and the attributes were a helper in
+`plugins/auth.ts` that hard-coded `secure: true`; one decision spread across two
+files, and the consequence below went unnoticed because no single place owned it.
+
+#### Two profiles, and why the `__Secure-` prefix could not be unconditional
+
+The `Secure` **attribute** and the `__Secure-` **name prefix** are separate
+mechanisms and browsers do not treat them alike over loopback. Chrome accepts a
+`Secure` cookie on `http://127.0.0.1` — loopback is a potentially-trustworthy
+origin — but it does not extend that concession to the name prefix, whose rule is
+unconditionally "must arrive over a secure scheme". The cookie is therefore
+dropped, silently: the `Set-Cookie` header is present and correct, no console
+warning appears, and the cookie simply never enters the jar. Firefox accepts it;
+Safari rejects both. The consequence was that over plain http in Chrome, login
+could never succeed — the panel would 401 every request after a successful password
+and TOTP step — which would have blocked client development in M2 outright. The
+server's header was never wrong; the *name* was unusable.
+
+So there are two profiles, chosen by `cookieProfileFor()` from the effective public
+origin:
+
+| Public origin | Name | `Secure` | Rest |
+| --- | --- | --- | --- |
+| `https://…` | `__Secure-` prefixed | yes | `HttpOnly`, `SameSite=Strict`, `Path=/${basePath}` |
+| `http://` loopback, non-production | unprefixed | no | unchanged |
+| `http://` anything else | *refuses to start* | — | — |
+
+The weak profile cannot leak into production, and there are deliberately **two
+independent guards** so that removing either one still fails a test:
+
+1. `resolvePublicOrigin()` throws at boot when `NODE_ENV=production` and the
+   resolved origin is not https, and when no origin is configured in production at
+   all. Refusing to start beats shipping a cookie the browser will drop.
+2. `cookieProfileFor()` throws rather than returning the weak profile when
+   `NODE_ENV=production`, or when the origin is http on a non-loopback host at any
+   `NODE_ENV` — "http and routable" is precisely the case where dropping `Secure`
+   hands the cookie to anyone on the path.
+
+`tests/integration/cookies.test.ts` covers both directions, and each guard was
+mutation-checked by disabling it and confirming a distinct test fails.
+
+#### Why not `__Host-`
+
+`__Host-` is the stronger prefix: host-only, no `Domain` permitted, and proof
+against a sibling subdomain writing the cookie into the parent's jar. It also
+mandates `Path=/`. This cookie is scoped to `Path=/${basePath}` so that it is not
+attached to requests outside the secret prefix — including `/healthz`, the one
+route an unauthenticated caller is meant to reach. Widening the path to `/` to gain
+the prefix would send the session cookie on every request to the origin, which
+trades a real reduction in exposure for a guarantee against an attack (subdomain
+cookie-shadowing) that a single-host deployment with no sibling subdomains does not
+face. The prefix is therefore deliberately not used, and the path scoping is the
+control kept instead.
+
+#### Cookie lifetime, decided rather than omitted
+
+`Max-Age` mirrors the sliding idle window — 8 hours for a `full` session, 5 minutes
+for a `pre` one — and is clamped to what is left of the absolute deadline, so a
+session with ten minutes of absolute lifetime left never hands out an eight-hour
+cookie. It is re-stamped on every authenticated response by an `onSend` hook in the
+API scope, matching the server-side slide that `resolve()` just performed;
+`refreshSession()` declines to act when the response already carries a session
+`Set-Cookie`, so a rotation or a logout is never overwritten with the value it just
+replaced.
+
+The alternative was to omit the attribute entirely, which produces a "session
+cookie". That reads as "gone when the browser closes" and is not: Chrome's session
+restore, and Firefox's, put session cookies back after a restart, so omitting the
+attribute is a guarantee about nothing. The server-side row remains the only
+authority on the lifetime — it is the bound an attacker holding a stolen cookie
+cannot extend — but a client that discards its copy on schedule is one fewer copy
+sitting on disk. `tests/integration/cookies.test.ts` asserts the clamp, including
+that `Max-Age` never exceeds the 30-day absolute limit.
+
+The CSRF cookie is issued from the same call, with the same attributes except
+`HttpOnly` — a double-submit token the client must read to echo back. Because both
+are set together, the CSRF token cannot outlive the session token it is bound to.
 
 The token rotates on every privilege change — the second factor being accepted, and
 a password change. The row keeps its identity across a rotation so the session list

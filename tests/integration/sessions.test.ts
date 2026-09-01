@@ -6,12 +6,12 @@ import {
   ABSOLUTE_LIFETIME_MS,
   IDLE_TIMEOUT_MS,
   PRE_AUTH_LIFETIME_MS,
-  SESSION_COOKIE,
   STEP_UP_WINDOW_MS,
 } from '../../src/server/services/session.service.js';
 import { TOTP_PERIOD_SECONDS } from '../../src/server/services/totp.service.js';
 import { AuditEvent } from '../../src/server/services/audit.service.js';
 import {
+  SESSION_COOKIE,
   TEST_PASSWORD,
   createAuthTestServer,
   enrollAccount,
@@ -34,31 +34,35 @@ describe('M1.4 — sessions and step-up', () => {
   // ── The cookie ─────────────────────────────────────────────────────────────
 
   describe('Set-Cookie', () => {
-    it('carries the __Secure- prefix, HttpOnly, Secure, SameSite=Strict, the base path, and no Domain', async () => {
+    it('carries HttpOnly, SameSite=Strict, the base path, and no Domain', async () => {
       ctx = await createAuthTestServer();
       const login = await postLogin(ctx);
 
       const cookie = login.cookies.find((c) => c.name === SESSION_COOKIE);
       expect(cookie, 'the session cookie was set').toBeDefined();
 
-      expect(cookie!.name).toBe('__Secure-panel_session');
-      expect(cookie!.name.startsWith('__Secure-')).toBe(true);
+      expect(cookie!.name).toBe('panel_session');
       expect(cookie!.httpOnly).toBe(true);
-      expect(cookie!.secure).toBe(true);
       expect(cookie!.sameSite).toBe('Strict');
       expect(cookie!.path).toBe(`/${ctx.prefix.slice(1)}`);
       expect(cookie!.path).toBe('/authtest');
       expect('domain' in cookie!).toBe(false);
+
+      // `Secure` and the `__Secure-` name prefix are the https profile, and the
+      // test harness serves a loopback http origin — which is the whole reason the
+      // profile exists. Both spellings are pinned in
+      // `tests/integration/cookies.test.ts` against a configured https origin.
+      expect(cookie!.secure).toBeUndefined();
 
       // And the same read straight off the raw header, in case the parser is
       // forgiving about something a browser would not be.
       const raw = login.headers['set-cookie'];
       const header = Array.isArray(raw) ? raw.join('\n') : String(raw);
       expect(header).toContain('HttpOnly');
-      expect(header).toContain('Secure');
       expect(header).toContain('SameSite=Strict');
       expect(header).toContain('Path=/authtest');
       expect(header).not.toContain('Domain');
+      expect(header).not.toContain('Secure');
     });
 
     it('keeps every attribute when the session is promoted and when it rotates', async () => {
@@ -69,7 +73,7 @@ describe('M1.4 — sessions and step-up', () => {
       for (const res of [relogin.response]) {
         const cookie = res.cookies.find((c) => c.name === SESSION_COOKIE)!;
         expect(cookie.httpOnly).toBe(true);
-        expect(cookie.secure).toBe(true);
+        expect(cookie.secure).toBeUndefined();
         expect(cookie.sameSite).toBe('Strict');
         expect(cookie.path).toBe('/authtest');
         expect('domain' in cookie).toBe(false);
