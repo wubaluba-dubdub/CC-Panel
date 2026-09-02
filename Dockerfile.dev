@@ -1,23 +1,38 @@
-FROM node:22-slim
-RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
+# Local development only. NOT the deployment path — that is `Dockerfile`, and this file
+# deliberately shares its base image so a developer is never debugging a native-module
+# ABI difference that production does not have.
+#
+# It exists for `docker run -v "$PWD:/app" -v "$PWD/.env:/app/.env:ro"`, where the
+# source and the env file come from the host. Without those mounts it cannot start:
+# `npm run dev` reads `--env-file=.env`, and .dockerignore keeps .env out of the image
+# on purpose.
+#
+# Most work on this project does not need it at all — `npm run dev` on WSL is the
+# normal path, and CLAUDE.md records why the checkout lives on the Linux filesystem.
+FROM node:22-bookworm-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends -o Acquire::Retries=5 python3 make g++ && \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-# Install dependencies first for layer caching
-COPY package.json package-lock.json* ./
+# Compile the native modules against this image's own headers, for the same reason the
+# production Dockerfile does: no network fetch, and no chance of an ABI mismatch with
+# the node binary that will load them.
+ENV npm_config_nodedir=/usr/local
+
+COPY package.json package-lock.json ./
 RUN npm ci
 
-# Copy source
 COPY . .
 
-# Non-root user for parity with production
-RUN addgroup --system --gid 10001 panel && \
-    adduser --system --uid 10001 --ingroup panel --home /data panel && \
-    mkdir -p /data && chown panel:panel /data
-
-USER 10001
-
-ENV HOME=/data/home \
-    DATA_DIR=/data
+# No USER and no entrypoint drop: there is no volume to prepare here, and running as
+# root would trip the server's own boot check (src/server/utils/privileges.ts).
+# `--user 10001:10001` on the `docker run` line is the right way to set the uid.
+ENV PANEL_DATA_DIR=/data \
+    HOME=/data/home \
+    PANEL_IN_CONTAINER=1
 
 EXPOSE 3000
 

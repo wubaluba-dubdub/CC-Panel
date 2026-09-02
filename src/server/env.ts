@@ -25,6 +25,13 @@ const envSchema = z.object({
   PANEL_TRUST_PROXY: z.string().optional(),
   PANEL_DATA_DIR: z.string().optional(),
   PORT: z.string().optional(),
+  // Which address to bind. Resolved by utils/listen-host.ts, which defaults to the
+  // wildcard in a container or in production and to loopback in development — see
+  // the comment there for why one hard-coded value was wrong in both directions.
+  PANEL_LISTEN_HOST: z.string().optional(),
+  // Set to '1' by the Dockerfile. A fact the image asserts about itself, rather than
+  // something inferred from the filesystem.
+  PANEL_IN_CONTAINER: z.string().optional(),
   NODE_ENV: z.string().optional(),
 });
 
@@ -38,6 +45,8 @@ export interface Env {
   PANEL_TRUST_PROXY: boolean;
   PANEL_DATA_DIR: string;
   PORT: number;
+  PANEL_LISTEN_HOST?: string;
+  PANEL_IN_CONTAINER?: string;
   NODE_ENV: string;
 }
 
@@ -96,6 +105,12 @@ export function loadEnv(): Env {
   }
   if (raw.RAILWAY_PUBLIC_DOMAIN !== undefined) {
     result.RAILWAY_PUBLIC_DOMAIN = raw.RAILWAY_PUBLIC_DOMAIN;
+  }
+  if (raw.PANEL_LISTEN_HOST !== undefined) {
+    result.PANEL_LISTEN_HOST = raw.PANEL_LISTEN_HOST;
+  }
+  if (raw.PANEL_IN_CONTAINER !== undefined) {
+    result.PANEL_IN_CONTAINER = raw.PANEL_IN_CONTAINER;
   }
 
   return result;

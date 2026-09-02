@@ -1,16 +1,63 @@
-node_modules
-dist
-build
+# What must never enter the image, in the order it would hurt.
+#
+# The first four are the ones with teeth: a real .env, a local data volume with a real
+# panel.db in it, and the git history — which carries every earlier version of every
+# file, so a secret committed once and removed later is still in there. The rest is
+# weight. `scripts/verify-image.sh` asserts the first two are absent from the *built*
+# image rather than trusting this file, because a .dockerignore is easy to edit and
+# nothing complains when a pattern stops matching.
+
+# Secrets and local state
 .env
 .env.*
+!.env.example
+.localdata
+.localdate
+data
 *.db
 *.db-shm
 *.db-wal
-data
-coverage
+
+# History. Also the largest thing here by far.
 .git
 .gitignore
+.gitattributes
+
+# Build output — the image builds its own, and a host-built dist may be stale or
+# compiled by a different TypeScript version.
+dist
+build
+node_modules
+
+# Tests never ship. The build already excludes them from dist via
+# tsconfig.build.json; this keeps them out of the build context too.
+tests
+vitest.config.ts
+eslint.config.js
+tsconfig.json.bak
+
+# Scratch
+coverage
+tmp
+.tmp
+*.log
+npm-debug.log*
+
+# Editor and OS
 .vscode
 .idea
+.DS_Store
+Thumbs.db
+
+# Docs and CI config: not needed at runtime, and every one of them is a cache-busting
+# layer input when it changes.
 *.md
 !README.md
+docs
+.github
+Dockerfile.dev
+railway.json
+
+# scripts/ is NOT ignored: the build runs scripts/copy-assets.mjs, which is what puts
+# the .sql migrations into dist. It is copied into the builder stage only and never
+# reaches the runtime stage.

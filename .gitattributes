@@ -1,0 +1,36 @@
+# Line endings, pinned. This is not housekeeping.
+#
+# If entrypoint.sh ever acquires CRLF endings, the kernel reads the shebang as
+# `/bin/sh\r`, finds no such interpreter, and the container dies with:
+#
+#     exec /entrypoint.sh: no such file or directory
+#
+# which names the file it just successfully found and reads like a missing-file
+# problem rather than a formatting one. That is an hour lost, in production, on a
+# deployment that built cleanly. The Dockerfile is pinned for the same reason, and the
+# built image is checked for CR bytes in the entrypoint by
+# `scripts/verify-image.sh`, because an attribute in a file only helps if the file is
+# consulted — a `git config core.autocrlf true` on a Windows checkout is exactly the
+# situation where it might not be.
+
+* text=auto eol=lf
+
+*.sh      text eol=lf
+Dockerfile      text eol=lf
+Dockerfile.dev  text eol=lf
+entrypoint.sh   text eol=lf
+
+*.ts   text eol=lf
+*.js   text eol=lf
+*.json text eol=lf
+*.sql  text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# Never touched.
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
+*.db binary
