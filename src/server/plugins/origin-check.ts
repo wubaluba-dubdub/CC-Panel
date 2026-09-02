@@ -3,6 +3,10 @@ import type { Env } from '../env.js';
 import { HEALTHZ_PATH } from './base-path.js';
 import { isLoopbackHostname, type PublicOrigin } from '../utils/public-origin.js';
 import { pathnameOf } from '../utils/timing-safe.js';
+import { clientIpForDisplay, userAgentForDisplay } from '../utils/client-ip.js';
+import { AuditEvent, type AuditService } from '../services/audit.service.js';
+import type { CookieJar } from './cookies.js';
+import type { Clock } from '../utils/clock.js';
 import { HttpError } from './auth.js';
 
 /** Methods that can change state. `GET`, `HEAD` and `OPTIONS` are excluded by definition. */
@@ -97,6 +101,34 @@ function isWebSocketUpgrade(raw: string | string[] | undefined): boolean {
   );
 }
 
+/**
+ * Whether this request can change state, and therefore whether `Origin` matters.
+ *
+ * Extracted rather than inlined because two callers need exactly this predicate:
+ * {@link validateRequestOrigin}, which only checks `Origin` when it is true, and
+ * {@link isOriginAbsentOnStateChange}, which reports the case the validator
+ * deliberately admits. Sharing the one definition is what stops the audit event
+ * from describing a different set of requests than the check it observes.
+ */
+function isStateChanging(req: OriginCheckInput): boolean {
+  const method = (req.method ?? 'GET').toUpperCase();
+  return MUTATING_METHODS.has(method) || isWebSocketUpgrade(req.headers.upgrade);
+}
+
+/**
+ * A state-changing request that carries **no** `Origin` header at all.
+ *
+ * {@link validateRequestOrigin} admits these on purpose — a browser attaches
+ * `Origin` to every mutating request and every handshake, so an absent header means
+ * a non-browser client, which cannot be tricked into acting for someone else. The
+ * reasoning is sound and the behaviour is unchanged. What was wrong with it was that
+ * it was *silent*: in production this should never happen, and if it does the
+ * operator has no way to find out. See {@link createOriginAbsenceAuditor}.
+ */
+export function isOriginAbsentOnStateChange(req: OriginCheckInput): boolean {
+  return isStateChanging(req) && soleValue(req.headers.origin) === null;
+}
+
 /** Splits an authority into hostname and port, tolerating a bracketed IPv6 literal. */
 export function splitAuthority(authority: string): { hostname: string; port: string | null } {
   const value = authority.trim();
@@ -153,7 +185,6 @@ function isLoopbackAuthority(authority: string): boolean {
  */
 export function validateRequestOrigin(policy: OriginPolicy, req: OriginCheckInput): OriginVerdict {
   const pathname = pathnameOf(req.url ?? '/');
-  const method = (req.method ?? 'GET').toUpperCase();
 
   if (pathname !== HEALTHZ_PATH) {
     const forwardedHost = policy.trustProxy ? immediateHop(req.headers['x-forwarded-host']) : null;
@@ -177,9 +208,7 @@ export function validateRequestOrigin(policy: OriginPolicy, req: OriginCheckInpu
     }
   }
 
-  if (!MUTATING_METHODS.has(method) && !isWebSocketUpgrade(req.headers.upgrade)) {
-    return { ok: true };
-  }
+  if (!isStateChanging(req)) return { ok: true };
 
   const origin = soleValue(req.headers.origin);
   if (origin === null) return { ok: true };
@@ -196,22 +225,112 @@ export function validateRequestOrigin(policy: OriginPolicy, req: OriginCheckInpu
 }
 
 /**
+ * Notified when the validator admits a state-changing request that carried no
+ * `Origin` header. Optional: the check works without one, and nothing about the
+ * accept/reject decision depends on it.
+ */
+export interface OriginObserver {
+  onAdmittedWithoutOrigin(req: FastifyRequest): void;
+}
+
+/** How long one `origin.absent_admitted` row silences the next. */
+export const ORIGIN_ABSENCE_THROTTLE_MS = 15 * 60 * 1000;
+
+export interface OriginAbsenceAuditorOptions {
+  audit: Pick<AuditService, 'write'>;
+  /** Read only to ask *whether* a session cookie is present. The value is never used. */
+  cookies: Pick<CookieJar, 'readSession'>;
+  clock: Clock;
+  throttleMs?: number;
+}
+
+/**
+ * Makes the admitted-without-`Origin` case visible instead of silent.
+ *
+ * The behaviour it observes is deliberate and unchanged: a mutating request or a
+ * WebSocket handshake with no `Origin` header at all is admitted, because every
+ * browser attaches one and an absent header therefore means a client that cannot be
+ * made to act for someone else. That reasoning holds — but in production it should
+ * never happen, and when it does the operator needs somewhere to find out. That
+ * somewhere is the audit log.
+ *
+ * Two narrowings, and each is the difference between a useful signal and a liability:
+ *
+ * - **Only when a session cookie is present.** A request with no cookie is a
+ *   stranger, and every stranger's scripted `POST` to the 404 sink would otherwise
+ *   write a row — turning an append-only log with a retention cap into something an
+ *   anonymous scanner can push real history out of. Presence is tested through the
+ *   cookie jar, which costs nothing; a *live*-session test would mean resolving the
+ *   token on every request at root scope, which is the database read `attachSession`
+ *   pays for only inside `/api`.
+ * - **Throttled to one row per window, counting what it suppressed.** The narrowing
+ *   above still leaves an attacker who has learned the base path able to send a
+ *   garbage cookie, and the root hook runs before the rate limiter. Since this event
+ *   means "a thing that should never happen happened", one row per fifteen minutes
+ *   carries all of that information, and the `suppressed` count says how much more of
+ *   it there was. The window is per process: a restart re-arms it, which errs toward
+ *   recording.
+ */
+export function createOriginAbsenceAuditor(opts: OriginAbsenceAuditorOptions): OriginObserver {
+  const throttleMs = opts.throttleMs ?? ORIGIN_ABSENCE_THROTTLE_MS;
+  let lastWrittenAt: number | null = null;
+  let suppressed = 0;
+
+  return {
+    onAdmittedWithoutOrigin(req: FastifyRequest): void {
+      // The cookie is only ever tested for presence. Its value is not read here, not
+      // logged, and not put in the row — the point of the row is the request shape.
+      if (opts.cookies.readSession(req) === null) return;
+
+      const now = opts.clock.now();
+      if (lastWrittenAt !== null && now - lastWrittenAt < throttleMs) {
+        suppressed += 1;
+        return;
+      }
+
+      opts.audit.write({
+        event: AuditEvent.OriginAbsentAdmitted,
+        outcome: 'success',
+        actorIp: clientIpForDisplay(req),
+        userAgent: userAgentForDisplay(req),
+        // `pathnameOf` drops the query string; the audit service elides the base
+        // path from every string value, so this is logged as `/<base>/api/...`.
+        meta: { path: pathnameOf(req.raw.url ?? '/'), method: req.method, suppressed },
+      });
+      lastWrittenAt = now;
+      suppressed = 0;
+    },
+  };
+}
+
+/**
  * The Fastify hook form. Must be installed at the **root** scope and *before* any
  * `register()` call, or Fastify's encapsulation will leave the children — the API
  * and the shell — without it.
+ *
+ * `observer` is notified only on the admitted-without-`Origin` path, and only after
+ * the request has passed every other check — so a request rejected for its `Host`
+ * never reaches it.
  */
-export function requireValidOriginAndHost(policy: OriginPolicy): onRequestAsyncHookHandler {
+export function requireValidOriginAndHost(
+  policy: OriginPolicy,
+  observer?: OriginObserver,
+): onRequestAsyncHookHandler {
   return async function originAndHostHook(req: FastifyRequest): Promise<void> {
-    const verdict = validateRequestOrigin(policy, {
+    const input: OriginCheckInput = {
       method: req.method,
       headers: req.raw.headers as Record<string, string | string[] | undefined>,
       url: req.raw.url,
-    });
+    };
+    const verdict = validateRequestOrigin(policy, input);
     if (!verdict.ok) {
       // The reason goes to the log, never to the client: the response is the bare
       // reason phrase from `app.setErrorHandler`.
       req.log.warn({ reason: verdict.reason }, 'request rejected by origin/host check');
       throw new HttpError(403, `request rejected: ${verdict.reason}`);
+    }
+    if (observer !== undefined && isOriginAbsentOnStateChange(input)) {
+      observer.onAdmittedWithoutOrigin(req);
     }
   };
 }

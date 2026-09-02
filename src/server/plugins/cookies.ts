@@ -1,7 +1,6 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { csrfTokenFor } from '../services/csrf.service.js';
 import {
-  ABSOLUTE_LIFETIME_MS,
   IDLE_TIMEOUT_MS,
   PRE_AUTH_LIFETIME_MS,
   hashToken,
@@ -114,7 +113,7 @@ interface CookieAttributes {
  *
  * The clamp is what keeps this honest: a `full` session refreshed at every request
  * would otherwise hand out an eight-hour cookie for a session with ten minutes of
- * absolute lifetime left. Never more than {@link ABSOLUTE_LIFETIME_MS}, and
+ * absolute lifetime left. Never more than `ABSOLUTE_LIFETIME_MS`, and
  * `tests/integration/cookies.test.ts` asserts that on a session near its absolute
  * deadline.
  */

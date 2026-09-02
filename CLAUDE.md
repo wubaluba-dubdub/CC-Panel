@@ -307,7 +307,14 @@ vectors are pinned in `tests/unit/totp.test.ts`.
   than an indexed `=`, so no credential comparison in this codebase short-circuits.
 - Cookie: `HttpOnly; SameSite=Strict; Path=/${basePath}`, **no `Domain`**, and a
   `Max-Age` mirroring the sliding idle window clamped to the absolute deadline,
-  re-stamped on every authenticated response.
+  re-stamped on every authenticated response. All three of those are asserted on the
+  wire, not in prose, by the `Max-Age` block in `tests/integration/cookies.test.ts`:
+  *is set on the wire, five minutes for a pre session and eight hours once full*
+  (a `full` session's cookie is `IDLE_TIMEOUT_MS / 1000` = 28800, not the 299 a `pre`
+  session gets), *is re-stamped on an authenticated request, tracking the slid
+  deadline*, and *is clamped on the wire when the row is near its absolute deadline*
+  — with *never exceeds what is left of the absolute lifetime* pinning the pure
+  function underneath.
 - **Two cookie profiles, chosen from the effective public origin.** https →
   `__Secure-panel_session` with `Secure`. Loopback http outside production →
   `panel_session` with neither. The reason is that Chrome accepts the `Secure`
@@ -347,7 +354,12 @@ Three controls, in order of how much they carry:
    (`plugins/origin-check.ts`, below). A present-and-mismatched `Origin` is a 403;
    an **absent** one is allowed, because browsers always send it on mutating and
    cross-origin requests, so absent means a non-browser client that cannot be
-   tricked.
+   tricked. Allowed but **no longer silent**: since M1.6 an admitted request that
+   also carries a session cookie writes an `origin.absent_admitted` audit row with
+   the path and method — never the cookie — throttled to one row per fifteen minutes
+   with a `suppressed` count. In production it should never fire. The cookie is
+   tested for presence only, so a scanner with no cookie cannot flood the log, and
+   the presence test costs no database read.
 3. **Double-submit token, bound to the session.** Implemented in M1.5.
 
 ### The double-submit token
@@ -516,8 +528,8 @@ Implemented in `src/server/crypto.ts`; full rationale in `docs/SECURITY.md`.
   `totp.failure`, `recovery_code.used`, `auth.delay_applied`, `session.created`,
   `session.revoked`, `password.changed`, `stepup.granted`, `two_factor.disabled`,
   `recovery_codes.regenerated`, `secret.revealed`, `secret.changed`,
-  `base_path.regenerated`, `audit.trimmed`. No lockout event, because there is no
-  lockout.
+  `base_path.regenerated`, `audit.trimmed`, `origin.absent_admitted`. No lockout
+  event, because there is no lockout.
 - A failure row carries the reason **category** only (`bad_credentials`,
   `bad_totp_code`, `bad_recovery_code`, `replayed_totp_code`, `no_pending_login`,
   `two_factor_not_enrolled`) — never the attempted username, password, or code.
@@ -561,6 +573,16 @@ head_mismatch`, with `brokenAtId` (the newest row for a head mismatch, `null` fo
 empty table), `checked`, `head`, `floor` and `floorId`. Exposed as
 `GET /api/audit/verify`, deliberately uncached: a cached answer to "has my audit log
 been tampered with" is worth nothing.
+
+A hash mismatch at the **oldest surviving row** also carries
+`hint: 'wrong_key_or_genesis'`. `row_hash` is an HMAC under a subkey of
+`PANEL_MASTER_KEY`, so a changed or mistyped key invalidates every row at once and
+therefore always presents as a failure at the first row — while a tamper had to leave
+everything before the edited row intact and so never does. `unchained_row` and
+`head_mismatch` never get the hint: no key can turn a stored hash into `NULL`, and the
+anchor is stored outside the chain. The verdict is unchanged; the hint exists because
+an alarm that fires on a legitimate restore is an alarm the operator learns to ignore.
+**There is no key-rotation procedure — see *Key rotation* in `docs/SECURITY.md`.**
 
 ### Retention
 `maxRows` (default 20 000, floored at 2) with a `trimCheckEvery` counter keeping

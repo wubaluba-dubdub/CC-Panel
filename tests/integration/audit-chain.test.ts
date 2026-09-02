@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { rmSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Database } from 'better-sqlite3';
 import { getDb } from '../../src/server/db.js';
@@ -676,5 +677,159 @@ describe('M1.5 — audit metadata refuses to carry a credential', () => {
     expect(newest.meta_json).not.toContain(ctx.app.basePath);
     expect(newest.meta_json).toContain('<base>');
     expect(ctx.app.auth.audit.verify().ok).toBe(true);
+  });
+});
+
+/**
+ * M1.6 part 1.2 — a break at the oldest row is reported as probably-not-a-tamper.
+ *
+ * `row_hash` is an HMAC under a subkey of `PANEL_MASTER_KEY`, so changing that key
+ * invalidates every row at once and `verify()` reports the *first* of them. An
+ * operator who restores a backup under a different key, or mistypes it, therefore
+ * sees `row_hash_mismatch at id 1` on a log nobody has touched — and an alarm that
+ * fires on a legitimate operation is an alarm that gets ignored the next time.
+ *
+ * The fix is not to weaken the check: the report is still `ok: false`, still names
+ * the reason and the row. It is to say, at the one position where the innocent
+ * reading is far more likely than the guilty one, which reading that is. A tamper
+ * cannot present this way, because the attacker had to leave every row before the
+ * one they edited alone.
+ *
+ * The panel has no key-rotation procedure. See *Key rotation* in `docs/SECURITY.md`.
+ */
+describe('M1.6 — verify() distinguishes a wrong key from a tamper', () => {
+  let ctx: AuthTestContext | null = null;
+  let keptDir: string | null = null;
+
+  const KEY_A = Buffer.from('a'.repeat(32)).toString('base64');
+  const KEY_B = Buffer.from('b'.repeat(32)).toString('base64');
+
+  afterEach(async () => {
+    if (ctx !== null) await ctx.cleanup();
+    ctx = null;
+    if (keptDir !== null) rmSync(keptDir, { recursive: true, force: true });
+    keptDir = null;
+  });
+
+  it('hints at the key when the whole chain fails from the oldest surviving row', async () => {
+    // The real scenario, not a simulation of it: rows written under one master key
+    // and verified under another, across a restart on the same volume.
+    const first = await createAuthTestServer({ PANEL_MASTER_KEY: KEY_A }, { keepDataDir: true });
+    keptDir = first.dataDir;
+    await seedRows(first);
+    const oldest = ids()[0]!;
+    expect(verify(first).ok).toBe(true);
+    await first.cleanup();
+
+    ctx = await createAuthTestServer(
+      { PANEL_MASTER_KEY: KEY_B },
+      { dataDir: keptDir, keepDataDir: true },
+    );
+
+    const result = verify(ctx);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('row_hash_mismatch');
+    expect(result.brokenAtId).toBe(oldest);
+    expect(result.hint).toBe('wrong_key_or_genesis');
+    // The report is unchanged in every other respect: it still walked the table and
+    // it still says the log does not verify.
+    expect(result.checked).toBe(count());
+  });
+
+  it('gives no hint for a tamper partway down the chain', async () => {
+    ctx = await createAuthTestServer();
+    await seedRows(ctx);
+    expect(verify(ctx).hint).toBeNull();
+
+    dropTriggers();
+    const middle = rows()[2]!;
+    getDb().prepare('UPDATE audit_log SET user_agent = ? WHERE id = ?').run('tampered', middle.id);
+
+    const result = verify(ctx);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('row_hash_mismatch');
+    expect(result.brokenAtId).toBe(middle.id);
+    // This is the shape an attacker produces, and it gets no excuse.
+    expect(result.hint).toBeNull();
+  });
+
+  it('hints when the oldest row no longer points at the stored floor', async () => {
+    ctx = await createAuthTestServer();
+    await seedRows(ctx);
+    const oldest = ids()[0]!;
+
+    // The floor lives outside the chain, so this needs no trigger drop. It is what a
+    // restore against a mismatched `audit_chain` row looks like — a genesis problem,
+    // which is the other half of what the hint is named for.
+    getDb().prepare("UPDATE audit_chain SET floor_hash = 'not-the-floor' WHERE id = 1").run();
+
+    const result = verify(ctx);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('prev_hash_mismatch');
+    expect(result.brokenAtId).toBe(oldest);
+    expect(result.hint).toBe('wrong_key_or_genesis');
+  });
+
+  it('never hints for an unchained row, because no key can produce a NULL hash', async () => {
+    ctx = await createAuthTestServer();
+    await seedRows(ctx);
+    const oldest = ids()[0]!;
+
+    dropTriggers();
+    getDb().prepare('UPDATE audit_log SET row_hash = NULL WHERE id = ?').run(oldest);
+
+    const result = verify(ctx);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('unchained_row');
+    expect(result.brokenAtId).toBe(oldest);
+    // A row inserted by hand is the only way to get here. That is a tamper.
+    expect(result.hint).toBeNull();
+  });
+
+  it('never hints for a truncated head', async () => {
+    ctx = await createAuthTestServer();
+    await seedRows(ctx);
+
+    dropTriggers();
+    const newest = rows()[rows().length - 1]!;
+    getDb().prepare('DELETE FROM audit_log WHERE id = ?').run(newest.id);
+
+    const result = verify(ctx);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('head_mismatch');
+    expect(result.hint).toBeNull();
+  });
+
+  it('reports the hint through GET /api/audit/verify', async () => {
+    ctx = await createAuthTestServer();
+    // Not `seedRows`: it enrols too, and a second enrolment against an account that
+    // already has two-factor on is refused.
+    const account = await enrollAccount(ctx);
+    await postLogin(ctx, { password: 'wrong-password-entirely' });
+    expect(count()).toBeGreaterThan(3);
+
+    const read = async (): Promise<{ ok: boolean; reason: string | null; hint: string | null }> => {
+      const res = await ctx!.inject({
+        method: 'GET',
+        url: ctx!.url('/api/audit/verify'),
+        cookies: { [SESSION_COOKIE]: account.cookie },
+      });
+      expect(res.statusCode).toBe(200);
+      return res.json() as { ok: boolean; reason: string | null; hint: string | null };
+    };
+
+    const clean = await read();
+    expect(clean.ok).toBe(true);
+    expect(clean.hint).toBeNull();
+
+    dropTriggers();
+    getDb()
+      .prepare('UPDATE audit_log SET user_agent = ? WHERE id = ?')
+      .run('tampered', ids()[0]!);
+
+    const dirty = await read();
+    expect(dirty.ok).toBe(false);
+    expect(dirty.reason).toBe('row_hash_mismatch');
+    expect(dirty.hint).toBe('wrong_key_or_genesis');
   });
 });

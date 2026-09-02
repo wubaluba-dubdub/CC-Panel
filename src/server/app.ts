@@ -9,7 +9,11 @@ import { initDb, closeDb } from './db.js';
 import { initCrypto, resetCrypto } from './crypto.js';
 import securityHeadersPlugin from './plugins/security-headers.js';
 import basePathPlugin, { createBasePathGate } from './plugins/base-path.js';
-import { createOriginPolicy, requireValidOriginAndHost } from './plugins/origin-check.js';
+import {
+  createOriginAbsenceAuditor,
+  createOriginPolicy,
+  requireValidOriginAndHost,
+} from './plugins/origin-check.js';
 import { RateLimiter } from './plugins/rate-limit.js';
 import { createRedactedLogger } from './plugins/logger-redaction.js';
 import apiRoutes from './routes/api.js';
@@ -67,6 +71,12 @@ export interface ServerConfig {
   sleep?: Sleep;
   /** One running authentication attempt plus this many queued. Default 1. */
   authQueueLimit?: number;
+  /**
+   * Test seam. How long one `origin.absent_admitted` row silences the next. The
+   * suite sets it to 0 to assert the unthrottled behaviour, and leaves it alone to
+   * assert the throttle. Production uses the default in `plugins/origin-check.ts`.
+   */
+  originAbsenceThrottleMs?: number;
   /**
    * Token-bucket sizes. Test seam only: the suite shrinks a bucket to three tokens
    * so it can empty one in three requests instead of sixty. Production uses the
@@ -312,7 +322,24 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   //
   // The expected origin comes from configuration, never from the request's own
   // `Host` header. See plugins/origin-check.ts.
-  app.addHook('onRequest', requireValidOriginAndHost(createOriginPolicy(env, origin)));
+  //
+  // The observer is the M1.6 addition: an admitted state-changing request that
+  // carried no `Origin` at all is still admitted — the reasoning for that has not
+  // changed — but it is no longer silent. See `createOriginAbsenceAuditor`.
+  app.addHook(
+    'onRequest',
+    requireValidOriginAndHost(
+      createOriginPolicy(env, origin),
+      createOriginAbsenceAuditor({
+        audit: runtime.audit,
+        cookies: runtime.cookies,
+        clock: runtime.clock,
+        ...(config.originAbsenceThrottleMs !== undefined
+          ? { throttleMs: config.originAbsenceThrottleMs }
+          : {}),
+      }),
+    ),
+  );
 
   // ── Health check (outside base path) ───────────────────────────────────────
   app.get('/healthz', async (_req, reply) => {

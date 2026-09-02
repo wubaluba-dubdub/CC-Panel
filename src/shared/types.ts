@@ -141,6 +141,11 @@ export interface AuditVerifyResponse {
   floorId: number;
   reason: string | null;
   brokenAtId: number | null;
+  /**
+   * `'wrong_key_or_genesis'` when the break is at the oldest surviving row, which
+   * is far more likely a wrong `PANEL_MASTER_KEY` than a tamper. Null otherwise.
+   */
+  hint: string | null;
 }
 
 /** Every error response in the application. Nothing else is ever returned. */

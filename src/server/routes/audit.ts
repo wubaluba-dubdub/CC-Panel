@@ -68,6 +68,7 @@ export default async function auditRoutes(
       floorId: result.floorId,
       reason: result.reason,
       brokenAtId: result.brokenAtId,
+      hint: result.hint,
     };
     return response;
   });

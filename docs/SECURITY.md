@@ -266,6 +266,51 @@ The HKDF salt is a constant, which is correct here: the master key is already 32
 bytes of CSPRNG output, so the salt has no low-entropy input material to spread,
 and a constant keeps derivation reproducible across restarts.
 
+### Key rotation
+
+**There is no key-rotation procedure, and `PANEL_MASTER_KEY` must be treated as
+permanent for the life of the database.** This is stated here rather than left to be
+discovered, because the failure mode is quiet in one direction and alarming in the
+other.
+
+Three things are derived from that one key, and each reacts differently to being
+given a new one:
+
+| derived under | what a new key does |
+| --- | --- |
+| `KeyPurpose.SecretColumn` | every stored secret becomes permanently undecryptable — a `DecryptionError` at the moment something tries to read it, not at boot |
+| `KeyPurpose.CsrfToken` | every issued CSRF token stops matching, so the next mutating request from an open browser tab is a `403`; harmless, and fixed by logging in again |
+| `KeyPurpose.AuditChain` | **every historical audit row stops verifying at once**, and `verify()` reports `row_hash_mismatch` at the oldest surviving row on a log nobody has touched |
+
+The third is the one that matters, because it is indistinguishable *in kind* from a
+tamper and an operator who is shown a false alarm once will discount the real one.
+`row_hash` is an HMAC over the row's contents under a subkey of the master key: a
+new key invalidates all of them simultaneously. A tamper cannot look like that — the
+attacker had to leave every row before the one they edited alone — so `verify()`
+reports `hint: 'wrong_key_or_genesis'` for a break at the oldest surviving row and
+nothing else. See [verify()](#verify).
+
+The rotation that *would* be safe is therefore not "change the variable". It is:
+decrypt every secret under the old key, re-encrypt under the new one, and re-chain
+the audit log from its floor — the last of which destroys the property the chain
+exists for, since a re-chained log is attested from the moment it was re-chained
+and not from when its rows were written. `initChain()` does exactly that for rows
+written before migration 008 and says so in the same terms. Nothing automates it,
+and nothing should without the operator deciding that trade explicitly.
+
+Practical consequences, all of which belong in the runbook and are in
+`docs/DEPLOY.md`:
+
+- Store the key where it will outlive the deployment, and separately from any
+  database backup. Either one alone is useless: the backup without the key yields no
+  readable secret and no verifiable log, and the key without the backup yields
+  nothing at all.
+- A backup restored under a different master key fails `verify()` with the
+  `wrong_key_or_genesis` hint. That is the expected symptom, not a compromise.
+- If the key is genuinely lost, the recovery is a new database: a fresh volume, a
+  fresh seed from `PANEL_ADMIN_USERNAME`/`PANEL_ADMIN_PASSWORD`, and the loss of the
+  audit history. Nothing in the panel can recover the old one, by construction.
+
 ### Encryption
 
 AES-256-GCM, a fresh 96-bit nonce per write, 128-bit authentication tag. Payloads
@@ -853,6 +898,48 @@ upgrade arriving as a raw HTTP upgrade never becomes a Fastify request, so no
 `onRequest` hook will ever see it — and it is cookie-authenticated and the most
 state-changing operation in the panel. **The upgrade handler must call it itself.**
 
+#### The absent `Origin` is admitted, and — new in M1.6 — recorded
+
+The third rule above is the one that most deserves a second look, and it survived it.
+An absent `Origin` on a mutating request is still admitted, because the reasoning is
+sound: a browser attaches `Origin` to every mutating request and every WebSocket
+handshake, so an absent header means a client that is not a browser and therefore not
+being tricked into acting for someone else. Rejecting it would break `curl`, the
+panel's own test suite, and any future scripted use, in exchange for nothing.
+
+What was wrong with it was that it was **silent**. In production this should never
+happen — every request that matters comes from a browser — and an event that should
+never happen is exactly the kind that must not pass unrecorded. So
+`createOriginAbsenceAuditor` in `plugins/origin-check.ts` writes an
+`origin.absent_admitted` audit row carrying the request's path and method, and
+nothing else.
+
+Two narrowings, each of which is the difference between a signal and a liability:
+
+- **Only when a session cookie is present.** The observer runs in the root
+  `onRequest` hook, which is *before* the base-path 404 sink answers and *before* the
+  rate limiter charges anything. Writing a row for every anonymous `POST` would hand
+  a scripted scanner a way to push real history out of a log with a retention cap.
+  Presence is tested through the cookie jar and costs nothing; testing for a *live*
+  session would mean resolving the token at root scope on every request, which is the
+  database read `attachSession` pays for only inside `/api`.
+- **Throttled to one row per fifteen minutes, carrying the count it suppressed.**
+  The narrowing above still leaves someone who has learned the base path able to send
+  a garbage cookie. Since the event means "a thing that should never happen
+  happened", one row per window carries all of that information and `suppressed`
+  carries the rest. The window is per process, so a restart re-arms it — erring
+  toward recording.
+
+The cookie is only ever tested for presence. Its value is not read, not logged, and
+not in the row; `tests/integration/origin-absence.test.ts` asserts that the stored
+metadata contains neither the token, nor its first eight characters, nor even the
+cookie's name.
+
+The predicate the observer uses (`isOriginAbsentOnStateChange`) and the branch the
+validator takes are the **same** exported helper, `isStateChanging`. That is
+deliberate: two independent copies of "does this request change state" would let the
+audit row come to describe a different set of requests than the check it is observing.
+
 ### Rate limiting and request size
 
 Still **no per-IP bucket** — that is the operator decision above, and it stands. M1.5
@@ -949,7 +1036,10 @@ Events: `setup.completed`, `two_factor.enrollment_started`, `login.success`,
 `login.failure`, `totp.failure`, `recovery_code.used`, `auth.delay_applied`,
 `session.created`, `session.revoked`, `password.changed`, `stepup.granted`,
 `two_factor.disabled`, `recovery_codes.regenerated`, `secret.revealed`,
-`secret.changed`, `base_path.regenerated`, and — new in M1.5 — `audit.trimmed`.
+`secret.changed`, `base_path.regenerated`, `audit.trimmed` (M1.5), and — new in
+M1.6 — `origin.absent_admitted`, which is described where the behaviour it observes
+is, under
+[The absent `Origin` is admitted, and — new in M1.6 — recorded](#the-absent-origin-is-admitted-and--new-in-m16--recorded).
 
 A failure row carries the reason **category** only — `bad_credentials`,
 `bad_totp_code`, `bad_recovery_code`, `replayed_totp_code`, `no_pending_login`,
@@ -1018,6 +1108,23 @@ correctly to its predecessor — nothing but the anchor notices.
 
 Also returned: `checked`, `head`, `floor`, `floorId`, and `brokenAtId` — the first
 failing row, the newest row for a head mismatch, `null` for an empty table.
+
+**And `hint`, new in M1.6.** A `prev_hash_mismatch` or `row_hash_mismatch` at the
+*oldest surviving row* also carries `hint: 'wrong_key_or_genesis'`, because at that
+one position the innocent explanation is far more likely than the guilty one: a
+changed or mistyped `PANEL_MASTER_KEY` invalidates every row's HMAC at once and so
+always presents as a failure at the first row, while a tamper had to leave everything
+before the edited row intact and so never does. The same shape covers a restore
+against a mismatched `audit_chain` floor, which is the "genesis" half of the name.
+
+`unchained_row` is deliberately excluded: no key can turn a stored hash into `NULL`,
+so that reason only ever means a row was inserted by hand. `head_mismatch` is
+excluded for the same reason — the anchor is stored plaintext, outside the chain.
+
+The hint changes nothing about the verdict. `ok` is still `false`, the reason and the
+row are still named. It exists because an alarm that fires on a legitimate operation
+is an alarm that gets ignored, and *that* is how a real tamper goes unnoticed. See
+[Key rotation](#key-rotation).
 
 Exposed as `GET /api/audit/verify`, deliberately **not cached**: a cached answer to "has
 my audit log been tampered with" is worth nothing. At the row cap it is a bounded scan of

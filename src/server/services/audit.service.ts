@@ -34,6 +34,18 @@ export const AuditEvent = {
    * is evidence of tampering rather than housekeeping.
    */
   AuditTrimmed: 'audit.trimmed',
+  /**
+   * A state-changing request carrying a session cookie was admitted with **no**
+   * `Origin` header at all.
+   *
+   * Not a rejection and not an error: the admission is deliberate, because a browser
+   * attaches `Origin` to every mutating request and every WebSocket handshake, so an
+   * absent header means a non-browser client. But in production it should never
+   * happen, and an event that should never happen is exactly the kind that must not
+   * be silent. Written by `createOriginAbsenceAuditor` in `plugins/origin-check.ts`,
+   * throttled, and carrying the path and method — never the cookie.
+   */
+  OriginAbsentAdmitted: 'origin.absent_admitted',
 } as const;
 
 export type AuditEventName = (typeof AuditEvent)[keyof typeof AuditEvent];
@@ -122,6 +134,29 @@ export type AuditChainBreak =
   | 'row_hash_mismatch'
   | 'head_mismatch';
 
+/**
+ * The likeliest *innocent* explanation for a break, when there is one.
+ *
+ * `wrong_key_or_genesis` is set when the chain fails at the **oldest surviving
+ * row** with a hash mismatch, which is what a wrong `PANEL_MASTER_KEY` looks like:
+ * `row_hash` is an HMAC under a subkey of that key, so rotating or mistyping it
+ * invalidates every row at once and `verify()` reports the first of them. A tamper,
+ * by contrast, is somewhere in the middle — the attacker had to leave the rows
+ * before the one they edited alone.
+ *
+ * Reported because the alarm is otherwise untrustworthy. An operator who restores a
+ * backup under a different key, or types the key wrong, sees `row_hash_mismatch at
+ * id 1` on a log nobody has touched; being told once that this shape is far more
+ * likely a key problem is what stops the next, real alarm from being ignored. The
+ * panel has no key-rotation procedure — see *Key rotation* in `docs/SECURITY.md`.
+ *
+ * `prev_hash_mismatch` at the oldest row gets the same hint for the neighbouring
+ * reason: it means the row does not point back at the stored floor, which is the
+ * genesis/floor state rather than any row's content. `unchained_row` never gets it —
+ * a `NULL` hash cannot be caused by a wrong key, only by a row inserted by hand.
+ */
+export type AuditVerifyHint = 'wrong_key_or_genesis';
+
 export interface AuditVerification {
   ok: boolean;
   /** Rows walked. */
@@ -135,6 +170,8 @@ export interface AuditVerification {
   reason: AuditChainBreak | null;
   /** The first row that failed, or the newest row for a head mismatch. */
   brokenAtId: number | null;
+  /** See {@link AuditVerifyHint}. Null when there is no break, or no innocent reading of it. */
+  hint: AuditVerifyHint | null;
 }
 
 export interface AuditQuery {
@@ -388,6 +425,11 @@ export class AuditService {
    * edited, or two rows' contents were swapped, since the hash covers the id); and
    * a head mismatch, where the chain is internally consistent but does not reach
    * the stored anchor — which is what catches truncating the newest rows.
+   *
+   * A break at the **oldest surviving row** also carries
+   * `hint: 'wrong_key_or_genesis'`, because at that one position the far more likely
+   * cause is a wrong `PANEL_MASTER_KEY` or a mismatched floor rather than a tamper.
+   * See {@link AuditVerifyHint}; the reasoning is the whole value of the field.
    */
   verify(): AuditVerification {
     const state = this.#state();
@@ -395,23 +437,47 @@ export class AuditService {
       .prepare('SELECT * FROM audit_log ORDER BY id ASC')
       .all() as ChainedAuditRow[];
 
-    const base: Omit<AuditVerification, 'ok' | 'reason' | 'brokenAtId'> = {
+    const base: Omit<AuditVerification, 'ok' | 'reason' | 'brokenAtId' | 'hint'> = {
       checked: rows.length,
       head: state.anchorHash,
       floor: state.floorHash,
       floorId: state.floorId,
     };
 
+    const oldestId = rows[0]?.id ?? null;
+    /**
+     * A hash mismatch on the oldest surviving row and nowhere else. A wrong key
+     * invalidates every row at once, so it always presents here; a tamper had to
+     * leave everything before the edited row intact, so it never does.
+     * `unchained_row` is excluded deliberately: no key can turn a hash into `NULL`.
+     */
+    const hintFor = (reason: AuditChainBreak, id: number): AuditVerifyHint | null =>
+      id === oldestId && (reason === 'prev_hash_mismatch' || reason === 'row_hash_mismatch')
+        ? 'wrong_key_or_genesis'
+        : null;
+
     let expectedPrev = state.floorHash;
     for (const row of rows) {
       if (row.row_hash === null || row.prev_hash === null) {
-        return { ...base, ok: false, reason: 'unchained_row', brokenAtId: row.id };
+        return { ...base, ok: false, reason: 'unchained_row', brokenAtId: row.id, hint: null };
       }
       if (row.prev_hash !== expectedPrev) {
-        return { ...base, ok: false, reason: 'prev_hash_mismatch', brokenAtId: row.id };
+        return {
+          ...base,
+          ok: false,
+          reason: 'prev_hash_mismatch',
+          brokenAtId: row.id,
+          hint: hintFor('prev_hash_mismatch', row.id),
+        };
       }
       if (chainHash(row.prev_hash, canonicalRow(row)) !== row.row_hash) {
-        return { ...base, ok: false, reason: 'row_hash_mismatch', brokenAtId: row.id };
+        return {
+          ...base,
+          ok: false,
+          reason: 'row_hash_mismatch',
+          brokenAtId: row.id,
+          hint: hintFor('row_hash_mismatch', row.id),
+        };
       }
       expectedPrev = row.row_hash;
     }
@@ -422,10 +488,11 @@ export class AuditService {
         ok: false,
         reason: 'head_mismatch',
         brokenAtId: rows.length === 0 ? null : rows[rows.length - 1]!.id,
+        hint: null,
       };
     }
 
-    return { ...base, ok: true, reason: null, brokenAtId: null };
+    return { ...base, ok: true, reason: null, brokenAtId: null, hint: null };
   }
 
   /**

@@ -79,6 +79,8 @@ export interface CreateTestServerOptions {
   clock?: Clock;
   sleep?: Sleep;
   authQueueLimit?: number;
+  /** How long one `origin.absent_admitted` row silences the next. */
+  originAbsenceThrottleMs?: number;
   /**
    * Token-bucket sizes. Shrinking a bucket to a handful of tokens is what lets the
    * rate-limit suite empty one in three requests instead of sixty.
@@ -109,6 +111,9 @@ export async function createTestServer(
     ...(opts.clock ? { clock: opts.clock } : {}),
     ...(opts.sleep ? { sleep: opts.sleep } : {}),
     ...(opts.authQueueLimit !== undefined ? { authQueueLimit: opts.authQueueLimit } : {}),
+    ...(opts.originAbsenceThrottleMs !== undefined
+      ? { originAbsenceThrottleMs: opts.originAbsenceThrottleMs }
+      : {}),
     ...(opts.rateLimit ? { rateLimit: opts.rateLimit } : {}),
   });
 
