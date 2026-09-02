@@ -317,10 +317,17 @@ describe('the public origin has one resolver', () => {
   const SERVER_ROOT = join(import.meta.dirname, '..', '..', 'src', 'server');
 
   /**
-   * `utils/public-origin.ts` resolves it. `env.ts` parses it into the typed `Env`, which
-   * is the only other legitimate mention: it validates presence, not meaning.
+   * Three files may name the variables, and each for a different reason.
+   *
+   * - `utils/public-origin.ts` **resolves** them. This is the decision.
+   * - `env.ts` **parses** them into the typed `Env`. It validates presence, not meaning.
+   * - `cli/preflight.ts` **reports** them, and decides nothing: it prints whether each is
+   *   set and then hands the same `Env` to the same resolver, so that what it says is
+   *   what boot would do rather than a second opinion about it.
+   *
+   * Anything else in the offender list is the finding, not the exemption.
    */
-  const ORIGIN_READERS = new Set(['utils/public-origin.ts', 'env.ts']);
+  const ORIGIN_READERS = new Set(['utils/public-origin.ts', 'env.ts', 'cli/preflight.ts']);
 
   function sourceFiles(dir: string): string[] {
     const out: string[] = [];
@@ -350,7 +357,7 @@ describe('the public origin has one resolver', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('calls resolvePublicOrigin exactly once, at boot', () => {
+  it('calls resolvePublicOrigin from boot and from the preflight report, and nowhere else', () => {
     const callers: string[] = [];
     for (const file of sourceFiles(SERVER_ROOT)) {
       const rel = relative(SERVER_ROOT, file).split('\\').join('/');
@@ -358,12 +365,15 @@ describe('the public origin has one resolver', () => {
       const text = readFileSync(file, 'utf-8');
       for (const [index, line] of text.split('\n').entries()) {
         const code = line.replace(/\/\/.*$/, '').replace(/^\s*\*.*$/, '');
-        if (/resolvePublicOrigin\s*\(/.test(code)) callers.push(`${rel}:${index + 1}`);
+        if (/resolvePublicOrigin\s*\(/.test(code)) callers.push(rel);
       }
     }
-    // One call site. Everything downstream is handed the resolved `PublicOrigin`.
-    expect(callers).toHaveLength(1);
-    expect(callers[0]).toMatch(/^app\.ts:/);
+    // Exactly two, and it matters which: `app.ts` resolves it once at boot and hands the
+    // result to everything downstream, and `cli/preflight.ts` calls the *same* resolver so
+    // that the check it prints is the decision boot would make rather than a re-derivation
+    // of it. A third caller would be a place that could disagree.
+    expect([...new Set(callers)].sort()).toEqual(['app.ts', 'cli/preflight.ts']);
+    expect(callers.filter((c) => c === 'app.ts')).toHaveLength(1);
   });
 
   it('states the resolved origin and the cookie profile it selected, at boot', () => {

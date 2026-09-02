@@ -50,8 +50,15 @@ export interface Env {
   NODE_ENV: string;
 }
 
-export function loadEnv(): Env {
-  const raw = envSchema.parse(process.env);
+/**
+ * Parses and validates the environment.
+ *
+ * `source` defaults to `process.env` and exists for one caller: `cli/preflight.ts`,
+ * which has to be able to validate a *supplied* environment so its own tests can drive
+ * a broken one without mutating the process. Nothing in the server passes it.
+ */
+export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
+  const raw = envSchema.parse(source);
 
   // Validate master key length (must be 32 bytes when decoded from base64)
   let masterKeyBytes: Buffer;

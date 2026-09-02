@@ -273,3 +273,69 @@ describe('railway.json', () => {
     expect(config.deploy.numReplicas).toBe(1);
   });
 });
+
+/**
+ * The runbook, checked against the code rather than proofread.
+ *
+ * `docs/DEPLOY.md` is written for someone who has not deployed anything, which means every
+ * variable name in it is something they will copy verbatim into a Railway dashboard. A
+ * renamed or removed variable that survives in the runbook is a deployment that fails for
+ * a reason the runbook itself caused, so the two lists are compared instead of trusted.
+ */
+describe('docs/DEPLOY.md', () => {
+  const runbook = read('docs/DEPLOY.md');
+  const env = read('src/server/env.ts');
+
+  /** Every `PANEL_*` / `RAILWAY_*` name the env schema actually reads. */
+  const declared = new Set(
+    [...env.matchAll(/^\s{2}(PANEL_[A-Z_]+|RAILWAY_[A-Z_]+):/gm)].map((m) => m[1]!),
+  );
+
+  it('documents every variable the server reads', () => {
+    expect(declared.size).toBeGreaterThan(5);
+    for (const name of declared) {
+      expect(runbook, name).toContain(name);
+    }
+  });
+
+  it('names no PANEL_ variable the server does not read', () => {
+    // `PANEL_UID` is the entrypoint's, not the server's, and is not offered to the
+    // operator as configuration — so it is not expected in the runbook either.
+    const mentioned = new Set([...runbook.matchAll(/\bPANEL_[A-Z_]+\b/g)].map((m) => m[0]));
+    const unknown = [...mentioned].filter((name) => !declared.has(name));
+    expect(unknown).toEqual([]);
+  });
+
+  it('covers the steps the prompt for this milestone required', () => {
+    for (const topic of [
+      'RAILWAY_RUN_UID',
+      'App Sleeping',
+      '/healthz',
+      'private',
+      'Volume',
+      '/data',
+      'base path',
+      'PANEL_ADMIN_PASSWORD',
+      'Locked out',
+      'Backup and restore',
+      'Key rotation',
+    ]) {
+      expect(runbook, topic).toContain(topic);
+    }
+  });
+
+  it('spells the backup and restore commands the way they actually run', () => {
+    const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
+    for (const script of ['preflight', 'backup', 'restore']) {
+      expect(pkg.scripts[script], script).toBeDefined();
+      expect(runbook, script).toContain(`npm run ${script}`);
+      // And the in-container form, which is the one the operator will actually use.
+      expect(runbook, script).toContain(`dist/server/cli/${script}.js`);
+    }
+  });
+
+  it('says that the key and the backup are useless apart, because that is the whole rule', () => {
+    expect(runbook).toContain('Either half alone is useless');
+    expect(runbook).toContain('wrong_key_or_genesis');
+  });
+});

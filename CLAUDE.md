@@ -658,6 +658,29 @@ Byte-identical in development and production. No `unsafe-inline`, no
 `unsafe-eval`, no CSP hashes. See the Phase 3 follow-up note above for
 `connect-src` and the terminal WebSocket.
 
+## Operator commands
+Three commands, all in `src/server/cli/`, all shipped in the image so they can be run in
+Railway's shell as `node dist/server/cli/<name>.js`. Full runbook: `docs/DEPLOY.md`.
+
+- **`npm run preflight`** — validates the whole configuration and prints a pass/fail line
+  per fact, non-zero exit on any failure. It **must not change anything**, so it opens its
+  own read-only connection rather than going through `initDb`, which would apply
+  migrations as a side effect; and it prints **no secret value** — for each credential only
+  whether it is set and how many characters, which catches a truncated paste and a variable
+  that never arrived. The base path is a secret under that rule too.
+- **`npm run backup -- <path>`** — SQLite's online backup API, then it *verifies what it
+  wrote* (`integrity_check`, migration count, audit chain). `cp panel.db` is not a backup:
+  in WAL mode a committed row lives in `panel.db-wal` until a checkpoint, so the main file
+  alone is an older database — measured on a fresh install, a plain copy could not be
+  opened at all, because every table the migrations created was still only in the WAL.
+- **`npm run restore -- <path>`** — refuses to overwrite a database whose audit chain
+  **currently verifies** (a verifying chain is positive evidence the live database is fine,
+  and a restore destroys append-only history) and refuses a snapshot whose chain fails at
+  its oldest row, since that is what a snapshot written under a different
+  `PANEL_MASTER_KEY` looks like. Both are overridable with `--force`; a live write lock is
+  not. It takes a consistent safety copy first, swaps through a rename, and removes the old
+  `-wal`/`-shm`.
+
 ## Deployment (Railway)
 - Docker image runs as non-root user (uid 10001).
 - `HOME` set to `/data/home`.

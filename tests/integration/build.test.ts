@@ -34,6 +34,15 @@ const DIST = join(ROOT, 'dist');
  * below, by name and by count, against the source directory rather than a literal.
  */
 describe('Part 1 — the build runs, and emits what the image runs', () => {
+  /**
+   * Four minutes, not the suite's 30-second default.
+   *
+   * This test really runs `tsc` over the whole server, and it shares the machine with
+   * every other test file vitest has in flight. On an idle machine it takes about three
+   * seconds; in a full-suite run under load it has been measured at 31 s, which failed as
+   * a *timeout* reported next to an unrelated assertion — an hour of looking in the wrong
+   * place. The `execFileSync` timeout below is the real bound.
+   */
   it('exits zero and produces the server entry point at the path the Dockerfile uses', () => {
     rmSync(DIST, { recursive: true, force: true });
 
@@ -68,7 +77,7 @@ describe('Part 1 — the build runs, and emits what the image runs', () => {
     // And it is loadable, not merely present: an emitted file with an unresolvable
     // import satisfies existsSync and still fails at container start.
     expect(readFileSync(entry, 'utf-8')).toContain('buildServer');
-  });
+  }, 240_000);
 
   it('ships no test code and no stale nested layout', () => {
     // Both are consequences of the base tsconfig's rootDir, and both would bloat
