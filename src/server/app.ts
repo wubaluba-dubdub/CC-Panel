@@ -17,6 +17,7 @@ import {
 import { RateLimiter } from './plugins/rate-limit.js';
 import { createRedactedLogger } from './plugins/logger-redaction.js';
 import apiRoutes from './routes/api.js';
+import healthzRoutes, { createHealthProbe, shippedMigrationCount } from './routes/healthz.js';
 import { createAuthRuntime, type AuthRuntime } from './services/auth-runtime.js';
 import { seedAdminUser } from './services/user.service.js';
 import type { Clock, Sleep } from './utils/clock.js';
@@ -342,8 +343,14 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   );
 
   // ── Health check (outside base path) ───────────────────────────────────────
-  app.get('/healthz', async (_req, reply) => {
-    return reply.send({ ok: true });
+  //
+  // Registered here, at the root scope and after the origin hook, so it inherits that
+  // hook (which exempts this one path from the `Host` check) and the root error and
+  // not-found handlers. Railway decides whether a deployment goes live from this
+  // route's answer, so what it does and does not assert is written out in
+  // `routes/healthz.ts`.
+  await app.register(healthzRoutes, {
+    probe: createHealthProbe({ db: runtime.db, expectedMigrations: shippedMigrationCount() }),
   });
 
   // ── Base path scoped routes ────────────────────────────────────────────────

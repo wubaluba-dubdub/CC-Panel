@@ -186,7 +186,7 @@ See `docs/SECURITY.md` for a detailed mapping of each control to the file(s) tha
   boundary. But obscurity is only worth having if it is kept, so it is kept out of
   `Referer` (via `Referrer-Policy: no-referrer`) and out of logs (below).
 - All routes (API, SPA, assets) are mounted under `/${basePath}`.
-- `GET /healthz` is the only route outside the prefix, returning `{"ok":true}`.
+- `GET /healthz` is the only route outside the prefix — see *The health endpoint* below.
 - Base path is generated on first boot if `PANEL_BASE_PATH` is not set, persisted to `/data/config/instance.json`, and logged once at startup.
 - The prefix is gated **before routing** by `createBasePathGate()` (installed as
   Fastify's `rewriteUrl` option), which compares the first path segment with
@@ -213,6 +213,22 @@ See `docs/SECURITY.md` for a detailed mapping of each control to the file(s) tha
   CSP is `script-src 'self'` with no `unsafe-inline`, and a CSP hash is not usable
   because the script body embeds the per-install base path. React Router will take
   `window.__BASE__` as its `basename` in Phase 2.
+
+## The health endpoint
+`GET /healthz` (`src/server/routes/healthz.ts`), outside the base path, no session, and
+the only route Railway calls. Railway polls it until it gets a 200 and **only then**
+makes the new deployment live; it never polls again. So the two directions are
+asymmetric — a failure during boot costs a deployment and leaves the previous one up,
+while a premature 200 pushes a broken deployment live — and it therefore asserts
+**reachability plus a bounded read**: one statement counting `schema_migrations` against
+the number of migrations this build shipped, which also answers "is the database fully
+migrated". No write probe (WAL churn on every poll forever). Exactly `{"ok":true}` on
+success and `{"ok":false}` with a `503` on failure — the reason is logged, never sent,
+because the endpoint is unauthenticated. Plus `Cache-Control: no-store`, the one caching
+directive anywhere in the panel: a response with none is heuristically cacheable, and
+"the health endpoint said fine" must never come out of a cache. Exempt from `Host`
+validation and rate limiting, because a 403 or a 429 there is a container-kill
+primitive.
 
 ## Response Headers
 The single source of truth is `SECURITY_HEADERS` in
@@ -658,7 +674,42 @@ Byte-identical in development and production. No `unsafe-inline`, no
     from a request header.
 - Optional:
   - `PANEL_BASE_PATH` (if unset, generated and logged)
-  - `PANEL_TRUST_PROXY` (default true)
+  - `PANEL_TRUST_PROXY` (default true) — **leave it on.** Both settings serve and log
+    in behind Railway, because the edge sets `Host` as well as `X-Forwarded-Host`, so
+    "does it work?" does not distinguish them. Off, the `scheme_downgrade` check is
+    silently gone, the recorded client address becomes the container network's, and
+    `Host` becomes the only input. On is safe because only the **rightmost** forwarded
+    value is honoured and the expected origin never comes from the request.
+    `tests/integration/railway-edge.test.ts` drives both.
+  - `PANEL_LISTEN_HOST` — which address to bind. Defaults to `0.0.0.0` in a container
+    (`PANEL_IN_CONTAINER=1`, set by the Dockerfile) or in production, and `127.0.0.1`
+    otherwise. The old hard-coded `0.0.0.0` was wrong in both directions: unreachable
+    from Railway's edge is not the failure it looks like, and a development server on
+    the wildcard is on the LAN with no TLS.
+
+### The container
+- Multi-stage `node:22-bookworm-slim` in **both** stages, because `better-sqlite3` is
+  compiled in the builder against that image's glibc and Node ABI.
+- `npm run build` is `tsc` **plus `scripts/copy-assets.mjs`**. `tsc` emits only what it
+  compiles, and the migration runner reads its `.sql` files off disk — a `dist` without
+  them boots, prints the base-path banner, and dies with `no such table: audit_log`.
+  That was true of every build from M1.1 until M1.6 booted the container.
+- `entrypoint.sh` starts as root because Railway mounts the volume root-owned *at
+  container start*, so a `chown` in the image is erased by the mount and a process
+  already at uid 10001 cannot create `panel.db`. It fixes ownership of the top level and
+  the known layout **only where it is wrong** — never `chown -R`, because /data will hold
+  project checkouts — then `exec setpriv --reuid --regid --clear-groups --no-new-privs`,
+  so node is pid 1 and receives SIGTERM directly. Measured: the no-op pass is 22–30 ms
+  and does not move with 20 000 files on the volume; `chown -R` over the same volume is
+  170 ms and scales.
+- **The drop is permanent and asserted, not assumed.** `setpriv --reuid` sets the saved
+  set-user-ID, so `setuid(0)` returns EPERM; `src/server/utils/privileges.ts` proves that
+  at boot and refuses to serve either as root or from a reversible drop. Phase 3 spawns
+  agent processes as children of this process, which is the whole reason.
+- Railway needs `RAILWAY_RUN_UID=0` so the container *starts* as root. The panel still
+  never runs as root. If the entrypoint finds itself unprivileged and unable to write the
+  volume it refuses to start and names that variable, rather than failing on the first
+  write.
 
 ## Current State
 Phase 1 is **in progress**. This section tracks what actually exists on disk, not

@@ -179,6 +179,53 @@ is guaranteed to run first.
 `src`. `<base href>` is not an option for making the reference relative: the CSP
 sets `base-uri 'none'`.
 
+## The health endpoint
+
+`src/server/routes/healthz.ts`. `GET /healthz` is the only route outside the secret
+base path, and the only one Railway ever calls.
+
+**What Railway does with it decides what it should assert.** Railway polls the
+configured healthcheck path until it receives a 200 and *only then* makes the new
+deployment live; it does not poll the endpoint afterwards. That makes the two failure
+directions completely asymmetric:
+
+- A `/healthz` that fails during boot costs a deployment. The previous deployment stays
+  up, which is the correct outcome when the new one is broken. The cost is a red deploy.
+- A `/healthz` that answers 200 before the panel can actually serve pushes a broken
+  deployment live, and nothing checks again until a human does.
+
+So it asserts **reachability plus a bounded read of the database**, not reachability
+alone. Reachability by itself is already a fair signal here, because `buildServer` opens
+the database and runs migrations *before* `listen()` — a container that accepts a
+connection has necessarily got that far. But "the database opened once, at boot" is not
+"the database is readable now", and the cases that separate them are exactly the ones a
+volume-backed deployment meets: the mount detached, the disk filled, the file was
+replaced by a restore under a different key.
+
+The read is one prepared statement counting `schema_migrations`, compared with the
+number of migration files this build shipped. That answers a second question for free —
+*is the database fully migrated* — which matters because a half-migrated database serves
+happily right up to the first query that touches the missing table.
+
+What it deliberately does not do:
+
+| | why |
+| --- | --- |
+| no write probe | it would catch a full disk, at the price of WAL churn on every poll forever; a health endpoint that mutates state is a bad trade |
+| no detail in the body | success is exactly `{"ok":true}`, failure exactly `{"ok":false}` with a `503`; the reason goes to the log. The endpoint is unauthenticated and reachable by anyone who can reach the panel, and "6 of 8 migrations applied at /data/panel.db" is free reconnaissance |
+| no version, uptime or build id | asserted absent by `tests/integration/healthz.test.ts` |
+| no base path, no session | it is mounted outside the prefix precisely so a prober that has not been told the secret can reach it — and it is *not* reachable inside the prefix, which would put the secret into whatever configuration polls it |
+
+It carries one header nothing else in the panel does: `Cache-Control: no-store`. A
+response with no caching directive, no `ETag` and no `Last-Modified` is heuristically
+cacheable, and "the health endpoint said fine" is the last answer that should ever come
+out of a cache.
+
+It is exempt from `Host` validation and from the rate limiter, and both exemptions are
+the same argument: Docker's own `HEALTHCHECK` arrives as `localhost:8080` while the
+public host is something else, so a 403 there — or a 429 — is a container-kill
+primitive, three failed probes from stopping the container.
+
 ## Manual Browser Checks
 
 The automated suite runs against `app.inject()`. It can assert what the server
@@ -897,6 +944,36 @@ The rules:
 upgrade arriving as a raw HTTP upgrade never becomes a Fastify request, so no
 `onRequest` hook will ever see it — and it is cookie-authenticated and the most
 state-changing operation in the panel. **The upgrade handler must call it itself.**
+
+#### `PANEL_TRUST_PROXY` must be **on** behind Railway, and why that is not obvious
+
+Both settings work. That is the trap: a first deployment with `PANEL_TRUST_PROXY=false`
+serves, logs in, and passes any test that only asks "does it work?", because Railway's
+edge sets `Host` to the real public domain as well as `X-Forwarded-Host`. So the
+recommendation needs a reason attached, and there are three.
+`tests/integration/railway-edge.test.ts` drives both settings against the edge's exact
+header set and asserts each of them.
+
+1. **With it off, the scheme-downgrade check is silently gone.** `X-Forwarded-Proto` is
+   not read at all, so a request that arrived over plaintext — the TLS terminator
+   bypassed, the container port reached directly — is indistinguishable from one that
+   did not. With it on, the same request is a `scheme_downgrade` 403.
+2. **With it off, the recorded client address is the container network's**, so every
+   session row and every audit row shows the proxy rather than the client. Nothing
+   *decides* from that value (the M1.4 rule, enforced statically by
+   `no-ip-decisions.test.ts`) — but it is the only thing that lets the operator tell
+   their own session from a stranger's in the session list.
+3. **With it off, `Host` becomes the only input**, so anything ever placed in front of
+   Railway that does not rewrite `Host` breaks the panel outright, and the failure is a
+   403 on every request.
+
+And the reason leaving it on is safe rather than a concession: only the **rightmost**
+value of each `X-Forwarded-*` header is honoured — the one written by the hop we are
+actually talking to — and the expected origin is never derived from the request in the
+first place. The verified behaviour of Railway's edge is that it *overwrites* a
+client-supplied `X-Forwarded-Host` with the real domain, so in practice there is one
+value; the appended shape is tested anyway, in both orders, because that is someone
+else's software and the panel should not depend on it.
 
 #### The absent `Origin` is admitted, and — new in M1.6 — recorded
 

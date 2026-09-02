@@ -118,6 +118,12 @@ describe('M1.2 — Perimeter', () => {
       expect(res.statusCode).toBe(200);
       expect(stableHeaders(res.headers)).toEqual({
         'content-type': 'application/json; charset=utf-8',
+        // M1.6 added this one header, and only here. A response with no
+        // `Cache-Control`, no `ETag` and no `Last-Modified` is heuristically cacheable,
+        // and "the health endpoint said fine" is the last answer that should come out
+        // of a cache. Nothing else in the panel gained a caching directive — see
+        // `routes/healthz.ts`.
+        'cache-control': 'no-store',
         ...SECURITY_HEADERS,
       });
     });
