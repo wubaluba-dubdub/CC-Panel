@@ -673,8 +673,8 @@ what the plan calls for.
   migration 008's append-only triggers and HMAC hash chain with `verify()`, retention
   writing an `audit.trimmed` checkpoint, and the paginated `GET /api/audit` query API
   behind a full session. **Nothing deferred from M1.5.**
-- **M1.6 — notifications: designed, not built.** The Telegram transport is specified
-  in `PLAN.md` under *M1.6 — Notifications (Telegram transport): the design*, and the
+- **M1.7 — notifications: designed, not built.** The Telegram transport is specified
+  in `PLAN.md` under *M1.7 — Notifications (Telegram transport): the design*, and the
   Phase 3 consumer it exists for under *Phase 3 preview*. No code exists: no
   `notification_queue`, no migration 009, no transport, no route. Two things in that
   design reach back into finished modules and should not come as a surprise when it

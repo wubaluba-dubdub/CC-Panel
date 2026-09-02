@@ -9,7 +9,10 @@ notably: `vite.config.ts` was deleted (`fix: restore a working build`; the serve
 build is `tsc -p tsconfig.build.json` and there is no client to bundle until M2),
 `lockout.service.ts` and `lockout.test.ts` do not exist and will not
 (no per-IP logic, no lockout), and the M1.4/M1.5 entries list the files that were
-added instead. M1.6's files are listed in its own design section below.
+added instead. M1.6 added the deployment artefacts this tree never listed
+(`entrypoint.sh`, `.gitattributes`, `src/server/cli/*`, `docs/DEPLOY.md`) alongside
+the `Dockerfile` and `railway.json` it did. M1.7's files are listed in its own
+design section below.
 
 ```
 .
@@ -271,9 +274,48 @@ this plan originally called for.
       header, rather than having the requirement retrofitted around client code that
       works without it. Nothing is deferred out of M1.5.
 
-- [ ] **M1.6 — notifications** (`feat(m1.6): telegram notifications`)
+- [ ] **M1.6 — deployment readiness** (`feat(m1.6): …`, one commit per part)
+      The Phase 1 exit: make the container build, boot on a real volume, and survive
+      behind Railway's edge. No new product features. What it added, and why each
+      piece could only be settled with a real container rather than a unit test:
+
+      - **Renumbering.** The Telegram transport was M1.6 and is now M1.7; this is
+        M1.6. Eleven references moved.
+      - **Three decisions carried over from the M1.5 review.** An admitted mutating
+        request with a session cookie and *no* `Origin` header now writes
+        `origin.absent_admitted` — the behaviour is unchanged and still correct, but
+        it is no longer silent. `verify()` distinguishes a chain that fails from its
+        oldest surviving row (`hint: 'wrong_key_or_genesis'`) from one that breaks
+        partway, because a wrong `PANEL_MASTER_KEY` fails at row 1 on a completely
+        untampered log and an operator must not be trained to read that as a tamper.
+        The session cookie's `Max-Age` was already asserted at every level; the
+        entry below names the tests rather than adding more.
+      - **The listen host.** `0.0.0.0` was hard-coded. It is now resolved by
+        `resolveListenHost`, `0.0.0.0` in a container or in production and
+        `127.0.0.1` for local development, because a development server on the
+        wildcard is reachable from the LAN and nothing said so.
+      - **The container.** Multi-stage `node:22-bookworm-slim` — the *same* base in
+        both stages, so the `better-sqlite3` binary compiled in the builder is valid
+        in the runtime — plus `entrypoint.sh`, which is the part that matters:
+        Railway mounts the volume at container *start*, root-owned, so a `chown` in
+        the image is erased by the mount and a process already running as uid 10001
+        cannot create `panel.db`. The entrypoint starts as root, fixes ownership of
+        the top level and the known subdirectories **only when it is wrong**, and
+        `exec setpriv`s to 10001 so the server is pid 1 and cannot regain root.
+      - **Behind the edge.** Railway's header set replayed against the real server,
+        with a client-supplied `X-Forwarded-Host: evil.example` in front of the real
+        value, with `PANEL_TRUST_PROXY` both on and off.
+      - **Operator tooling.** `npm run preflight`, `npm run backup`,
+        `npm run restore`, and `docs/DEPLOY.md` written for someone who has never
+        deployed anything.
+      - **The eleven acceptance criteria, written down at last.** They were never
+        recorded in this repository — see the note under *Phase 1 Exit Checklist* —
+        so this milestone reconstructed them from the security model and ran them
+        against the running container. They are now in that checklist.
+
+- [ ] **M1.7 — notifications** (`feat(m1.7): telegram notifications`)
       Designed but not built. The full design is below under
-      *M1.6 — Notifications (Telegram transport): the design*, and the Phase 3
+      *M1.7 — Notifications (Telegram transport): the design*, and the Phase 3
       consumer it exists for is under *Phase 3 preview*. Nothing about it is
       implemented: there is no `notification_queue` table, no migration 009, no
       transport, and no route.
@@ -283,14 +325,14 @@ Note: migration 004 created `secrets` with separate `ciphertext`/`nonce` columns
 columns cannot express the version prefix. 004 is left as-is rather than edited —
 a migration that has already run somewhere must never change.
 
-### M1.6 — Notifications (Telegram transport): the design
+### M1.7 — Notifications (Telegram transport): the design
 
 **Design only. Nothing in this section is built.** Recorded here so the decisions are
 made before the code exists, and so the parts that depend on M1.3 crypto and the
 M1.5 audit log are pinned to what those modules actually expose today rather than to
 what they might be assumed to expose.
 
-Commit when built: `feat(m1.6): telegram notifications`.
+Commit when built: `feat(m1.7): telegram notifications`.
 
 #### Why a transport at all, and why Telegram
 
@@ -573,11 +615,11 @@ Three layers, in the order they apply:
 ## Phase 3 preview — "Claude Code finished" notifications
 
 **Design only, and out of Phase 1 scope. Nothing here is built.** It is recorded now
-because it is the reason M1.6 exists, and because two of its decisions constrain
-M1.6's shape: the transport must accept an enqueue from a route that has no session,
+because it is the reason M1.7 exists, and because two of its decisions constrain
+M1.7's shape: the transport must accept an enqueue from a route that has no session,
 and the queue must be the thing that answers, not the network.
 
-Depends on M1.6 for delivery.
+Depends on M1.7 for delivery.
 
 ### Not terminal parsing
 
@@ -702,7 +744,7 @@ driving the agent.
 not available on HTTP hooks, so the Stop hook *is* synchronous, and the default is
 600 seconds. A panel that accepted the POST and then blocked on `api.telegram.org`
 would hold the end of every turn for as long as Telegram was slow. This is the
-requirement that makes M1.6's persisted queue mandatory rather than merely tidy: the
+requirement that makes M1.7's persisted queue mandatory rather than merely tidy: the
 endpoint validates, enqueues, and returns `204` in single-digit milliseconds, and the
 worker deals with the network afterwards.
 
