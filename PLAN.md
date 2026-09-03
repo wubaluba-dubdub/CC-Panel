@@ -823,13 +823,49 @@ nothing is the entire contract.
   live port.
 
 ## Phase 1 Exit Checklist
-- [ ] Docker build verified, container boots as uid 10001 with an empty volume
 
-**This checklist is truncated, and it has been truncated since the plan was
-written** — the committed file ended mid-list with a stray `</content>` tag, now
-removed. The "11 acceptance criteria" that Post-M2 says to verify against are not
-recorded in this repository or in any other file under it, so there is nothing to
-restore the remaining items from. Left as a flagged gap rather than filled in with
-invented criteria: whatever the eleven were, they need writing down before Phase 1
-can be called finished, and the honest state of this checklist is *unknown*, not
-*one item*.
+- [x] Docker build verified, container boots as uid 10001 with an empty volume
+      (M1.6 part 2.4: `docker build`, a fresh named volume, migrations applying from
+      nothing, the user seeded, the base path generated, `/healthz` answering from
+      outside, a full two-stage login through `curl`, then a restart on the same
+      volume with nothing re-seeded.)
+
+### The eleven acceptance criteria
+
+**These were reconstructed in M1.6, and that needs saying plainly.** The original
+project prompt referred to "11 acceptance criteria" in its security section. *That
+prompt is not in this repository and never was* — the note that used to sit here said
+so, `git log -S acceptance` finds no other copy, and nothing under the repository root
+contains them. Rather than leave the gap open for a third milestone, the eleven below
+are derived from the **Security Model** section of `CLAUDE.md`, which is the surviving
+statement of the same requirements and which enumerates exactly eleven items: the
+single-user rule plus the ten defence-in-depth bullets. The correspondence is
+one-to-one and in order, which is the reason to believe it is the right list.
+
+If the operator's original list differs, **this is the thing to correct** — and now
+that they are executable, correcting them means editing `scripts/acceptance.sh`.
+
+They are run against a **running container**, not the dev server:
+
+```
+npm run acceptance -- <dev-container> <dev-port> <prod-container> <prod-port> <prod-domain>
+```
+
+| | Criterion | How it is exercised end to end |
+| :--- | :--- | :--- |
+| C1 | Exactly one user, seeded from the environment on first boot, never re-seeded | one `users` row; the stored hash fingerprinted before and after a restart; the second boot's warning that `PANEL_ADMIN_PASSWORD` is ignored |
+| C2 | The secret base path gates everything, `/healthz` excepted, and never reaches a log | `/healthz` outside the prefix; a wrong prefix and the bare root are the same generic 404; the API only under the prefix; `Referrer-Policy: no-referrer`; the prefix in **no** structured log line, elided as `<base>`, with the first-boot banner the one documented carrier |
+| C3 | argon2id password hashing plus mandatory TOTP; a password alone is never enough | the stored hash is `$argon2id$`; stage one yields `{"stage":"totp"}` and a `pre` session that cannot reach a full-session route; the TOTP secret is stored as a `v1.` ciphertext, not base32; stage two promotes it |
+| C4 | A progressive response delay, not a lockout, and no per-IP logic anywhere | six failures timed, each from a **different** `X-Forwarded-For`: unpadded, unpadded, unpadded, ~500 ms, ~1 s, ~2 s — then the correct password still succeeds; `auth_failures` has no address or scope column; `lockouts` stays dropped |
+| C5 | Opaque server-side sessions, stored only as a hash, revocable on the next request | 64-hex `token_hash`; the plaintext token absent from `panel.db`, `-wal` **and** `-shm`; `DELETE /api/sessions/:id` then a 401 on the very next request with that cookie |
+| C6 | `SameSite=Strict`, strict `Origin`/`Host` validation, and a session-bound CSRF token | both cookies `SameSite=Strict`, `HttpOnly` on the session one, both scoped to the prefix; foreign `Origin` → 403; missing and wrong CSRF token → 403; the same request with the real pair → 200; on the production container a poisoned `Host` → 403 while `/healthz` stays exempt, and a forwarded plaintext hop → 403 |
+| C7 | The response header set, and HSTS in production only | the seven security headers byte-for-byte on the dev container with **no** HSTS; the full HSTS value on the production one; `Server`, `X-Powered-By` and `X-XSS-Protection` absent |
+| C8 | Secrets at rest: AES-256-GCM under an HKDF subkey, versioned, never in plaintext | a sentinel written through `PUT /api/secrets` behind a step-up; the stored payload is the `v1.` envelope; the plaintext in none of the three SQLite files and no log line; revealed back through the API; the audit rows carry the reference, not the value |
+| C9 | The audit log is append-only through two independent controls | `GET /api/audit/verify` → `ok:true`; `UPDATE` and `DELETE` both refused by migration 008's triggers; then the triggers **dropped** and a row edited — the keyed chain reports `row_hash_mismatch` at that row, with `hint: null` because the break is not at the oldest row |
+| C10 | Rate limiting with no address in it, plus size and receipt-time bounds | a 1 MiB body → 413; 70 unauthenticated requests with a rotating `X-Forwarded-For` → 429 with `Retry-After ≥ 1`; `/healthz` and the out-of-prefix 404 sink stay exempt |
+| C11 | Boot-time self-checks refuse to start on a critical misconfiguration | six `docker run` invocations that must all exit non-zero — no master key, a key under 32 bytes, production with no public origin, production with an http one, a weak admin password, no user and no credentials — plus the entrypoint bypassed, where the server refuses to serve as root |
+
+**Result on 2026-09-03: 79 checks across the eleven, 0 failures**, against
+`cc-panel:local` built from this tree, one container on the development profile and one
+on the production profile. C9 runs last because proving the chain detects tampering
+means tampering with that container's log.

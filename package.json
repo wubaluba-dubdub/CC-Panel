@@ -16,7 +16,8 @@
     "smoke:container": "bash scripts/container-smoke.sh",
     "preflight": "node --env-file-if-exists=.env node_modules/tsx/dist/cli.mjs src/server/cli/preflight.ts",
     "backup": "node --env-file-if-exists=.env node_modules/tsx/dist/cli.mjs src/server/cli/backup.ts",
-    "restore": "node --env-file-if-exists=.env node_modules/tsx/dist/cli.mjs src/server/cli/restore.ts"
+    "restore": "node --env-file-if-exists=.env node_modules/tsx/dist/cli.mjs src/server/cli/restore.ts",
+    "acceptance": "bash scripts/acceptance.sh"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",
