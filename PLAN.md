@@ -188,6 +188,71 @@ implementation for `@fastify/send` v4. Nothing in `src/` imports the package yet
 — it is a Phase 2 dependency for serving the built Vite bundle — so there was no
 call site to migrate.
 
+## Phase 2–5 requirements (R1–R7)
+
+**Recorded 2026-09-03, from the operator, after M1.6. Authoritative for Phases 2–5.**
+Stated in the operator's own terms first, before anything is designed against them, and
+tagged R1–R7 so that any later line of code can be traced back to the requirement that
+caused it. Designs answering them carry the tag.
+
+| | The requirement, as stated | Designed in |
+| :--- | :--- | :--- |
+| **R1** | Manual, complete backup of the panel, taken by the operator on demand. | [`docs/PORTABILITY.md`](docs/PORTABILITY.md) → M2.6 |
+| **R2** | Uploading that same backup into a *different* panel reproduces the first panel completely: all panel settings, and all projects usable in the new panel. *"all information of that panel transfers to the other panel completely."* | [`docs/PORTABILITY.md`](docs/PORTABILITY.md) → M2.6 |
+| **R3** | The panel is bilingual (Persian and English). | M2.1 below |
+| **R4** | For each project: browse its files, download any file, edit any file in the panel, and upload new files. | [`docs/FILES.md`](docs/FILES.md) → M2.3 |
+| **R5** | Per-project Claude Code `settings.json`, set separately, dedicatedly, and by hand. | M2.4 below |
+| **R6** | Telegram token and the rest of the Telegram settings configurable from the UI, with a "test the bot" action. | M1.7 §*Interface* → M2.5 |
+| **R7** | `api_key` and `api_base_url` configurable per project from the UI, in addition to `settings.json`. Plus a global section for `api_key`, `api_base_url` and a hand-edited `settings.json`, whose values are the default for every project that has not been given its own. | M2.4 below |
+
+### Earlier requirements stand unchanged
+
+The Telegram notification on completion naming the project (M1.7 and
+[Phase 3 preview](#phase-3-preview--claude-code-finished-notifications)), the RAM/CPU
+usage widget ([Resource usage](#resource-usage--the-server-side-design)) and the
+[concurrency policy](#concurrency--what-the-panel-supports-and-what-it-does-not) are as
+written. Where the new requirements touch them, the note below says how — there is no
+second, competing design for anything already specified.
+
+### Where R1–R7 overlap what is already designed
+
+- **R6 × M1.7.** M1.7 keeps everything: the two encrypted values, the queue, the
+  worker, the 4096-character split, the typed event, the message format, the two hook
+  credentials. R6 adds **only** a configuration surface over the storage M1.7 already
+  specifies, plus two actions that are new (a real test send, and chat-id discovery).
+  The M1.7 section below is extended in place and marked *transport* / *interface*.
+- **R7 × M1.7's `v2` payload AAD.** M1.7 already changes `SecretsRepository` to bind a
+  ciphertext to `(scope, name)` rather than to the row id. R7 needs exactly that change
+  and no other, with one amendment: the project scope is `project:<uuid>`, not
+  `project:<rowId>` — see [R2 and portable identity](#m22--projects-identity-layout-and-crud).
+  One change, one migration, whichever milestone lands first.
+- **R2 × `npm run backup` / `npm run restore` (M1.6).** Two different mechanisms that
+  must not be confused. The M1.6 pair is a **single-instance snapshot**: SQLite's online
+  backup API over `panel.db`, restored onto the same panel, carrying ciphertext that only
+  this panel's `PANEL_MASTER_KEY` can read — it *refuses* a snapshot whose chain fails at
+  its oldest row precisely because that is what another panel's key looks like. R1/R2 add
+  a **portable export**: a decrypt-on-the-way-out, re-encrypt-on-the-way-in logical
+  document with no panel ciphertext in it, no account, no audit log, and no base path.
+  Keep both. The snapshot is for "this panel broke"; the export is for "move to another
+  panel". Neither can do the other's job, and `docs/PORTABILITY.md` §1 says why.
+- **R4 × the concurrency policy.** An operator editing a file in the panel while an agent
+  edits the same file is the first two hazards of
+  [the same project](#the-same-project-a-correctness-hazard-not-a-capacity-one) minus the
+  git index lock. It does **not** get the one-agent lock: the operator is not an agent, and
+  a panel that refuses to open a file because an agent is running is a panel that cannot be
+  used for the thing it exists for. It gets optimistic concurrency instead —
+  `docs/FILES.md` §4.
+- **R5/R7 × "the panel is not Claude-specific".** The
+  [two things that assume Claude Code](#the-panel-runs-a-shell-in-a-pty-so-it-is-not-claude-specific)
+  are unchanged in number. R5 and R7 make the first one — the settings editor — much
+  larger, and the standing rule extends to it verbatim: **no module outside the settings
+  generator and `internal-hooks.ts` may name `.claude`, `settings.json`, or a Claude Code
+  payload field**, still enforceable by the same static scan.
+- **R3 × everything server-side.** The server gains no locale. `GET /api/audit`,
+  `GET /api/system/resources` and every error body stay machine-readable; the client owns
+  every human string. The one exception is M1.7, which has no client — see M2.1 §*The
+  server does not translate*.
+
 ## Milestone Order
 
 ### M1 — Security Foundation
