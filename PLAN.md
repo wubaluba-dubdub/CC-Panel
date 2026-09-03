@@ -1285,7 +1285,7 @@ Two ordering facts worth naming rather than discovering:
 
 Blocking, and I agree with the operator's two:
 
-1. **The project UUID and portable AAD** ([`PORTABILITY.md`](../docs/PORTABILITY.md) §4).
+1. **The project UUID and portable AAD** ([`PORTABILITY.md`](docs/PORTABILITY.md) §4).
    Adding a UUID later is a migration; changing an AAD later is a re-encryption of every
    secret under a scheme the old ciphertext cannot be read back under. Extended by one item
    the operator did not name: **the directory layout is keyed on the UUID too**, and M1.7's
@@ -1447,7 +1447,7 @@ Jalali *calendar* is kept (`-ca-persian`) because a date is read, not pasted.
 #### M2.2 — projects: identity, layout, and CRUD
 
 The table, the layout and the AAD form are specified in
-[`docs/PORTABILITY.md`](../docs/PORTABILITY.md) §4 rather than repeated here, because they
+[`docs/PORTABILITY.md`](docs/PORTABILITY.md) §4 rather than repeated here, because they
 exist for R2 and are only *used* by everything else. In brief: `projects` gains
 `uuid TEXT NOT NULL UNIQUE` (`crypto.randomUUID()` at creation), the workspace lives at
 `/data/projects/<uuid>/workspace` with `claude-home/` beside it, and every project-scoped
@@ -1462,7 +1462,7 @@ hook token from M1.7.
 
 #### M2.3 — the file browser
 
-Specified in [`docs/FILES.md`](../docs/FILES.md). The containment function
+Specified in [`docs/FILES.md`](docs/FILES.md). The containment function
 (`utils/contain-path.ts`) is shared with the import path, so it lands here and M2.6 uses it
 rather than growing a second one.
 
@@ -1522,7 +1522,7 @@ installs the CLI, `claude doctor` becomes a real "check this" action.
 into `claude-home`. If they went into `workspace/.claude/settings.json` they would land inside
 the operator's git repository and could be committed and pushed — and the panel would have
 been the thing that put them there. `claude-home` is outside the repository, outside the file
-browser's root ([`FILES.md`](../docs/FILES.md) §1), and excluded from the export's workspace
+browser's root ([`FILES.md`](docs/FILES.md) §1), and excluded from the export's workspace
 walk.
 
 There is a second, mechanical reason that reinforces it: env values arriving from *project or
@@ -1656,7 +1656,7 @@ key that points at the wrong gateway.
 
 #### M2.6 — portable export and import
 
-Specified in [`docs/PORTABILITY.md`](../docs/PORTABILITY.md).
+Specified in [`docs/PORTABILITY.md`](docs/PORTABILITY.md).
 **Commit:** `feat(m2.6): portable export and import`
 
 #### M2.7 — the resource widget
