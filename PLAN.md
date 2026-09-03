@@ -854,6 +854,62 @@ than retrofitted:
   `security_alert` reach the same queue as a `turn_complete` without the transport knowing
   which produced them.
 
+#### The configuration interface (R6) — Phase 2, not transport
+
+**Everything above this line is transport and is M1.7: the two encrypted values, the queue,
+the worker, the 4096-character split, the typed event, the notification rules, the message
+format, and the hook endpoint's two credentials. Everything below is interface and is M2.5,
+which cannot ship before M1.7 exists.** The transport design is extended here, not rewritten.
+
+**What the UI sets and rotates** — four values, each independently, each step-up gated
+because each is a stored credential: the **bot token**, the **chat id**, the **per-project
+hook bearer**, and the **panel-wide hook shared secret**. Rotating the shared secret
+invalidates every project's hook at once and so has to regenerate every project's
+`settings.json`; it is a confirmed action with that consequence spelled out, not a button.
+
+**Nothing is displayed after saving: set-or-unset and a length**, the way
+`npm run preflight` already reports a credential. That is a deliberate change to the M1.7
+sketch, which returned `mask()`ed forms: `mask()` reveals the last four characters, which is
+harmless for a 46-character bot token and is *not* harmless for a nine-digit chat id, where
+four digits is a meaningful fraction of a stable identifier for the operator's Telegram
+account. The rule the audit log already follows — never store or show `mask(value)` where it
+accumulates — applies here for the same reason.
+
+**The test action sends a real message and reports the real outcome**, mapped from
+`error_code` plus a prefix match on `description`, and **never forwarding Telegram's own
+text**, which echoes request parameters:
+
+| What Telegram says | What the panel says |
+| :--- | :--- |
+| `401 Unauthorized` | *"Telegram does not recognise this bot token. Copy it again from @BotFather — a token stops working the moment you press /revoke."* |
+| `400 Bad Request: chat not found` | *"Telegram has no chat with this id for this bot. Use "Find my chat" below rather than typing an id."* |
+| `403 Forbidden: bot was blocked by the user` / `bot can't initiate conversation with a user` | *"Open Telegram, find your bot, and press Start. A bot cannot message someone who has not messaged it first."* |
+| anything else | *"Telegram refused with code N. The panel does not show its message because Telegram's errors can echo what was sent."* — the category goes to the audit log. |
+
+**The beginner trap this is designed around:** a bot cannot message a person who has never
+messaged it, and a chat id is not something an operator knows or can look up. So there is a
+discovery helper — *"message your bot, then press Find my chat"* — which calls `getUpdates`
+and offers the candidate chats (`chat.id`, type, title or username) to pick from. This one
+screen displays chat ids, and that is the exception that proves the rule: they are candidates
+Telegram just handed us, not the stored value read back.
+
+Two things it must handle rather than discover: `getUpdates` returns only recent updates, so
+"press Start, then refresh" is the instruction; and `getUpdates` answers
+`409 Conflict: can't use getUpdates method while webhook is active` if a webhook is ever set,
+which gets its own message rather than being reported as "no chats found".
+
+And the ordering already required stands: **the `chat_id` allowlist is checked before any
+inbound message is parsed** — secret token, then allowlist, then parse. Discovery does not
+change that, because discovery is an outbound poll the operator initiated, not an inbound
+callback.
+
+**The message format is unchanged** from *[The completion message](#the-completion-message-what-it-says-in-what-order)*:
+project name first, then outcome, duration, the truncated last assistant message, then — only
+under `PANEL_NOTIFY_INCLUDE_LINKS` — a deep link. The project name is not a secret; the base
+path in the link is, and a Telegram message is permanent storage the panel does not control,
+which is what gates the link rather than a preference about tidiness. The UI's description of
+that setting says so in those words.
+
 #### Files
 
 `src/server/services/notify.service.ts` (queue and `notify()`),
@@ -1198,7 +1254,70 @@ The concrete rule to hold to: **no module outside `settings-editor.ts` and
 That is enforceable by the same kind of static scan as the client-IP and cookie rules, and
 it should be added when those two files are.
 
-### M2 — Application Shell & Design System
+### M2 — Phase 2
+
+M1 was delivered as M1.1–M1.7 rather than as one commit, and Phase 2 is the same shape.
+**Nothing existing is renumbered:** M1.7 stays where M1.6 put it, and the eight-item list
+this section used to hold is now M2.1's content, unchanged in scope.
+
+| # | Goal | Satisfies | Depends on | Blocks M2.1? |
+| :--- | :--- | :--- | :--- | :--- |
+| **M2.0** | This milestone: the Phase 2–5 architecture, on paper, no code | records R1–R7 | — | it *is* the unblocker |
+| **M2.1** | Application shell, design system, and **direction** | R3 | M2.0 | — |
+| **M2.2** | Projects: UUID identity, `/data/projects/<uuid>/`, CRUD | R2, foundation for R4/R5/R7 | M2.0 | **yes**, for its decisions only ([§below](#the-decisions-that-block-m21)) |
+| **M2.3** | The file browser | R4 | M2.2 | no |
+| **M2.4** | `settings.json` documents and provider credentials | R5, R7 | M2.2 | partly — the error-code enum only |
+| **M2.5** | Telegram configuration UI | R6 | **M1.7**, M2.1 | no |
+| **M2.6** | Portable export and import | R1, R2 | M2.2, M2.4, M1.7 (audit events → rules) | no |
+| **M2.7** | The resource widget over the endpoint already designed | earlier requirement | M2.1, `resources.service.ts` | no |
+
+Two ordering facts worth naming rather than discovering:
+
+- **M2.5 cannot ship before M1.7.** The UI configures a transport that does not exist; a
+  "test the bot" button with nothing behind it is worse than no button.
+- **M2.6 is last on purpose.** An export can only carry what exists, so building it before
+  M2.4 would mean writing the document format twice.
+- **Migration numbers are assigned when a milestone is *built*, not when it is designed.**
+  M1.7's design claims `009_notifications.sql` and M2.2 needs a migration too; whichever
+  lands first takes 009. Re-read the other's design for its number before writing the file.
+
+#### The decisions that block M2.1
+
+Blocking, and I agree with the operator's two:
+
+1. **The project UUID and portable AAD** ([`PORTABILITY.md`](../docs/PORTABILITY.md) §4).
+   Adding a UUID later is a migration; changing an AAD later is a re-encryption of every
+   secret under a scheme the old ciphertext cannot be read back under. Extended by one item
+   the operator did not name: **the directory layout is keyed on the UUID too**, and M1.7's
+   `secrets:project:<id>:hook_token` becomes `…:<uuid>:…`.
+2. **Direction and logical properties** (M2.1 below). Retrofitting direction into a built
+   interface costs several times what building it in costs, and the enforcement has to exist
+   before the first component, not after the fortieth.
+
+Three more that I think are blocking, and this is the judgement the milestone is for:
+
+3. **A machine-readable `code` on error responses.** R3 makes the server's human strings
+   unusable by definition, so the client must map a *code* to a Persian sentence. If
+   `lib/api.ts` is written against today's `{ "error": "Forbidden" }`, every screen grows a
+   status-code guess and adding `code` later touches every call site. Four lines in
+   `app.setErrorHandler` (below), and it must land with the api wrapper.
+4. **`t()` returns nodes, not strings.** This is the mechanism that makes §2.3's bidi
+   isolation enforceable instead of advisory — a `t()` returning `string` means every
+   interpolation of a machine value is a raw concatenation, and there are hundreds of them.
+5. **`bootstrap.js` carries the locale**, so `<html dir>` is set before first paint.
+   `renderPlaceholderHtml` and `renderBootstrapScript` are exactly what M2.1 replaces, and
+   both are asserted byte-for-byte by `base-path.test.ts` and `secret-leak.test.ts` — doing
+   it in the same pass is free, and doing it later is a second pass over those tests.
+
+**Not blocking, explicitly:** the export format, the containment function, the credential
+test, the Telegram UI, every retention sweep. All are additive behind their own routes, and
+none of them constrains a component's shape.
+
+#### M2.1 — application shell, design system, and direction
+
+The eight items as they always were, plus R3 built in from the first line rather than
+retrofitted:
+
 1. Tailwind v4 theme: colors, spacing, font stacks, animation keyframes in
    `globals.css`. Self-host fonts via `fonts.css`.
 2. Primitive components: Button, Input, Card, Dialog, Skeleton, Tooltip, Badge,
@@ -1211,7 +1330,343 @@ it should be added when those two files are.
 6. Visual polish: dark/light themes, page transitions, skeleton loaders, tooltips.
 7. Accessibility pass: focus traps, escape key, ARIA roles, Lighthouse ≥ 95.
 8. End-to-end smoke: hard refresh on deep route, CSP-clean console, reduced motion.
-9. **Commit:** `feat(m2): application shell and design system`
+9. **Commit:** `feat(m2.1): application shell and design system`
+
+##### R3: Persian and English, decided before the first component
+
+**Persian is right-to-left, which is a layout problem and not a string problem.** The
+mechanisms below all exist to make one property true: direction is a *setting*, not a
+rewrite.
+
+**Logical properties, from the first line.** Every component uses
+`margin-inline-start` / `padding-inline` / `inset-inline-start` / `text-align: start`, and in
+Tailwind v4 that means the logical utilities — `ms-` `me-` `ps-` `pe-` `start-` `end-`
+`text-start` `text-end` `border-s` `border-e` `rounded-s` `rounded-e` — never `ml-` `mr-`
+`pl-` `pr-` `left-` `right-` `text-left` `text-right` `border-l` `border-r`. Physical sides
+are permitted only where the thing has a physical side (a drop shadow's offset, an icon that
+means "down"), and each one is listed in an allowlist file with a reason.
+
+Enforced by **a static scan test in the same style as `cookie-discipline.test.ts`** — no new
+tooling, and the project already trusts that mechanism — over `src/client/**`, matching the
+physical utilities in `className` strings and the physical properties in CSS. Anything not in
+the allowlist is the finding. This is the check that stops the rule rotting on component
+number forty.
+
+**Islands that stay left-to-right in both languages, always.** `dir="ltr"` on the container,
+never on the page:
+
+> the terminal; any code or JSON editor; file paths; the base path; tokens, hashes and commit
+> ids; log output and audit metadata; the memory, CPU and disk readouts; durations and byte
+> counts; the file browser's breadcrumb.
+
+A terminal that flips direction is unusable, and the bug does not read as a layout setting —
+it reads as data corruption, which is a support conversation that starts in the wrong place.
+Mechanism: one `<Ltr>` element and a `<Mono>` that includes it; the scan test asserts the
+terminal and editor containers carry it.
+
+**Bidirectional isolation on every interpolated machine value.** A Latin value inside a
+Persian sentence reorders visually unless it is isolated, because the neutral characters at
+its edges — `/` `.` `-` `:` `(` — resolve to the *paragraph's* direction rather than the
+run's. Use `<bdi>`, which is `unicode-bidi: isolate` plus `dir="auto"` by definition.
+(`dir="auto"` on a `<span>` is equivalent; `<bdi>` is the element that means it.)
+
+```
+t('files.savedTo', { path: '/data/projects/9f8e/workspace' })
+
+raw (stored, unchanged):   پروژه در {path} ذخیره شد
+without isolation, displays:  … data/projects/9f8e/workspace/ …   ← the leading "/" jumped to the far end
+with <bdi>, displays:         … /data/projects/9f8e/workspace …   ← the run is isolated
+```
+
+The string on disk is identical in both cases; only the visual order differs — which is
+exactly why this reads as a data error and gets reported as one. **This is the single most
+common Persian-UI bug**, so it is not left to discipline: `t()` with parameters returns a
+`ReactNode`, not a string, and wraps every parameter in `<bdi>` itself. A machine value
+*cannot* be concatenated raw, because there is no string to concatenate into.
+
+**The server does not translate.** The API returns machine-readable codes and the client owns
+every human string. That is unchanged for status text — `app.setErrorHandler` still sends only
+the status's standard reason phrase — and it gains one field: an optional **`code` from a
+closed enum**, for the errors a client must distinguish (`csrf_invalid`, `stepup_required`,
+`rate_limited`, `stale_version`, `path_rejected`, `too_large`, `bad_passphrase`,
+`unsupported_format_version`, …). Never a message, never a variable, never a value. This
+*reduces* leak surface rather than adding to it: the alternative is a client guessing from
+status codes until someone is tempted to put prose in the body. The existing rule and its
+regression test stand.
+
+One exception, and it is M1.7's: **Telegram messages have no client**, so the queued
+`NotifyEvent` carries a `locale` and the renderer produces text in it. That is the notification
+layer rendering its own transport's output, which the typed-event design already requires; it
+is not the API translating.
+
+**Mechanics: a typed dictionary and a `t()`, not a framework.** `src/client/i18n/en.ts` is the
+source of truth, `type Dict = typeof en`, and `fa.ts` is declared `const fa: Dict` — so an
+absent or misspelled key is a **compile error**, not a test failure. The test covers what types
+cannot: identical key sets at runtime (catching a `fa` built with `as Dict`), no empty string
+values, and no key whose Persian value still equals its English one for text that must be
+translated. Specified now, written in M2.1.
+
+- **The choice is stored on `users`** (`locale TEXT`, nullable), returned by
+  `GET /api/auth/me`, set by `PATCH /api/settings/locale`. There is one user, so a column is
+  the honest place; `config/instance.json` is for facts the installer set.
+- **First guess from `Accept-Language`**, resolved server-side and emitted into
+  `bootstrap.js` as `window.__LOCALE__` — which is already generated per request and already
+  `no-store`. The script runs in `<head>`, blocking, before the module bundle, so it sets
+  `document.documentElement.lang` and `.dir` **before first paint**.
+- `bootstrap.js` deliberately does **not** read the session to find the stored locale: that
+  would put a database read on an unauthenticated route, which `routes/api.ts` avoids on
+  purpose. The stored value is cached in `localStorage` and applied by the same script, so the
+  only wrong-direction frame anyone ever sees is on a brand-new browser profile whose
+  `Accept-Language` disagrees with the stored preference. That is the right trade.
+
+**Fonts.** Inter does not cover Persian. Pair it with **Vazirmatn** (SIL OFL 1.1, maintained,
+designed for UI, has a variable weight axis and a matching Latin companion). Alternative:
+Estedad. *Not* IRANSans — its licence does not permit redistribution, and this must be served
+from the panel because `font-src 'self'` has no CDN in it. Subset to Arabic, Arabic
+Supplement, Arabic Extended-A, Arabic Presentation Forms A/B and Persian punctuation; split by
+`unicode-range` so an English-only page never downloads it. Subsetting happens at development
+time and the `woff2` is committed, like the existing plan for Inter — the runtime image has no
+Python and is not getting one.
+
+**Formatting.** Timestamps are stored as ISO-8601 UTC and formatted through
+`Intl.DateTimeFormat` with the active locale, which gives an Iranian operator a Jalali date
+with no calendar library. Two formatters, and the distinction is load-bearing:
+
+| | Locale used | For |
+| :--- | :--- | :--- |
+| `formatNumber`, `formatDate` | `fa-IR` / `en-GB` as chosen | prose quantities and dates in body text |
+| `formatTechnical`, `formatTechnicalDate` | `fa-IR-u-ca-persian-nu-latn` | everything in a `dir="ltr"` island |
+
+**Latin digits for every technical value in both languages** — the operator's recommendation,
+and the reason is copy-paste equality. `fa` defaults to `arabext` numbering, so
+`Intl.NumberFormat('fa-IR').format(8080)` yields `۸۰۸۰`: a port number that does not match the
+terminal, a byte count that will not `grep`, a commit id that is not the commit id. `-nu-latn`
+is not cosmetic, it is what keeps a number the same number on both sides of a clipboard. The
+Jalali *calendar* is kept (`-ca-persian`) because a date is read, not pasted.
+
+#### M2.2 — projects: identity, layout, and CRUD
+
+The table, the layout and the AAD form are specified in
+[`docs/PORTABILITY.md`](../docs/PORTABILITY.md) §4 rather than repeated here, because they
+exist for R2 and are only *used* by everything else. In brief: `projects` gains
+`uuid TEXT NOT NULL UNIQUE` (`crypto.randomUUID()` at creation), the workspace lives at
+`/data/projects/<uuid>/workspace` with `claude-home/` beside it, and every project-scoped
+secret is bound to `secrets:project:<uuid>:<name>` under M1.7's `v2` payload version.
+
+Also here, because it is cheap now: `slug` (unique after NFC normalisation and case folding),
+`display_name`, `description`, `git_remote`, `created_at`/`updated_at` as **ISO-8601**
+(`isoFrom`, not `datetime('now')` — see the note under M2.4 §*storage*), and the per-project
+hook token from M1.7.
+
+**Commit:** `feat(m2.2): projects`
+
+#### M2.3 — the file browser
+
+Specified in [`docs/FILES.md`](../docs/FILES.md). The containment function
+(`utils/contain-path.ts`) is shared with the import path, so it lands here and M2.6 uses it
+rather than growing a second one.
+
+**Commit:** `feat(m2.3): the project file browser`
+
+#### M2.4 — `settings.json` documents and provider credentials (R5, R7)
+
+##### The file the panel writes is generated, not edited
+
+Claude Code resolves settings through a precedence chain — highest first: **managed
+settings**, `claude --settings`, `.claude/settings.local.json`, `.claude/settings.json`,
+`~/.claude/settings.json` (verified against `code.claude.com/docs/en/settings` on
+**2026-09-03**). A panel that edits the wrong file in that chain appears to work and changes
+nothing, which for a beginner is an unfindable bug.
+
+Two consequences, and the second one is not obvious:
+
+1. The panel's per-project `CLAUDE_CONFIG_DIR` is `claude-home`, so the file it writes is that
+   project's **user-level** file — the *lowest* precedence in the chain. A
+   `.claude/settings.json` committed in the operator's own repository silently overrides it.
+   The panel must therefore compute and display the effective merge, and **warn by name** when
+   a workspace file shadows a key the panel set. That is what turns "shows the merged result"
+   from a nicety into the check that catches the panel's own weakest position.
+2. `CLAUDE_CONFIG_DIR` *replaces* `~/.claude`, so a per-project config dir means the panel's
+   **global** `settings.json` is not in that project's chain at all. R7's "global default"
+   therefore **cannot** be implemented by Claude Code's precedence — it is the panel's job.
+
+So the model is three documents and one artefact:
+
+| | What | Who writes it |
+| :--- | :--- | :--- |
+| `global_settings.settings_json` | the operator's hand-edited global JSON (R7) | the operator, in the panel |
+| `project_settings.settings_json` | the operator's hand-edited per-project JSON (R5) | the operator, in the panel |
+| credentials | `api_key`, `api_base_url`, `auth_style`, per project and global (R7) | the operator, in the panel |
+| `<claude-home>/settings.json` | **generated** from all three plus the hook config, at every spawn, atomically, mode `0600` | the panel only |
+
+The editor names the exact file it writes, shows where that file sits in the chain, and shows
+the generated result beside the source document with **per-key provenance** (`global` /
+`project` / `panel` / *shadowed by `workspace/.claude/settings.json`*). The generated file is a
+build artefact: hand-editing it is overwritten at the next spawn, and the UI says so on the
+file rather than in a tooltip.
+
+Merge rules, because "merge" is not a specification: shallow at the top level with project
+winning, except `env` (merged key by key, project wins per key) and
+`permissions.allow`/`deny`/`ask` (concatenated, de-duplicated, order preserved). `hooks.Stop`
+is panel-owned and is written last, overwriting whatever either document said — the operator
+cannot break the turn-complete notification by hand, and the UI explains why that key is not
+theirs.
+
+Invalid JSON is refused **at save time** on the source document, which is where 4.7's failure
+mode is actually prevented. Unknown top-level keys are a warning, not a refusal. Once Phase 3
+installs the CLI, `claude doctor` becomes a real "check this" action.
+
+##### Credentials never go in the workspace
+
+**The most important line in this milestone.** `api_key` and `api_base_url` are written only
+into `claude-home`. If they went into `workspace/.claude/settings.json` they would land inside
+the operator's git repository and could be committed and pushed — and the panel would have
+been the thing that put them there. `claude-home` is outside the repository, outside the file
+browser's root ([`FILES.md`](../docs/FILES.md) §1), and excluded from the export's workspace
+walk.
+
+There is a second, mechanical reason that reinforces it: env values arriving from *project or
+local* settings are gated on folder trust and, for credential-shaped values, on an approval
+dialog. The user-level file the panel writes is not.
+
+The editor warns — loudly, in the save dialog, not in a log line — when a workspace file the
+operator hand-writes contains something credential-shaped, reusing the patterns in
+`plugins/logger-redaction.ts`. It does not refuse: it is their repository.
+
+##### The resolution chain, and showing it honestly
+
+Per-project value → global default → nothing at all, and "nothing at all" means the panel
+writes no key and the agent uses whatever it already had. The UI must not let **inherited**
+and **set to the same value** look alike, because they behave differently the moment the
+global changes:
+
+```
+api_base_url   https://gw.example.com/v1     inherited from global   [override]
+api_key        set, 51 characters            set for this project    [replace] [clear]
+```
+
+An inherited row is visually secondary and names its source; an overridden row that happens to
+equal the global says `set for this project (same as global)`. One word, and it is the
+difference between a change propagating and not.
+
+##### Two header styles, and this one is specific to this operator
+
+`ANTHROPIC_API_KEY` is sent as **`X-Api-Key`**; `ANTHROPIC_AUTH_TOKEN` is sent as
+**`Authorization: Bearer <value>`** (the prefix is added by Claude Code). Choosing wrong
+yields a `401` indistinguishable from a bad key. So the UI asks, explicitly, with a
+plain-language hint: first-party Anthropic and resellers that issue `sk-ant-`-shaped keys want
+the API-key style; gateways that front other providers, and anything whose documentation says
+"Bearer", want the token style.
+
+Three facts that belong on that screen, all verified 2026-09-03 against
+`code.claude.com/docs/en/env-vars`:
+
+- **Never set both.** Credential resolution is `ANTHROPIC_API_KEY` first, then
+  `ANTHROPIC_AUTH_TOKEN`; setting both silently selects the API-key path. The panel writes
+  exactly one, and clearing one clears the other's key from the generated file.
+- `ANTHROPIC_API_KEY` **prompts for approval once, interactively**, before it overrides a
+  logged-in subscription. The first spawn of an API-key project therefore shows a prompt the
+  operator must answer in the terminal — so the terminal must be visible on first spawn, not
+  behind a spinner. `ANTHROPIC_AUTH_TOKEN` has no such prompt, which is a real reason to prefer
+  it where the provider accepts either.
+- A non-first-party `ANTHROPIC_BASE_URL` disables MCP tool search by default
+  (`ENABLE_TOOL_SEARCH=true` re-enables it if the gateway forwards `tool_reference` blocks) and
+  disables Remote Control. Both are consequences of R7 that should be stated in the UI rather
+  than discovered.
+- `ANTHROPIC_CUSTOM_HEADERS` (`Name: Value`, newline-separated) is the escape hatch for a
+  gateway that wants some third header. Offered, not featured.
+
+**"Test this credential"** makes real requests and reports the real result:
+`GET <base>/v1/models` first, falling back to `POST <base>/v1/messages` with `max_tokens: 1`
+for gateways that do not implement `/models`; and it tries **both `<base>` and `<base>/v1`**,
+reporting which one answered and offering to save the normalised value — because the trailing
+`/v1` has already cost this operator time. 10 s per probe, 20 s total, first success wins.
+Outcomes are categories, never the provider's response body (which can echo request headers):
+`ok` · `unauthorized` · `not_found` (wrong base URL, or the missing `/v1`) ·
+`wrong_header_style` (the other style succeeded where this one did not — detectable precisely
+because both are probed) · `unreachable` · `timeout` · `rate_limited` · `server_error` ·
+`not_anthropic_shaped`. It needs **M1.7's `PANEL_OUTBOUND_PROXY` / `ProxyAgent` plumbing**,
+because Node's `fetch` ignores `http_proxy` and this machine sets it — without that, the test
+fails in local development for a reason that has nothing to do with the credential.
+
+##### How the value reaches the running agent
+
+Both mechanisms, written by **one** function so they cannot disagree: the `env` block of the
+generated `settings.json`, and the process environment of the pty.
+
+The reason is not the one that is usually given. **The settings file's `env` block wins over
+the shell** — documented and deliberate: *"Claude Code writes each `env` entry into the process
+environment, replacing the value inherited from the shell."* So the file is the authority and
+the environment export is the belt: it covers tools that read the variable directly, and the
+case where the config dir is not where the panel thinks it is. The prompt for this milestone
+described the opposite as a regression; the current documentation says the file winning is the
+design, and the conclusion — write both — is unchanged either way.
+
+What the UI must tell the operator, precisely:
+
+- **Setting or changing** a value reaches a **running** session when the file is saved, so the
+  panel rewrites the generated file for live agents too and the change lands without a restart.
+- **Clearing** one does not: a variable removed from the file is not unset in a running
+  session. *That* is the case that needs "restart the terminal", and it is the only one.
+- `permissions`, `hooks` and `apiKeyHelper` reload live. `model`, `effortLevel` and
+  `outputStyle` are read once at session start.
+
+##### Storage and the leak surface
+
+Encrypted with the existing crypto module, `v2` payload, AAD `secrets:project:<uuid>:api_key`
+and `secrets:global:api_key`. `auth_style` and `api_base_url` are configuration, not
+credentials — but `api_base_url` can carry a token in a query string on some gateways, so it is
+stored encrypted too and displayed in full only in the editor.
+
+Then the honest part: **the panel must also write the key in plaintext into a `settings.json`
+on the volume**, because that is where Claude Code reads it from. Mitigations, all of them
+mechanical: mode `0600` in a `0700` directory; inside `claude-home`, so outside both the file
+browser's root and the git repository; never in any export (the export carries the credential
+from the database and the target regenerates the file); and never in `npm run backup`, which
+copies only `panel.db`.
+
+**The sentinel sweep grows a filesystem half.** `tests/integration/secret-leak.test.ts` today
+reads `panel.db`, `panel.db-wal` and `panel.db-shm`. It must additionally assert that a
+sentinel credential written through the new routes appears in **exactly one** place on the
+volume — the generated `claude-home/settings.json` — and nowhere else: not in the three
+database files, not in any workspace file, not under `/data/exports`, not in a log line. The
+exemption is an explicit allowlist and must be asserted **non-vacuous** (the generated file
+really does contain it), exactly as the base-path exemption already is, so it cannot quietly
+grow to cover a real leak.
+
+One existing bug this milestone must fix, found while reading: `secrets.created_at` and
+`updated_at` are written with SQLite's `datetime('now')`, which yields
+`2026-09-03 09:14:22` — UTC with **no zone designator** — and `GET /api/secrets` puts it
+straight on the wire. Every other timestamp the panel serves goes through `isoFrom()` and ends
+in `Z`. `new Date('2026-09-03 09:14:22')` in a browser is parsed as **local** time, so the
+secrets list would be the one screen in the panel whose times are wrong by the operator's UTC
+offset — +03:30, and hidden further by a Jalali calendar. One line in
+`SecretsRepository.set()`, plus a normalising `UPDATE` in this milestone's migration.
+
+##### Rollback
+
+Versioned **source documents**, not the generated file — restoring a build artefact would be
+undone by the next spawn. A `settings_versions` table keeps the last 10 revisions of each
+hand-edited document (global and per project) with `saved_at` and a `sha256`, a diff view, and
+one-click restore. Since invalid JSON is refused at save time, this is the safety net for the
+valid-but-wrong document: a `permissions.deny` that blocks the tool the agent needs, an `env`
+key that points at the wrong gateway.
+
+**Commit:** `feat(m2.4): settings documents and provider credentials`
+
+#### M2.6 — portable export and import
+
+Specified in [`docs/PORTABILITY.md`](../docs/PORTABILITY.md).
+**Commit:** `feat(m2.6): portable export and import`
+
+#### M2.7 — the resource widget
+
+The server side is already designed under
+[Resource usage](#resource-usage--the-server-side-design); M2.7 is the widget over it, plus
+the crossing-alert state machine feeding M1.7. Every figure in it is a `dir="ltr"` island with
+`formatTechnical`, and a `null` limit renders as a used-only figure with no bar — which is the
+requirement that section exists for.
+**Commit:** `feat(m2.7): resource widget`
 
 ### Post-M2
 - Write `docs/SECURITY.md` mapping table.

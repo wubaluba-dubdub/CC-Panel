@@ -181,6 +181,12 @@ re-deriving the path list.
 ## Security Details (Mapping to Implementation)
 See `docs/SECURITY.md` for a detailed mapping of each control to the file(s) that implement it.
 
+## Phase 2 specifications
+- `docs/PORTABILITY.md` — the portable export/import format (R1, R2). Read it before
+  touching project identity or secret AAD: it is the reason projects carry a UUID.
+- `docs/FILES.md` — the project file browser (R4), including the one containment function
+  every path-taking route must call.
+
 ## Secret Base Path
 - The base path is **obscurity, not a security boundary**. Authentication is the
   boundary. But obscurity is only worth having if it is kept, so it is kept out of
@@ -812,15 +818,29 @@ what the plan calls for.
   rather than a capacity one. It also records that the panel runs a shell in a pty and is
   therefore not Claude-specific: only the `settings.json` editor and the Stop-hook
   integration assume Claude Code.
-- **M2 — application shell and design system: not started.** No React, no
+- **M2.0 — Phase 2 architecture: designed, no code.** Seven operator requirements
+  arrived after M1.6 and are recorded as **R1–R7** in `PLAN.md` (*Phase 2–5
+  requirements*), which is now the authoritative requirement set: on-demand complete
+  backup, panel-to-panel portability, Persian/English bilingual, a per-project file
+  browser, per-project `settings.json`, Telegram configuration from the UI, and
+  per-project plus global `api_key`/`api_base_url`. `PLAN.md` §*M2 — Phase 2* carries the
+  milestone map (M2.0–M2.7), the decisions that block M2.1, the bilingual design and the
+  settings/credential design; `docs/PORTABILITY.md` and `docs/FILES.md` are the two new
+  specifications. **Three decisions there change Phase 2's shape and must be respected by
+  the first component written:** every project carries a UUID and secret AAD is keyed on it
+  (not on the row id), workspace directories are named by UUID, and the client is built on
+  CSS logical properties with a static scan enforcing it.
+- **M2.1 — application shell and design system: not started.** No React, no
   Tailwind, no client code at all yet; `/${basePath}/` serves a placeholder page.
 - No terminal or Claude Code integration (Phase 3).
 
 ## Next Steps (Phase 2)
-- Implement project creation and management.
-- Spawn isolated Claude Code sessions per project.
-- Provide a `settings.json` editor for each project.
-- Integrate Railway deploy hooks (if desired).
+See `PLAN.md` §*M2 — Phase 2* for the milestone map and the blocking decisions. In order:
+the application shell with direction built in (M2.1), projects with portable identity
+(M2.2), the file browser (M2.3), settings documents and provider credentials (M2.4), the
+Telegram configuration UI once M1.7's transport exists (M2.5), portable export and import
+(M2.6), and the resource widget (M2.7). Phase 3 remains the terminal, the pty and the
+Claude Code integration.
 
 ---
 *This document will be updated as the project progresses.*
