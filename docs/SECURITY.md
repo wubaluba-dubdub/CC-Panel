@@ -296,6 +296,15 @@ CSP, the header set, or the bootstrap path, and before any deployment.
     development against a shrunk bucket and confirm the response is a 429 with
     `Retry-After` in the Network tab. The suite asserts the header; a browser is the
     only place to see what the SPA does with it once M2 exists.
+11. **The boot line and the cookie jar agree** (new in M1.6). After a deployment, read
+    the `panel configuration resolved` line in the service log and note `publicOrigin`,
+    `cookieProfile` and `sessionCookie`. Then log in and check DevTools → Application →
+    Cookies. The cookie in the jar must have exactly the name that line printed. This is
+    the one check that catches the whole `PANEL_PUBLIC_URL` failure class in one look:
+    the server says "I issued `__Secure-panel_session`", and if the jar disagrees the
+    browser declined it and the next request will be a 401 for a reason nothing in the
+    console explains. The suite cannot make this comparison — it can assert the header the
+    server sent and the log line it wrote, and neither is what a browser decided to keep.
 
 ## Secrets
 
