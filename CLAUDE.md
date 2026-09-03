@@ -769,6 +769,21 @@ what the plan calls for.
   migration 008's append-only triggers and HMAC hash chain with `verify()`, retention
   writing an `audit.trimmed` checkpoint, and the paginated `GET /api/audit` query API
   behind a full session. **Nothing deferred from M1.5.**
+- **M1.6 — deployment readiness: done.** Part 0 renumbered the notification transport to
+  M1.7. Part 1 settled the three points carried over from the M1.5 review: the
+  `origin.absent_admitted` audit event, `verify()`'s `wrong_key_or_genesis` hint plus the
+  *Key rotation* section in `docs/SECURITY.md`, and the confirmation that the cookie
+  `Max-Age` was already asserted three ways. Part 2 replaced the hard-coded listen host,
+  rewrote the `Dockerfile` multi-stage on one base image, and added `entrypoint.sh` with a
+  non-recursive ownership pass and a permanent `setpriv` drop — and, in the course of
+  booting the container for the first time, found that **`npm run build` had never emitted
+  `dist/server/migrations/`**, so a built tree ran zero migrations and died on the first
+  query. Part 3 replayed Railway's exact header set against the real server under both
+  `PANEL_TRUST_PROXY` settings, gave `/healthz` a bounded database read, and put the
+  public-origin single-resolver rule behind a static scan. Part 4 added `npm run preflight`,
+  `npm run backup`, `npm run restore` and `docs/DEPLOY.md`. Part 5 reconstructed the eleven
+  acceptance criteria — they were never in this repository — recorded them in `PLAN.md`, and
+  ran them against a running container: 79 checks, 0 failures.
 - **M1.7 — notifications: designed, not built.** The Telegram transport is specified
   in `PLAN.md` under *M1.7 — Notifications (Telegram transport): the design*, and the
   Phase 3 consumer it exists for under *Phase 3 preview*. No code exists: no
@@ -780,7 +795,23 @@ what the plan calls for.
   id — strictly stronger given `UNIQUE (scope, name)`, and the reason is written out
   there; and the Phase 3 hook endpoint is a **second Fastify listener bound to
   `127.0.0.1`**, outside the base path, bearer-token only, that must never see a
-  session cookie.
+  session cookie. M1.6's review added three things to that design, all in `PLAN.md`: the
+  hook endpoint needs **two** independent header credentials (a per-project bearer *and* a
+  panel-wide shared secret) with byte-identical failure responses; the completion message
+  format is pinned, with the deep link off by default because the base path inside it is a
+  secret and a Telegram message is permanent storage the panel does not control; and the
+  queue carries a **typed event** rather than a rendered string, because the resource
+  alerts and the audit-derived security alerts are producers too.
+- **Resource usage and concurrency: designed, not built.** `PLAN.md` has both, added in
+  M1.6. The resource section exists because `os.totalmem()` reports the *host's* memory
+  inside a container, so the figures must come from cgroup v2 — including the case where
+  `memory.max` is the literal string `max`, and the two-sample requirement for any CPU
+  percentage. The concurrency section answers the asymmetry: agents in different projects
+  need nothing beyond the resource cap, while a second agent in **one** project gets a git
+  worktree or a `409`, because two agents in one working directory is a correctness hazard
+  rather than a capacity one. It also records that the panel runs a shell in a pty and is
+  therefore not Claude-specific: only the `settings.json` editor and the Stop-hook
+  integration assume Claude Code.
 - **M2 — application shell and design system: not started.** No React, no
   Tailwind, no client code at all yet; `/${basePath}/` serves a placeholder page.
 - No terminal or Claude Code integration (Phase 3).

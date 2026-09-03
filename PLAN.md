@@ -274,7 +274,7 @@ this plan originally called for.
       header, rather than having the requirement retrofitted around client code that
       works without it. Nothing is deferred out of M1.5.
 
-- [ ] **M1.6 — deployment readiness** (`feat(m1.6): …`, one commit per part)
+- [x] **M1.6 — deployment readiness** (`feat(m1.6): …`, one commit per part)
       The Phase 1 exit: make the container build, boot on a real volume, and survive
       behind Railway's edge. No new product features. What it added, and why each
       piece could only be settled with a real container rather than a unit test:
@@ -559,6 +559,198 @@ Three layers, in the order they apply:
    redacts — the same stance as `meta_json` validation, and for the same reason:
    it is a bug in our code, not untrusted input to be laundered.
 
+#### The inbound hook endpoint's credentials: two of them, both configurable
+
+**Added after the M1.6 review; this supersedes the single-bearer-token sketch under
+[Phase 3 preview](#the-endpoint).** The endpoint is `POST /internal/hooks/stop`, bound to
+loopback on its own listener, and it is the one route in this panel that authenticates
+with headers instead of a session. Two independent header credentials are required, and
+both must be present and correct:
+
+| header | value | scope |
+| :--- | :--- | :--- |
+| `Authorization: Bearer <token>` | a **per-project** token, generated when the project is created | one project |
+| `X-Panel-Hook-Secret: <secret>` | a **panel-wide** shared secret, generated at first configuration | every project |
+
+**Why two rather than one.** A single per-project token is a single string that has to
+live in a process environment the panel does not fully control — Phase 3 injects it into
+an agent process, and that process runs a shell, reads files, and executes whatever the
+operator asked for. A token that leaks out of one project's environment (an `env` dump in
+a transcript, a `.env` written into a repository, a hook script echoing its own
+configuration) would otherwise be complete authority to report turns. Requiring a second,
+independent secret that is **not** per-project means a leaked project token alone is not
+sufficient — and requiring the per-project token means the panel-wide secret alone is not
+sufficient either. Neither half is useful without the other, which is the same shape as
+the backup-and-key rule in `docs/DEPLOY.md`.
+
+Both are credentials and are treated exactly like the Telegram token:
+
+- stored through `SecretsRepository` with the M1.3 crypto module — the project token under
+  AAD `secrets:project:<id>:hook_token`, the shared secret under
+  `secrets:hook:shared_secret` (both `v2`, `(scope, name)`-bound, per the AAD change above);
+- **rotatable from the UI**, independently, each rotation writing an audit row that names
+  which credential rotated and never its value. Rotating the shared secret invalidates
+  every project's hook at once and therefore has to rewrite every project's
+  `.claude/settings.json` environment — which is a reason to make that a deliberate,
+  confirmed action rather than a button;
+- compared with `timingSafeEqual` after a length check, never with `===`;
+- **never written to a log line, an audit row, or a response body.** The endpoint logs
+  `hook rejected` and a category, and nothing else. `SecretString` is the control, as
+  everywhere else.
+
+**Failure behaviour, which is the part that has to be specified rather than left to the
+implementation.** The endpoint answers **identically** for a bad bearer token, a bad
+shared secret, and a token that resolves to no project: the same status, the same empty
+body, and the same shape of work done before answering. An attacker on the host probing
+the endpoint must not be able to tell "this token is for a project that exists" from
+"this token is meaningless", because the first is a much smaller search space than the
+second.
+
+- Status: **`401` with an empty body.** Not `403` and not `404`. (A *successful* hook
+  answers `204`; see the Phase 3 preview for why the success shape is `204` and not
+  `200 {}`.)
+- Both credentials are compared **every time**, even when the first has already failed, so
+  the response time does not reveal which one was wrong.
+- The project lookup happens **after** the shared-secret check and its result does not
+  branch the response.
+- **Its own rate-limit bucket**, keyed on nothing — the same reasoning as the anonymous
+  bucket in M1.5, since a failing request has no identity that can be trusted. Separate
+  from the anonymous and per-session buckets so a misconfigured hook cannot spend the
+  operator's tokens, and so a flood here cannot lock the operator out of the panel.
+- **Every rejection is an audit row**, `hook.rejected`, with the failure *category* only
+  (`bad_bearer`, `bad_shared_secret`, `unknown_project`, `rate_limited`) and never the
+  presented value. The category is safe in the log precisely because it is not in the
+  response.
+
+#### If the bot is ever given a webhook
+
+Two-way control — replying to a notification to steer an agent — is **not in scope** and
+is not being designed here. But it should not be designed *out*, so the mechanism is
+recorded now.
+
+Telegram's `setWebhook` accepts a **`secret_token`** parameter (1–256 characters,
+`A-Z a-z 0-9 _ -`). Telegram then sends that value back in an
+**`X-Telegram-Bot-Api-Secret-Token`** header on every callback request. That is the
+mechanism to use: it is Telegram's own answer to "is this request really from Telegram",
+and it needs no allowlist of source addresses. Store it like any other credential,
+compare it in constant time, and reject a callback without it before reading the body.
+
+**The far more important control is an allowlist of permitted `chat_id` values, and it is
+more important because the threat is different.** The secret token proves a request came
+from Telegram. It says nothing about *who* talked to the bot. Anyone who learns the bot's
+username can message it — bot usernames are discoverable, and Telegram will happily
+deliver a stranger's message to the webhook with a valid secret token attached. So:
+
+- the panel keeps an explicit allowlist of `chat_id` values (in practice the operator's
+  own, the one already stored as a credential);
+- **the allowlist check comes before any parsing of the message body** — before command
+  extraction, before argument parsing, before anything that could be influenced by
+  attacker-controlled text. An unlisted chat is dropped, counted, and audited as
+  `hook.rejected` with category `chat_not_allowed`;
+- the reply is silence, not an error message. Telling a stranger "you are not authorised"
+  confirms the bot is a control surface for something.
+
+Ordering matters and is the whole point of writing it down: secret token, then chat
+allowlist, then parse. A design that parses first to find the `chat_id` has already
+handed untrusted input to a parser.
+
+#### The completion message: what it says, in what order
+
+Concretely, and in this order:
+
+```
+<project name> — <outcome>
+<duration>
+
+<last assistant message, truncated>
+
+<link into the panel at that project>          ← only under the conditions below
+```
+
+For example:
+
+```
+acme-web — finished
+4m 12s
+
+Added the retry wrapper around the upload call and a test for the 429 path.
+Two files changed; the suite passes.
+
+https://panel.example.com/<base>/projects/7
+```
+
+- **The project name comes first**, because the operator has several and the first line is
+  all a phone notification shows. Every message names its project; there is no
+  "unattributed" shape.
+- **The outcome** is one of `finished`, `finished, with N background tasks still running`,
+  `stopped early`, or `failed`. Derived from the Stop payload, never from parsing the
+  terminal.
+- **The duration** is from the panel's own record of the turn's start, not from the
+  transcript's timestamps — see the Phase 3 preview for why the transcript is the
+  unreliable source.
+- **The truncated last assistant message**, from `last_assistant_message`, through the
+  same redaction and base-path elision as everything else, at enqueue time.
+
+**The link, and the decision it forces.** The project *name* is not a secret: the operator
+chose it, it is not a credential, and a notification that will not say which project it is
+about is not worth sending. **The base path inside the link is a secret**, and it is the
+whole obscurity layer. A Telegram message is stored on Telegram's servers, is readable by
+anyone who gets at the operator's phone or their Telegram account, and is synced to every
+device they have ever logged in from. Putting the base path there is a permanent
+disclosure to a place the panel does not control.
+
+So the link is **off by default**, behind a single setting
+`PANEL_NOTIFY_INCLUDE_LINKS` (default `false`):
+
+- **`false` (default):** the message ends after the truncated text. It names the project
+  and says what happened, which is everything the operator needs to decide whether to go
+  and look.
+- **`true`:** the message ends with a deep link including the base path. The setting's
+  description in the UI says, in those words, that turning it on writes the panel's secret
+  URL into every notification and into Telegram's storage, and that the base path should
+  be rotated if the Telegram account is ever compromised.
+
+There is no middle option, and that is deliberate. A "link without the base path" is a URL
+that 404s, and a short-lived signed link would be a second authentication path into the
+panel — reachable from a chat message, bypassing the session — which is a considerably
+worse idea than a link the operator has to paste.
+
+#### The queue carries a typed event, not a rendered string
+
+`notify()` takes a **typed event**, and the rendering happens inside the notification
+layer. The Phase 3 `Stop` hook is the first producer but not the only one: the
+threshold-crossing alerts from [Resource usage](#resource-usage--the-server-side-design)
+are producers, and so are the audit-derived security alerts already specified above.
+
+```ts
+type NotifyEvent =
+  | { kind: 'turn_complete'; projectId: number; outcome: TurnOutcome;
+      durationMs: number; message: string | null; backgroundTasks: number }
+  | { kind: 'resource_alert'; resource: 'memory' | 'disk' | 'cpu';
+      used: number; limit: number | null; percent: number }
+  | { kind: 'security_alert'; event: AuditEventName; throttleKey: string;
+      suppressedSince: number }
+  | { kind: 'test' };
+```
+
+Three consequences, and each is a thing the implementation has to be built around rather
+than retrofitted:
+
+1. **A transport decides its own formatting.** Telegram's 4096-character cap and its
+   truncate-then-attach behaviour are properties of Telegram, not of "a notification". A
+   later SMTP transport would render the same event as a subject and a body with no cap at
+   all, and an ntfy transport as a title and a priority. A pre-rendered string forces every
+   transport to accept Telegram's shape.
+2. **Redaction stays at enqueue time**, which the M1.7 design already requires — so the
+   *event's* string fields are redacted and base-path-elided before the row is written,
+   and rendering afterwards only ever composes already-clean values. This is the one place
+   the typed-event change has to be careful: it must not become an excuse to redact at
+   send time, because the queue table persists on the volume.
+3. **The `notification_queue` row stores the serialised event**, not `title` and `body`.
+   The column list above changes accordingly: `kind` stays (it is the discriminant, and it
+   is what a query filters on), `title`/`body` are replaced by a single `event_json`, and
+   the rendered text is never persisted at all.
+
 #### Tests to write
 
 - Queue: enqueue inside a transaction does not touch the network; a claim race
@@ -579,16 +771,367 @@ Three layers, in the order they apply:
 - Endpoints: `POST /api/notifications/telegram` without step-up is 403; the `GET`
   never returns either value in any form other than `mask()`; a static scan asserts
   no file outside `telegram.transport.ts` names `api.telegram.org`.
+- **The hook endpoint's two credentials:** a correct bearer with a wrong shared secret, a
+  wrong bearer with a correct shared secret, a bearer for a project that does not exist,
+  and a bearer for a project that does. The first three must produce **byte-identical**
+  responses — the test compares statuses *and* bodies rather than settling for all-4xx.
+  Rotating either credential invalidates the old value. A static scan asserts no file
+  outside the hook route names either header.
+- **The chat allowlist runs before parsing:** a callback from an unlisted `chat_id` is
+  dropped with the body never parsed, asserted by handing it a body that would throw in the
+  parser and requiring the drop rather than the throw.
+- **The link setting:** with `PANEL_NOTIFY_INCLUDE_LINKS` false — the default — no rendered
+  message contains the base path in any spelling, swept the same three ways
+  `plugins/logger-redaction.ts` sweeps. With it true the link is present and the stored
+  `event_json` still is not.
+- **Typed events:** `notify()` refuses a pre-rendered string at the type level and at
+  runtime; each event kind renders to the documented shape; a `resource_alert` and a
+  `security_alert` reach the same queue as a `turn_complete` without the transport knowing
+  which produced them.
 
 #### Files
 
 `src/server/services/notify.service.ts` (queue and `notify()`),
 `src/server/services/telegram.transport.ts`,
 `src/server/services/notification-rules.ts`,
+`src/server/services/notification-render.ts` (typed event → per-transport text),
 `src/server/routes/notifications.ts`,
 `src/server/migrations/009_notifications.sql`, `tests/unit/notify.test.ts`,
 `tests/unit/telegram-transport.test.ts`,
+`tests/unit/notification-render.test.ts`,
 `tests/integration/notifications.test.ts`.
+
+The hook endpoint's own files land with **Phase 3**, not here — `routes/internal-hooks.ts`
+and the second listener — but the two credentials it needs are M1.7's, because they are
+stored, rotated and audited by the same machinery as the Telegram pair.
+
+## Resource usage — the server side (design)
+
+**Design only. The widget is Phase 2 work; what is specified here is the endpoint and the
+sampling behind it.** It is written down rather than built because the obvious
+implementation is wrong in a way that produces a plausible-looking number, and a
+plausible-looking wrong number in a resource display is worse than no display at all.
+
+### The reason this needs specifying: `os.totalmem()` lies in a container
+
+`os.totalmem()` and `os.freemem()` read the **host's** memory, not the container's limit.
+On Railway that means a panel with a 1 GB service limit would cheerfully report the
+figures of whatever machine the container landed on — tens of gigabytes, mostly free — and
+the display would say "everything is fine" for the entire approach to an OOM kill. The
+numbers are not approximate; they are about a different thing.
+
+The values must come from **cgroup v2**, which is what the limit is actually enforced by.
+
+| what | file | notes |
+| :--- | :--- | :--- |
+| memory used | `/sys/fs/cgroup/memory.current` | bytes, one integer |
+| memory limit | `/sys/fs/cgroup/memory.max` | bytes **or the literal string `max`** |
+| cpu used | `/sys/fs/cgroup/cpu.stat` → `usage_usec` | cumulative microseconds; useless from one sample |
+| cpu allowance | `/sys/fs/cgroup/cpu.max` | `"<quota> <period>"`, or `"max <period>"` |
+| memory pressure | `/sys/fs/cgroup/memory.events` → `oom_kill`, `high` | a count that only goes up; see below |
+
+### `memory.max` can be the string `max`, and that case must render differently
+
+An unlimited cgroup writes the literal `max`. Parsing that with `Number()` gives `NaN`,
+and `used / NaN` is `NaN` — which formats as `NaN%` if you are lucky and as `0%` if some
+helper coerces it. Neither is acceptable.
+
+The contract: the limit is `number | null`, `null` meaning unlimited, and **a null limit
+renders as a used-only figure** — `"412 MB used"` — with no percentage, no bar, and no
+denominator. Not `412 MB / ∞`, not `412 MB / 0`, and not a bar at 0 %. A UI that cannot
+show a proportion should show the number it does have and say nothing about the number it
+does not.
+
+### CPU needs two samples, and there is no way around it
+
+`usage_usec` is cumulative CPU time since the cgroup was created. A single reading divided
+by anything is meaningless — early in a container's life it looks idle no matter what it is
+doing, and after a week of uptime it looks pinned. A percentage is a **rate**, so it needs
+two samples and the wall-clock interval between them:
+
+```
+percent = (usage_usec₂ − usage_usec₁) / (elapsed_µs × cores) × 100
+cores   = quota / period   from cpu.max,   or os.cpus().length when it is "max"
+```
+
+The `× cores` term is the part that is easy to omit and produces a number that is wrong by
+a factor of the core allowance: a process fully using one core in a two-core allowance is
+at 50 %, not 100 %. Sampling interval **1000 ms**, taken by the same background sampler
+described below, so a request never waits for a second sample.
+
+### Not containerised is a state, not an error
+
+When `/sys/fs/cgroup/memory.current` is absent — a developer's machine, a non-cgroup-v2
+host — fall back to `os.totalmem()`/`os.freemem()` and `os.cpus()`, and set an explicit
+flag:
+
+```ts
+{ source: 'cgroup-v2' | 'os', containerized: boolean, ... }
+```
+
+The flag is in the payload, not inferred by the client, and the UI says so
+("host figures — not containerised"). The alternative — silently substituting host numbers
+— is exactly the failure this whole section exists to avoid, just relocated to the machine
+where it is least likely to be noticed.
+
+### Disk, because it is the one that fills up silently and takes the database with it
+
+Memory pressure announces itself: the container is killed and restarted. A full volume does
+not. SQLite starts returning `SQLITE_FULL` on write, the audit log stops accepting rows,
+and a panel that cannot write its own audit log is a panel whose security model has quietly
+stopped working. The volume is also the thing that grows without anyone deciding to grow
+it: project checkouts, `node_modules` trees, agent scratch files, the WAL.
+
+- Read with `statfs` on `PANEL_DATA_DIR`: total, free, and used-by-us.
+- Report **both** the filesystem figure and the panel's own footprint (`panel.db` plus its
+  sidecars, and the total under `projects/`), because "the volume is 80 % full" and "the
+  database is 80 % of the volume" call for completely different actions.
+- The alert threshold here is lower than for memory, and deliberately: see below.
+
+### The endpoint
+
+`GET /api/system/resources`
+
+- **Full session required.** Not step-up: reading a resource figure is not a state change,
+  and gating it behind a fresh code would push the operator toward not looking — the same
+  reasoning as the audit query API in M1.5.
+- **Exempt from the mutating-request machinery**, because it is a `GET`: no CSRF token, no
+  `Origin` requirement. It is *not* exempt from `Host` validation or from the per-session
+  rate-limit bucket, and it should not be — unlike `/healthz` it is inside the base path
+  and behind a session, so neither exemption has a reason.
+- **Served from a cache, never computed per request.** One background sampler on a
+  `setInterval` of **1000 ms** maintains the current figures; the endpoint returns the last
+  snapshot plus its `sampledAt`. A polling UI at 2 s and a second browser tab must not
+  double the cost of anything, and a resource display that becomes its own load is a joke
+  the operator will not find funny twice.
+- The sampler is a single timer with a guarded body, like the M1.7 queue worker: it never
+  throws out of itself, and a read failure degrades one field to `null` rather than taking
+  the endpoint down.
+- Response shape:
+
+```ts
+interface ResourceSnapshot {
+  sampledAt: string;                 // ISO-8601
+  source: 'cgroup-v2' | 'os';
+  containerized: boolean;
+  memory: { usedBytes: number; limitBytes: number | null; percent: number | null };
+  cpu:    { percent: number | null; cores: number | null };   // null until two samples exist
+  disk:   { path: string; totalBytes: number; freeBytes: number; usedBytes: number;
+            percent: number; databaseBytes: number; projectsBytes: number };
+  perProject?: ProjectUsage[];       // Phase 3 onward; see below
+}
+```
+
+Nothing in it is a secret — `path` is `/data`, which is in the runbook — and in particular
+**it must not carry the base path**, which is why `path` is the data directory and not a URL.
+
+### Threshold-crossing alerts, which is what feeds M1.7
+
+Alerts fire **on a crossing, not on a level**, or a full disk sends a message every
+sampling interval forever. Each rule holds a state — `below` or `above` — and emits only on
+a transition, with hysteresis so a value oscillating on the boundary does not chatter:
+
+| resource | fires above | clears below | why this number |
+| :--- | :--- | :--- | :--- |
+| memory | 85 % | 75 % | an OOM kill takes the agent processes with it, and 85 % of a small limit is minutes of warning, not hours |
+| disk | 80 % | 70 % | lower than memory on purpose: recovery means deleting things, which takes a human, and a full volume stops the audit log |
+| cpu | 90 % sustained 60 s | 70 % | high CPU is usually a *legitimately* busy agent, so the sustain window is what stops it being noise |
+| `oom_kill` count increased | any increase | — | not a threshold at all. This is the one that already happened, and it is the most valuable alert in the list: the panel can say "an agent was killed for memory" instead of leaving the operator to wonder why a turn never finished |
+
+Each becomes a `{ kind: 'resource_alert', ... }` typed event through `notify()`, so it
+reaches the operator by the same path as a security alert and a finished turn. They inherit
+M1.7's per-rule throttling for free, which matters because the hysteresis above stops
+*chatter* but not a genuinely bouncing workload.
+
+### Per-project attribution, from Phase 3 — and it is an estimate
+
+Once the panel runs agent processes, "the panel is at 90 % of memory" is much less useful
+than "the `acme-web` agent is using 700 MB of it". The mechanism:
+
+- each project's agent has a known root process — the pty's child, or the tmux session
+  leader — recorded when the panel spawns it;
+- walk `/proc/<pid>/task/*/children` (or `/proc/*/stat`'s ppid field) to enumerate the
+  process tree from that root;
+- sum **RSS** across the tree, from `/proc/<pid>/statm` or `smaps_rollup`.
+
+**This is an estimate, and the UI must say so**, because summing RSS over a process tree
+double-counts shared pages. A parent and three children sharing the same libc and the same
+Node binary each report those pages in their own RSS, so the sum exceeds the memory
+actually attributable to the group — sometimes considerably, for a tree of Node processes.
+`PSS` from `smaps_rollup` divides shared pages by the number of sharers and is the better
+answer, but it is more expensive to read and is not available for a process the panel does
+not own.
+
+So: sum RSS, label it "approximate", and make the **cgroup total the authority** for
+anything that matters. The per-project figures are for answering "which project should I
+look at", not for adding up to the total — and they will not add up to the total, which is
+a thing to state in the UI rather than a bug to chase. If Phase 3 gives each project its
+own cgroup (a plausible later refinement, since the panel spawns the processes), that
+replaces this entirely with an exact number, and this section should be deleted rather than
+adjusted.
+
+### Files, when it is built
+
+`src/server/services/resources.service.ts` (the sampler and the cgroup readers),
+`src/server/services/resource-alerts.ts` (the crossing state machine),
+`src/server/routes/system.ts`, `tests/unit/resources.test.ts` (with fixture cgroup files,
+including `memory.max` = `max` and a two-sample CPU calculation),
+`tests/unit/resource-alerts.test.ts` (crossings, hysteresis, and the `oom_kill` counter),
+`tests/integration/system-resources.test.ts` (full session required, cached between
+requests, no base path in the body).
+
+## Concurrency — what the panel supports, and what it does not
+
+**Design only, and the answer is deliberately asymmetric**: concurrency across projects is
+the point of the product, concurrency inside one project is a hazard that gets a policy.
+
+### Different projects: the central case, and it needs nothing special
+
+Two agents in two projects are two process trees with nothing in common but the machine.
+The isolation is already in the directory layout:
+
+- separate working directories under `/data/projects/<id>/`;
+- separate `CLAUDE_CONFIG_DIR`, so per-project settings, history and credentials do not
+  mix;
+- separate process trees, separate ptys, separate `.claude/settings.json` and therefore
+  separate hook tokens (see the two credentials above).
+
+Nothing else is required. There is no shared mutable state between two projects' agents,
+so there is no lock to take and no queue to serialise on. The only limit is resources, and
+that is the cap below rather than a concurrency mechanism.
+
+### The same project: a correctness hazard, not a capacity one
+
+Two agents in **one working directory** is a different problem, and it is worth being
+precise about why, because "it might be slow" is not the issue:
+
+- **Two agents editing the same files.** Both read a file, both decide what it should say,
+  both write. The second write wins and the first agent's reasoning is silently discarded —
+  and neither agent has any way to notice, because each sees a file that says what it just
+  wrote. This is not a race that better locking fixes; it is two independent plans applied
+  to one tree.
+- **git refuses, visibly.** `.git/index.lock` exists precisely to stop two processes
+  staging at once, so the *second* agent gets `fatal: Unable to create '…/.git/index.lock':
+  File exists` — which it will then try to reason about, possibly by deleting the lock
+  file. An agent that has been told to make the build pass and is being blocked by a lock
+  file is one prompt away from `rm -f .git/index.lock`.
+- **Branch state is a single global.** `git checkout` is not a per-process view. One agent
+  switching branches moves the other agent's working tree underneath it, mid-task.
+
+**The policy:**
+
+1. **One agent per project working directory. Enforced, not advised.** The panel holds an
+   in-process lock keyed on the project id, taken when an agent is spawned and released
+   when its process tree exits. A second spawn request for a project that already has a
+   live agent does not queue and does not fail silently — it is answered with a `409` and
+   the choice below.
+2. **A second concurrent agent in one project gets its own git worktree.** `git worktree
+   add /data/projects/<id>/worktrees/<agent-id> -b agent/<agent-id>` gives it a separate
+   working directory, a separate index, a separate `HEAD` and a separate branch, sharing
+   only the object database — which is exactly the thing that *is* safe to share, since git
+   objects are content-addressed and append-only. The three hazards above all disappear:
+   different files, different index lock, different branch.
+   - This is why `git` is in the Phase 3 install list in the `Dockerfile` and not the
+     Phase 5 one: the worktree is not an optimisation, it is how the second agent is
+     possible at all.
+   - The panel creates the worktree, records it against the agent, and removes it
+     (`git worktree remove`) when the agent finishes and its branch has been merged or
+     abandoned. A stale worktree is a directory that looks like a project and is not one,
+     so cleanup is part of the spawn contract rather than a maintenance task.
+   - **Merging is the operator's job, not the panel's.** Two branches from two agents are a
+     decision, and the panel's role ends at making them exist separately.
+3. **A project with no git repository gets no second agent.** There is nothing to make a
+   worktree from, so the `409` is the whole answer. This is a real case — a project can be
+   a directory of scripts — and the honest response is to say "one at a time here" rather
+   than to invent isolation that is not there.
+
+### The binding limits are memory and the upstream API, not CPU
+
+Worth stating because it inverts the intuition that a cap should be about CPU:
+
+- **An agent waiting on a model response is idle.** It has an open HTTPS connection and no
+  work to do, and that is most of its wall-clock life. Ten agents mid-turn are not ten
+  busy cores; they are ten sleeping processes and one that is applying an edit. CPU spikes
+  when a tool runs — a build, a test suite, a `grep` over a large tree — and those are
+  bursty and short next to the model latency they are interleaved with. A CPU-derived cap
+  would allow far too many agents and then be the wrong constraint anyway.
+- **Memory does not go away between turns.** Each agent is a Node process with a
+  conversation in it, plus a pty, plus whatever the tools it ran left resident. That is a
+  floor per agent that persists for the whole session, and on a 1 GB service it is the
+  number that decides how many can exist. Exceeding it is not degradation, it is an OOM
+  kill that takes the whole container — every agent, not just the newest.
+- **The upstream API has its own concurrency limit**, and hitting it produces `429`s that
+  the agents will interpret as failures of the task rather than of the panel. The panel's
+  cap should sit *below* whatever the account's limit is, so that the panel is the thing
+  that says "not now" rather than the API.
+
+### The global cap
+
+`PANEL_MAX_CONCURRENT_AGENTS`, configurable, **default derived rather than hardcoded**:
+
+```
+default = clamp(1, floor((memoryLimitBytes × 0.7) / PER_AGENT_MEMORY_ESTIMATE), 8)
+```
+
+reading `memoryLimitBytes` from the cgroup figure in
+[Resource usage](#resource-usage--the-server-side-design) — which is the reason that
+section has to be built first, and the reason it has to read the *cgroup* and not
+`os.totalmem()`. A default computed from the host's memory would allow a dozen agents on a
+1 GB service and OOM the container on the third.
+
+- `PER_AGENT_MEMORY_ESTIMATE` starts at **250 MB** and is a constant to be corrected by
+  measurement once Phase 3 exists, not a guess to be defended. It is named as an estimate in
+  the code.
+- The `× 0.7` leaves the panel itself, SQLite's page cache and a tool invocation's own
+  memory out of the agent budget.
+- The upper clamp of 8 is not about memory; it is the API-concurrency reasoning above. A
+  panel that could run 40 agents on a large instance still should not.
+- **When the limit is unlimited (`memory.max` = `max`), the default is 2, not unbounded.**
+  An unknown limit is not permission.
+
+**What the UI does when the cap is reached** — and "shows an error" is not a specification:
+
+- The spawn control is **disabled with the reason on it**: "3 of 3 agents running — stop one
+  to start another", not a greyed-out button with a tooltip nobody hovers.
+- The list of running agents is right there, each with its project, its elapsed time and its
+  memory figure from the per-project attribution above, so the operator can see *which* one
+  to stop. A cap that does not show what is using it makes the operator guess.
+- **No queue.** A request to start an agent that is queued behind another for an unknown
+  number of minutes is worse than a refusal: the operator walks away believing work has
+  started. If queueing is ever wanted, it is a visible queue with positions and an estimated
+  start, which is a feature and not a fallback.
+- The server refuses independently of the UI — `409` with the current count — because the
+  API is reachable without the client and the cap is a resource guarantee, not a form
+  validation.
+
+### The panel runs a shell in a pty, so it is not Claude-specific
+
+This is recorded because it is much cheaper to keep true than to make true later.
+
+**What is generic:** the pty, the terminal WebSocket, the tmux session that survives a
+dropped socket, the process-tree accounting, the concurrency lock, the worktree mechanism,
+the project directory layout, and the resource caps. All of that is "run a long-lived
+interactive process in a directory and let the operator watch it". None of it mentions
+Claude Code.
+
+**What assumes Claude Code, and is exactly two things:**
+
+1. **The `settings.json` editor.** It edits `.claude/settings.json` against Claude Code's
+   schema — hooks, permissions, `allowedEnvVars`. A different agent has a different
+   configuration file, or none.
+2. **The Stop-hook integration.** `POST /internal/hooks/stop`, the payload fields
+   (`stop_hook_active`, `last_assistant_message`, `cwd`, `background_tasks`), and the
+   `.claude/settings.json` the panel writes to install the hook. This is the *only* reason
+   the panel knows a turn finished.
+
+So "run a different CLI agent in this project" is: a second implementation of a
+`TurnSignal` seam (whatever tells the panel a turn ended — an HTTP hook, a sentinel line, a
+process exit) and a second configuration editor. It is **not** a rewrite, provided those two
+stay behind their seams and nothing else grows a dependency on Claude Code's file layout.
+The concrete rule to hold to: **no module outside `settings-editor.ts` and
+`internal-hooks.ts` may name `.claude`, `settings.json`, or a Claude Code payload field.**
+That is enforceable by the same kind of static scan as the client-IP and cookie rules, and
+it should be added when those two files are.
 
 ### M2 — Application Shell & Design System
 1. Tailwind v4 theme: colors, spacing, font stacks, animation keyframes in
