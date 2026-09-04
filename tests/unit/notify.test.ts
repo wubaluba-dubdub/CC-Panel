@@ -9,10 +9,12 @@ import { AuditEvent, AuditService } from '../../src/server/services/audit.servic
 import {
   BACKOFF_BASE_MS,
   BACKOFF_CAP_MS,
+  MAX_ATTEMPTS,
   NotifyEventError,
   NotifyService,
   UNCONFIGURED_RETRY_MS,
   jitter,
+  totalRetryWindowMs,
 } from '../../src/server/services/notify.service.js';
 import type {
   NotificationTransport,
@@ -180,15 +182,15 @@ describe('the worker', () => {
     expect(JSON.stringify(meta)).not.toContain('test message');
   });
 
-  it('backs off exponentially, capped and jittered', async () => {
+  it('backs off exponentially, capped and jittered, over the documented window', async () => {
     const notify = build();
     notify.notify({ kind: 'test', at: '2026-01-01T00:00:00.000Z' });
     transport.fail({ kind: 'rejected', category: 'other', errorCode: 500 });
 
     const delays: number[] = [];
-    // Eleven, not twelve: the twelfth attempt is the cap and dead-letters rather than
+    // One fewer than the attempt cap: the last attempt dead-letters rather than
     // rescheduling, which the next test is about.
-    for (let attempt = 1; attempt <= 11; attempt += 1) {
+    for (let attempt = 1; attempt < MAX_ATTEMPTS; attempt += 1) {
       const before = clock.now();
       const result = await notify.tick();
       if (result === null) break;
@@ -203,6 +205,31 @@ describe('the worker', () => {
     expect(delays.slice(0, 5)).toEqual([1000, 2000, 4000, 8000, 16_000]);
     expect(delays.at(-1)).toBe(BACKOFF_CAP_MS);
     expect(Math.max(...delays)).toBe(BACKOFF_CAP_MS);
+    expect(delays).toHaveLength(MAX_ATTEMPTS - 1);
+
+    // **The three-way pin.** The schedule the worker actually produced, the figure derived
+    // from the constants, and the number the documentation quotes. The prose used to say
+    // "~2 hours" for a ladder that summed to thirty-two minutes, in two places, because
+    // nobody had multiplied it out; this is what stops that happening again.
+    const observed = delays.reduce((sum, ms) => sum + ms, 0);
+    expect(observed).toBe(totalRetryWindowMs());
+    expect(totalRetryWindowMs()).toBe(4_623_000);
+    expect(Math.round(totalRetryWindowMs() / 60_000)).toBe(77);
+    // And the previous cap, so the change is stated rather than implied.
+    expect(Math.round(totalRetryWindowMs(12) / 60_000)).toBe(32);
+  });
+
+  it('keeps trying for longer than a third party is plausibly down', async () => {
+    // Fifteen attempts, not twelve, and the reason is the length of an outage the operator
+    // has no part in: a Telegram incident, a transit problem, a token rotated and pasted
+    // back a few minutes later. Half an hour is inside that; an hour and a quarter is not
+    // comfortably. Dead-lettering a security alert because a third party was down over
+    // lunch is the one failure this queue exists to prevent.
+    expect(MAX_ATTEMPTS).toBe(15);
+    expect(totalRetryWindowMs()).toBeGreaterThan(60 * 60_000);
+    // Bounded, though: a row that will never succeed has to stop being retried and start
+    // being reported.
+    expect(totalRetryWindowMs()).toBeLessThan(3 * 60 * 60_000);
   });
 
   it('dead-letters after the attempt cap and keeps the row', async () => {

@@ -573,8 +573,8 @@ secret. Sending a test message needs only a full session: it discloses nothing.
 `GET /api/notifications/telegram` reports the queue: pending, sent, abandoned, the time of
 the last success, and the **category** of the last failure — never Telegram's own message,
 because those echo back what was sent. A row retries with exponential backoff (1 s
-doubling to a 15-minute ceiling, jittered) and after **12 attempts** becomes a dead letter
-that stays in the table: "the panel tried to tell you and could not" is itself information.
+doubling to a 15-minute ceiling, jittered) and after **15 attempts — about 77 minutes of
+trying** becomes a dead letter that stays in the table: "the panel tried to tell you and could not" is itself information.
 An unconfigured panel is the one exception — those rows wait and never dead-letter, so
 configuring it later drains the backlog.
 

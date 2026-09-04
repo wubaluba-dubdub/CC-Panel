@@ -362,10 +362,19 @@ Numbered on from the list above so the whole set stays checkable. 13–15 are bu
     the thing that actually stops it. Built with one addition the design did not have —
     unclean-restart detection, which is the only way an OOM kill that takes the whole
     container becomes visible at all. See §*Built in M1.8*.
-14. **`MAX_ATTEMPTS` 12 → 15 (M1.8).** A little over two and a half hours of trying instead
-    of a little over two, at the same 15-minute ceiling. The figure is stated in three places
-    — the constant, the test that pins the ladder, and this document — and all three move
-    together.
+14. **`MAX_ATTEMPTS` 12 → 15 (M1.8).** 77 minutes of trying instead of 32, at the same
+    15-minute ceiling — and **the two figures the prose carried were both wrong**. The
+    constant's comment said "~2 hours" and §*The queue* above said "a little over two
+    hours"; twelve attempts is 1 023 s of doubling plus one wait at the ceiling, which is
+    thirty-two minutes. Nobody had multiplied it out. So the window is now
+    `totalRetryWindowMs()`, derived from the same three constants the scheduler uses, and
+    `tests/unit/notify.test.ts` pins the derived figure against the schedule the worker
+    actually produces *and* against the number quoted in prose. The reason for the increase
+    stands on the corrected figure: half an hour is inside the length of an outage the
+    operator has no part in — a Telegram incident, a transit problem, a token rotated and
+    pasted back — and dead-lettering a security alert because a third party was down over
+    lunch is the one failure this queue exists to prevent. Four more attempts at the ceiling
+    cost one request per quarter hour.
 15. **`PANEL_OUTBOUND_PROXY` stays unset in production, and `preflight` now says so
     (M1.8).** Telegram puts the bot token in the request **path**, so every hop between the
     panel and Telegram sees every token the panel will ever send. The boot warning only fired
@@ -678,10 +687,19 @@ retrofitted:
    unlike a log line, persists on the volume.
 3. **Exponential backoff with a ceiling and an abandonment point.** Delays
    `2^attempts` seconds from 1 s, capped at 15 minutes, jittered ±20 % so a burst
-   enqueued together does not retry in lockstep. After 12 attempts — a little over
-   two hours of trying — the row goes to `abandoned` and stays in the table.
-   Abandoned is not deleted: "the panel tried to tell you and could not" is itself
-   information, and the queue is the only place it exists.
+   enqueued together does not retry in lockstep. After **15** attempts — 77 minutes of
+   trying, a little over an hour and a quarter — the row goes to `abandoned` and stays in
+   the table. Abandoned is not deleted: "the panel tried to tell you and could not" is
+   itself information, and the queue is the only place it exists.
+
+   *This paragraph said "After 12 attempts — a little over two hours" and was wrong twice
+   over: twelve attempts is 1 023 s of doubling plus one wait at the 15-minute ceiling,
+   which is thirty-two minutes and not two hours. M1.8 raised the cap to 15 (**decision
+   14**) and replaced both figures with `totalRetryWindowMs()` in
+   `services/notify.service.ts`, which derives the window from the same three constants the
+   scheduler uses. `tests/unit/notify.test.ts` asserts the derived figure against the
+   schedule the worker actually produces and against the number quoted here, so the three
+   cannot drift again.*
 4. **The worker is a single timer, and it is the only thing that reads the token.**
    One `setTimeout` chain, not one per row; it wakes, claims the oldest due row with
    `UPDATE … SET state='sending' WHERE id=? AND state='pending'` and checks

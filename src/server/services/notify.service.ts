@@ -38,14 +38,51 @@ import type { TimerHandle } from './resources.service.js';
  *    interval, so an idle panel with an empty queue costs nothing at all.
  */
 
-/** Attempts before a row is a dead letter. ~2 hours of trying at the backoff below. */
-export const MAX_ATTEMPTS = 12;
+/**
+ * Attempts before a row is a dead letter.
+ *
+ * Fifteen, which is {@link totalRetryWindowMs} — a little over an hour and a quarter — of
+ * trying at the backoff below. Twelve was about half an hour, and half an hour is inside
+ * the length of an outage the operator has no part in: a Telegram incident, a transit
+ * problem between the platform and it, a bot token being rotated and pasted back a few
+ * minutes later. Dead-lettering a security alert because a third party was down over
+ * lunch is the one failure this queue exists to prevent, and four more attempts at the
+ * fifteen-minute ceiling cost nothing — an unreachable transport is one request per
+ * quarter hour whether it is the fifth or the fifteenth.
+ *
+ * Not unbounded, and not much larger, for the reason the cap exists at all: a row that
+ * will never succeed — a chat id that is wrong, a bot that was deleted — has to stop being
+ * retried and start being *reported*, and `notification.abandoned` is the report.
+ */
+export const MAX_ATTEMPTS = 15;
 /** First retry after one second, doubling. */
 export const BACKOFF_BASE_MS = 1000;
 /** Ceiling on the doubling. */
 export const BACKOFF_CAP_MS = 15 * 60_000;
 /** ±20 %, so a burst enqueued together does not retry in lockstep. */
 export const BACKOFF_JITTER = 0.2;
+
+/**
+ * The nominal total the worker spends on one row before abandoning it.
+ *
+ * Derived rather than written down, because it was written down twice and both copies were
+ * wrong: the constant's comment said "~2 hours" and `PLAN.md` said "a little over two
+ * hours" for a ladder that summed to thirty-two minutes. Nobody had multiplied it out. The
+ * figure now comes from the same three constants the scheduler uses, `tests/unit/notify.test.ts`
+ * checks it against the schedule the worker actually produces, and the documentation quotes
+ * it — so the three cannot drift again.
+ *
+ * Nominal: the ±20 % jitter makes any individual row land inside a band around this.
+ */
+export function totalRetryWindowMs(maxAttempts: number = MAX_ATTEMPTS): number {
+  let total = 0;
+  // `maxAttempts - 1` waits, not `maxAttempts`: the last attempt is followed by
+  // abandonment rather than by a delay.
+  for (let attempt = 1; attempt < maxAttempts; attempt += 1) {
+    total += Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** (attempt - 1));
+  }
+  return total;
+}
 /**
  * How long a row waits when there is no Telegram configuration at all.
  *

@@ -412,8 +412,12 @@ parts that are decisions rather than code:
   the alert that mattered. Backoff doubles from one second to a fifteen-minute ceiling,
   jittered **±20 %** — not "full jitter", which randomises over `[0, computed)` to
   decorrelate a fleet of clients and there is exactly one sender here — and is bounded by
-  an attempt count (12, so about half an hour of trying), after which the row is
-  `abandoned` and a `notification.abandoned` audit row is written.
+  an attempt count (**15** since M1.8, so 77 minutes of trying — the figure is
+  `totalRetryWindowMs()` and is derived from the three backoff constants rather than
+  written down, because it had been written down twice and both copies were wrong), after
+  which the row is `abandoned` and a `notification.abandoned` audit row is written. Twelve
+  attempts was thirty-two minutes, which is inside the length of a third-party outage the
+  operator has no part in.
 - **`not_configured` retries without consuming an attempt.** Otherwise every alert queued
   between first boot and the operator's first visit to the settings screen dead-letters —
   and those (`setup.completed`, the first `login.success`) are the ones most worth keeping.
