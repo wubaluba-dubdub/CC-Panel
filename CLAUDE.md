@@ -76,7 +76,7 @@ node -e "for (const n of ['fastify','@fastify/static','vitest','vite']) \
 | `argon2`             | `^0.41.0`    | `0.41.1`  | native; CJS-only, imported by name     |
 | `otplib`             | `^13.5.0`    | `13.5.0`  | upgraded from v12 — see below           |
 | `better-sqlite3`     | `^11.3.0`    | `11.10.0` |                                        |
-| `undici`             | `^7.16.0`    | `7.16.0`  | outbound only — see below              |
+| `undici`             | `^7.29.1`    | `7.29.1`  | outbound only — see below              |
 | `vitest`             | `^4.1.11`    | `4.1.11`  | `npm test` must print `RUN v4.x`        |
 | `vite`               | `^6.0.11`    | `6.4.3`   |                                        |
 
@@ -88,6 +88,15 @@ indistinguishable from a wrong bot token. The proxy needs an explicit `ProxyAgen
 dispatcher from the standalone package is not the same object graph as the `fetch` baked
 into Node: pairing them is not a supported combination. Every outbound request goes through
 `src/server/utils/outbound-http.ts`.
+
+The range is `^7.29.1` rather than the `^7.16.0` M1.7 was written against, because
+`7.0.0`–`7.28.0` carry a high-severity advisory set — sixteen of them, and
+[GHSA-g9mf-h72j-4rw9](https://github.com/advisories/GHSA-g9mf-h72j-4rw9), an unbounded
+decompression chain via `Content-Encoding`, is on the `fetch` path this panel uses rather
+than on the WebSocket client it does not. `7.29.1` is the patched release inside the same
+major, and `outbound-http.ts` imports only `Agent`, `ProxyAgent`, `fetch` and the
+`Dispatcher` type, none of which changed. The floor is in the range, not just the lockfile,
+so a fresh `npm install` cannot resolve back down into the vulnerable window.
 
 `@fastify/static` must stay on the v10 line. v7 depends on `fastify-plugin@^4`,
 which carries a Fastify 4 peer range, so registering it into this Fastify 5
@@ -330,8 +339,11 @@ parts that are decisions rather than code:
 - **Delivery is at-least-once and the code says so.** A claim is an `UPDATE … WHERE state =
   'pending'` checked for `changes === 1`, so two workers cannot take one row; a send that
   succeeds and then fails to record it sends again. At-most-once would instead silently drop
-  the alert that mattered. Backoff is exponential with full jitter and a cap, bounded by an
-  attempt count, then `abandoned` plus a `notification.abandoned` audit row.
+  the alert that mattered. Backoff doubles from one second to a fifteen-minute ceiling,
+  jittered **±20 %** — not "full jitter", which randomises over `[0, computed)` to
+  decorrelate a fleet of clients and there is exactly one sender here — and is bounded by
+  an attempt count (12, so about half an hour of trying), after which the row is
+  `abandoned` and a `notification.abandoned` audit row is written.
 - **`not_configured` retries without consuming an attempt.** Otherwise every alert queued
   between first boot and the operator's first visit to the settings screen dead-letters —
   and those (`setup.completed`, the first `login.success`) are the ones most worth keeping.

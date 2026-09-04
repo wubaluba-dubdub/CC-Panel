@@ -1524,9 +1524,11 @@ The queue is what keeps a third party's availability out of the panel's own resp
 times: an HTTP handler enqueues one row and returns. One worker sends at a time, so a
 burst cannot open a connection per event, and delivery is **at-least-once** — a send
 that succeeds and then fails to record itself sends again. The alternative, at-most-once,
-silently drops the alert that mattered. Retries are exponential with full jitter and a
-cap, bounded by an attempt count, after which the row is `dead` with an audit row rather
-than retried forever. `parameters.retry_after` from a Telegram 429 overrides the computed
+silently drops the alert that mattered. Retries double from one second to a fifteen-minute
+ceiling, jittered **±20 %** — not "full jitter", which randomises over `[0, computed)` to
+decorrelate many clients and there is exactly one sender here — and are bounded by an
+attempt count, after which the row is `abandoned` with a `notification.abandoned` audit row
+rather than retried forever. `parameters.retry_after` from a Telegram 429 overrides the computed
 delay.
 
 The queue holds the *typed event*, never a rendered string, and `notify()` throws on a
