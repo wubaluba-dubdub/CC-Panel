@@ -170,6 +170,13 @@ Two corollaries that cost their own debugging sessions:
   Throwing inside `onSend` is too late for the error handler: Fastify falls back to
   its default serialiser and puts the internal message in the body.
 
+### A commit that adds a route extends EXPECTED_ROUTE_TREE in the same commit
+`tests/integration/secret-leak.test.ts` pins the whole route table as a literal, and a
+new route makes it fail. That is the mechanism working, not a chore to catch up on: the
+moment to decide what a route may and may not put in a response body is while it is
+being written, and the sweep is what proves the decision. Extend the literal, and add
+the new path to the swept `urls` list when it is reachable without a session.
+
 ### An absence assertion against the database must read all three SQLite files
 `panel.db`, `panel.db-wal` **and** `panel.db-shm`. The database runs in WAL mode, so
 a freshly written row lives in `panel.db-wal` and may not be in `panel.db` at all
@@ -235,6 +242,54 @@ directive anywhere in the panel: a response with none is heuristically cacheable
 "the health endpoint said fine" must never come out of a cache. Exempt from `Host`
 validation and rate limiting, because a 403 or a 429 there is a container-kill
 primitive.
+
+## Resource metrics
+`GET /api/metrics` (`src/server/routes/metrics.ts`), full session, inside the base path,
+inside the rate limiter. `src/server/services/resources.service.ts` holds the readers and
+the sampler. Full rationale in `PLAN.md` §*Resource usage*; the parts that are decisions
+rather than code:
+
+- **cgroup v2, not `os`.** `os.totalmem()`/`os.freemem()` report the **host's** memory
+  from inside a container, so on Railway a 1 GB service would report tens of gigabytes,
+  mostly free, right up to the OOM kill. The figures come from `memory.current`,
+  `memory.max`, `cpu.stat`'s `usage_usec` and `cpu.max`. v2 is detected by the presence
+  of `cgroup.controllers`; a v1 layout is **not** read, because v1's files mean subtly
+  different things and a half-supported hierarchy produces plausible wrong numbers.
+- **Three states that are not numbers**, each a named outcome (`LimitReading`,
+  `QuotaReading`, `UsageReading`) rather than a `number | null` the caller can misread:
+  `memory.max` = the literal `max` is `unlimited` → `limitBytes: null`; `cpu.max` quota
+  = `max` is `unlimited` → `percentOfQuota: null`; and a file that is absent or garbage
+  is `unavailable`, which is not the same as unlimited.
+- **The source is chosen once per snapshot, for all three gauges**, from whether
+  `memory.current` is readable — a snapshot that took memory from the host and CPU from
+  a cgroup could not be described honestly. `meta.source` and `meta.containerized` say
+  which; the client is never left to infer it. `containerized` is `memory.max` being
+  *present*, whatever it holds.
+- **CPU is a rate, so it needs two samples**: `percent = Δusage_usec / (Δwall_µs ×
+  cores) × 100`, where `cores = quota / period`. The `× cores` term is the one that is
+  easy to omit and it is wrong by exactly the core allowance. Before the second sample
+  the answer is `null`, never `0` — a fabricated zero renders as an idle panel however
+  busy it is.
+- **One shared sampler, running only while someone polls.** Armed by the first request,
+  1000 ms cadence, disarmed after 60 s with no request; `stop()` drops the previous
+  sample, so a restart after an idle gap does not divide a CPU delta by an unknown
+  interval. Two requests inside one cadence window get the identical cached snapshot,
+  so a second browser tab is free. Neither of the two obvious designs is used: computing
+  per request would make every poll sleep for the CPU window, and a permanent timer is a
+  wakeup a second on an idle panel.
+- **Raw numbers and nulls only. No formatted strings, ever.** `"512 MB / 1 GB"` is a
+  *translated* string — different digits, decimal mark and separator for this operator —
+  and R3 says the server has no locale. `tests/integration/metrics.test.ts` asserts the
+  set of string-valued fields in the body is exactly `disk.path`, `memory.source`,
+  `meta.source`, `meta.sampledAt`, and that none of them carries a `%` or a unit.
+- `disk` reads `statfs` on `PANEL_DATA_DIR` plus the size of `panel.db` and its two
+  sidecars. `availableBytes` is `bavail`, not `total - used`: the difference is space an
+  unprivileged process cannot have, which is the question M2.4's import cap asks.
+  `projects/` is deliberately **not** walked — a recursive walk of checkouts and
+  `node_modules` on a one-second cadence is the display becoming its own load.
+- Not built here: threshold-crossing alerts (they need an **always-on** low-cadence
+  watcher, which a poll-driven sampler cannot be) and per-project attribution (there are
+  no projects, and `perProject` is declared absent rather than empty).
 
 ## Response Headers
 The single source of truth is `SECURITY_HEADERS` in

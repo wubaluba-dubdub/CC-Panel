@@ -19,6 +19,7 @@ import { createRedactedLogger } from './plugins/logger-redaction.js';
 import apiRoutes from './routes/api.js';
 import healthzRoutes, { createHealthProbe, shippedMigrationCount } from './routes/healthz.js';
 import { createAuthRuntime, type AuthRuntime } from './services/auth-runtime.js';
+import { ResourceSampler, type StartTimer } from './services/resources.service.js';
 import { seedAdminUser } from './services/user.service.js';
 import type { Clock, Sleep } from './utils/clock.js';
 import { resolvePublicOrigin, type PublicOrigin } from './utils/public-origin.js';
@@ -53,6 +54,8 @@ declare module 'fastify' {
     auth: AuthRuntime;
     /** The configured public origin — the one this panel answers as. */
     publicOrigin: PublicOrigin;
+    /** The resource sampler behind `GET /api/metrics`. */
+    metrics: ResourceSampler;
   }
 }
 
@@ -87,6 +90,17 @@ export interface ServerConfig {
     anonymous?: { capacity: number; refillPerSecond: number };
     session?: { capacity: number; refillPerSecond: number };
   };
+  /**
+   * Test seams for the resource sampler: a fixture directory to read cgroup files
+   * from, and a timer the suite drives by hand instead of waiting a second per tick.
+   * Production passes none of it and reads `/sys/fs/cgroup`.
+   */
+  metrics?: {
+    cgroupRoot?: string;
+    cadenceMs?: number;
+    idleMs?: number;
+    startTimer?: StartTimer;
+  };
 }
 
 function ensureDir(dir: string): void {
@@ -100,6 +114,14 @@ export function ensureDataLayout(dataDir: string): void {
   ensureDir(join(dataDir, 'global', 'claude-home'));
   ensureDir(join(dataDir, 'projects'));
   ensureDir(join(dataDir, 'logs'));
+  // Created now, used in M2.4. The export feature is not built, but the directory has
+  // to be *owned* correctly, and the entrypoint's ownership pass runs from an explicit
+  // list — so a directory added here later than the list is a root-owned directory on a
+  // live volume that the panel cannot write. `incoming/` is where a partial import
+  // lands; it is swept at boot, which is why it is a separate directory rather than a
+  // filename convention inside `exports/`.
+  ensureDir(join(dataDir, 'exports'));
+  ensureDir(join(dataDir, 'exports', 'incoming'));
 }
 
 export function checkDataWritable(dataDir: string): void {
@@ -225,9 +247,19 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
     ...(config.authQueueLimit !== undefined ? { queueLimit: config.authQueueLimit } : {}),
   });
 
+  // Reads four small files under /sys/fs/cgroup and one statfs, and only while
+  // something is actually polling `GET /api/metrics` — see the class comment for why
+  // it is neither computed per request nor kept on a permanent timer.
+  const metrics = new ResourceSampler({
+    dataDir,
+    clock: runtime.clock,
+    ...(config.metrics ?? {}),
+  });
+
   app.decorate('basePath', basePath);
   app.decorate('auth', runtime);
   app.decorate('publicOrigin', origin);
+  app.decorate('metrics', metrics);
 
   // Chain any audit row written before migration 008 existed, so `verify()` fails
   // only for tampering and not for history. No-op on every boot after the first.
@@ -355,7 +387,7 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
 
   // ── Base path scoped routes ────────────────────────────────────────────────
   await app.register(basePathPlugin, { basePath, rateLimit: limiter.anonymousOnly() });
-  await app.register(apiRoutes, { runtime, limiter, prefix: `/${basePath}` });
+  await app.register(apiRoutes, { runtime, limiter, metrics, prefix: `/${basePath}` });
 
 
   // ── Graceful shutdown ──────────────────────────────────────────────────────
@@ -376,6 +408,9 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   app.addHook('onClose', (_instance, done) => {
     process.removeListener('SIGTERM', shutdown);
     process.removeListener('SIGINT', shutdown);
+    // A sampler armed by the last request would otherwise keep ticking against a
+    // closed database and a deleted data directory for a minute after every test.
+    metrics.stop();
     done();
   });
 

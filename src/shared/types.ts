@@ -148,6 +148,53 @@ export interface AuditVerifyResponse {
   hint: string | null;
 }
 
+/**
+ * `GET /api/metrics`.
+ *
+ * Structurally identical to the server's `MetricsSnapshot`, and re-exported through
+ * the shared module rather than imported from the service, so the client never pulls a
+ * server file (and its `node:fs` imports) into the bundle.
+ *
+ * **Raw numbers and nulls.** Every `null` here means something specific and none of
+ * them mean zero: `memory.limitBytes` null is *no limit*, `cpu.percentOfQuota` null is
+ * *not computable yet* (a rate needs two samples) or *no quota to be a percentage of*,
+ * and `cpu.quotaCores` null is *unknown*. The client formats; the server does not,
+ * because a formatted quantity is a translated string.
+ */
+export interface MetricsResponse {
+  memory: {
+    usedBytes: number;
+    limitBytes: number | null;
+    source: 'cgroup2' | 'os';
+  };
+  cpu: {
+    percentOfQuota: number | null;
+    quotaCores: number | null;
+    usageUsec: number | null;
+    sampleWindowMs: number | null;
+  };
+  disk: {
+    path: string;
+    usedBytes: number;
+    totalBytes: number;
+    availableBytes: number;
+    databaseBytes: number;
+  };
+  meta: {
+    source: 'cgroup2' | 'os';
+    containerized: boolean;
+    sampledAt: string;
+    cadenceMs: number;
+  };
+  /** Phase 3. Absent until the panel spawns the processes it would have to measure. */
+  perProject?: readonly {
+    projectId: string;
+    memoryBytes: number;
+    cpuPercent: number | null;
+    approximate: true;
+  }[];
+}
+
 /** Every error response in the application. Nothing else is ever returned. */
 export interface ErrorResponse {
   error: string;

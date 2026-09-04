@@ -5,6 +5,7 @@ import { buildServer } from '../../src/server/app.js';
 import { closeDb } from '../../src/server/db.js';
 import type { Env } from '../../src/server/env.js';
 import type { Clock, Sleep } from '../../src/server/utils/clock.js';
+import type { StartTimer } from '../../src/server/services/resources.service.js';
 import type { FastifyInstance } from 'fastify';
 
 export interface TestContext {
@@ -89,6 +90,18 @@ export interface CreateTestServerOptions {
     anonymous?: { capacity: number; refillPerSecond: number };
     session?: { capacity: number; refillPerSecond: number };
   };
+  /**
+   * Resource sampler seams: a fixture cgroup directory, and a timer the test drives.
+   * Without the fixture directory the sampler reads this machine's `/sys/fs/cgroup`,
+   * and the answer differs between a developer's box and CI — which is the one thing a
+   * test of these figures must not depend on.
+   */
+  metrics?: {
+    cgroupRoot?: string;
+    cadenceMs?: number;
+    idleMs?: number;
+    startTimer?: StartTimer;
+  };
   /** Reuse an existing data directory, to simulate a restart against the same volume. */
   dataDir?: string;
   /** Skip removing the data directory on cleanup, so a restart can reuse it. */
@@ -115,6 +128,7 @@ export async function createTestServer(
       ? { originAbsenceThrottleMs: opts.originAbsenceThrottleMs }
       : {}),
     ...(opts.rateLimit ? { rateLimit: opts.rateLimit } : {}),
+    ...(opts.metrics ? { metrics: opts.metrics } : {}),
   });
 
   // Routes must be added before the first inject(), which triggers ready().

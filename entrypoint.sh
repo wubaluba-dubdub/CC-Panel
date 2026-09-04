@@ -70,6 +70,8 @@ $DATA_DIR/global
 $DATA_DIR/global/claude-home
 $DATA_DIR/projects
 $DATA_DIR/logs
+$DATA_DIR/exports
+$DATA_DIR/exports/incoming
 "
 
 # Files at the top level that the server must be able to write. They do not exist on

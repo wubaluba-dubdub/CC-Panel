@@ -100,7 +100,18 @@ describe('entrypoint.sh', () => {
     const expected = [
       ...layout![0].matchAll(/join\(dataDir,\s*([^)]*)\)/g),
     ].map((m) => m[1]!.split(',').map((part) => part.trim().replace(/^['"]|['"]$/g, '')).join('/'));
-    expect(expected).toEqual(['home', 'config', 'global/claude-home', 'projects', 'logs']);
+    expect(expected).toEqual([
+      'home',
+      'config',
+      'global/claude-home',
+      'projects',
+      'logs',
+      // M2.4's export/import staging, created in M1.7 because the ownership pass runs
+      // from this explicit list: a directory the server creates and the entrypoint
+      // does not know about is a root-owned directory on a live volume.
+      'exports',
+      'exports/incoming',
+    ]);
 
     for (const dir of expected) {
       expect(entrypoint, dir).toContain(`$DATA_DIR/${dir}`);

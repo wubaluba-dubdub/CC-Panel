@@ -62,6 +62,11 @@ const BASE_PATH_BODY_EXEMPT = new Set([
  * the `__throw` route this test registers. Spelled out so that adding a route
  * without extending the sweep below makes this test fail rather than silently
  * leaving the new route unchecked.
+ *
+ * **The standing rule, from M1.7 onward: a commit that adds a route extends this
+ * literal in the same commit.** Not as a chore to catch up on later — the test failing
+ * is the mechanism working, and the moment to decide what a new route may and may not
+ * put in a response body is while it is being written.
  */
 const EXPECTED_ROUTE_TREE =
   '├── /healthz (GET, HEAD)\n' +
@@ -86,6 +91,7 @@ const EXPECTED_ROUTE_TREE =
   '        ├── api/security/base-path/regenerate (POST)\n' +
   '        ├── api/secrets (GET, HEAD, PUT)\n' +
   '        │   └── /reveal (POST)\n' +
+  '        ├── api/metrics (GET, HEAD)\n' +
   '        └── __throw (GET, HEAD)\n';
 
 /**
@@ -206,6 +212,9 @@ describe('M1.3 — sentinel leak sweep', () => {
         `/${BASE}/`,
         `/${BASE}/bootstrap.js`,
         `/${BASE}/__throw`,
+        // Answers 401 without a session. In the sweep because a route that rejects is
+        // still a route that writes a body, and the sentinels are fed in as input below.
+        `/${BASE}/api/metrics`,
         `/${BASE}/does-not-exist`,
         '/',
         '/outside-the-base-path',

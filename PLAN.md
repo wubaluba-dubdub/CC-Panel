@@ -1101,6 +1101,53 @@ including `memory.max` = `max` and a two-sample CPU calculation),
 `tests/integration/system-resources.test.ts` (full session required, cached between
 requests, no base path in the body).
 
+### Built in M1.7 — and the four places it departs from the design above
+
+The endpoint and the sampler exist as of `feat(m1.7): resource metrics`. Everything above
+this line is the reasoning and still stands; these four things are different in the code,
+each deliberately.
+
+1. **The route is `GET /api/metrics`, not `GET /api/system/resources`,** and it lives in
+   `src/server/routes/metrics.ts` rather than `routes/system.ts`. No reason beyond the
+   milestone prompt naming it, and one path is as good as the other — but the shorter one
+   is now what the client will call, and `docs/` and this document should say so.
+2. **The response is flatter and carries no percentages.** The design's
+   `memory.percent`, `cpu.percent` and `disk.percent` are gone; the payload carries the
+   numerator and the denominator and the client divides. A percentage is one rounding
+   decision and one locale-formatted string away from being a translated value, and the
+   two that *are* computed server-side (`cpu.percentOfQuota` and nothing else) exist only
+   because they cannot be derived from a single sample. The shape is pinned in
+   `MetricsResponse` in `src/shared/types.ts`; `disk.projectsBytes` is also gone, because
+   walking `projects/` on a one-second cadence is the display becoming its own load — it
+   returns with projects, on its own cadence.
+3. **The sampler is poll-driven, not permanent.** The design says "one background sampler
+   on a `setInterval` of 1000 ms". It is 1000 ms while someone is polling, and it is
+   nothing at all after 60 s with no request. A permanent timer on an idle panel is a
+   wakeup a second with no reader, on a platform billed by the second.
+4. **Which means the threshold-crossing alerts cannot be built on this sampler**, and are
+   therefore not built. A crossing that happens while nobody is polling is a crossing
+   nothing observes, so an alert machine bolted to a poll-driven sampler would fire
+   *when the operator opens the panel* — the one moment they are already looking. When
+   they are built they need their own **always-on** watcher at a low cadence (30 s is
+   ample: memory and disk do not cross a threshold in a second, and the CPU rule already
+   has a 60 s sustain window), reading the same functions in
+   `services/resources.service.ts`, with the crossing state in
+   `services/resource-alerts.ts` as designed. The `oom_kill` counter from
+   `memory.events` — the most valuable alert of the four, because it is the one that
+   already happened — is likewise not read yet, and it is the first thing that watcher
+   needs.
+
+**The client's poll budget, for M2.1.** Two seconds visible, thirty seconds hidden
+(`document.visibilityState`), and nothing at all when the tab is closed. Two seconds is
+30 requests a minute against a session bucket that refills 240 a minute and holds 120, so
+the widget uses an eighth of the refill and never touches the capacity; three tabs at two
+seconds is still inside it. The thirty-second hidden cadence is not only politeness — it
+is above the sampler's own cadence and below its 60 s idle timeout, so a hidden tab keeps
+the sampler warm and `percentOfQuota` stays a number instead of going back to `null` on
+every poll. **Back off when hidden, and do not poll a closed tab**: an operator who leaves
+the panel open in a background tab for a week should not be generating 30 requests a
+minute for a week.
+
 ## Concurrency — what the panel supports, and what it does not
 
 **Design only, and the answer is deliberately asymmetric**: concurrency across projects is
