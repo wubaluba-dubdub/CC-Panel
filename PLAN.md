@@ -253,6 +253,100 @@ second, competing design for anything already specified.
   every human string. The one exception is M1.7, which has no client — see M2.1 §*The
   server does not translate*.
 
+### Decisions taken after M2.0 (2026-09-04)
+
+The M2.0 design left open questions; these are the answers, recorded here rather than in
+the milestone prose so that the set can be checked off. Each is tagged with the milestone
+that builds it. **Only the M1.7-tagged ones are built** as of `feat(m1.7): telegram
+notifications`; the rest are decided and waiting.
+
+1. **Export defaults to including workspace files (M2.4).** A project without its files is
+   not the project, and an operator who wanted the metadata alone can uncheck it. The dry
+   run prints, per project, the branch and the remote it found, so "this one has a remote,
+   its `.git` is excluded, and here is where to clone it from" is visible before the export
+   runs rather than inferred from a size that came out smaller than expected
+   ([`docs/PORTABILITY.md` §6](docs/PORTABILITY.md#6-workspace-files)).
+2. **A UUID that already exists on import offers skip / overwrite / copy (M2.4)**, and
+   *copy* is the one with obligations. A workspace moved aside gets a defined home
+   (`/data/projects/<uuid>.superseded-<timestamp>`), a name that sorts and cannot collide,
+   a line in the import result naming it, its size shown in the projects list, and a delete
+   action. **Nothing auto-deletes it**, ever, on any schedule: the panel is not allowed to
+   be the thing that removed the only copy of a workspace the operator was mid-decision
+   about. The cost — a volume filling with superseded workspaces — is visible in the
+   resource widget, which is where a disk problem belongs.
+3. **The bespoke container stands (M2.4)**, on the condition that a `v1` file stays
+   readable without the code that wrote it. That condition is now met:
+   [`docs/PORTABILITY.md` §5.7](docs/PORTABILITY.md#57-the-v1-byte-layout-exactly) is a
+   byte-offset table for the file, the frame, the per-frame AAD, the wrapped key and the
+   reader's refuse-before-allocating rules, including the endianness that §5's diagram left
+   unstated. It was **added in M1.7**, since the condition was attached to a decision and
+   an unwritten table is not a met condition.
+4. **Import caps are checked during the write, not only before it (M2.4).** A free-space
+   check that runs once, before a four-gigabyte extraction, answers a question about a disk
+   that no longer exists by the time the answer matters. Re-check periodically as bytes
+   land and abort naming the shortfall — how many bytes short, not "insufficient space".
+   `PANEL_IMPORT_MAX_BYTES` (2 GiB) and `PANEL_IMPORT_MAX_UNCOMPRESSED_BYTES` (4 GiB) stay
+   as configurable defaults. **`/data/exports/incoming/` is swept at boot**, because an
+   import killed mid-upload leaves a partial file that nothing will ever claim, and a
+   directory that only grows is a disk that fills for a reason nobody remembers.
+   `ensureDataLayout()` and `entrypoint.sh` already create both directories as of M1.7.
+5. **Passphrase floor 16, generated default 20 (M2.4)**, and the no-recovery sentence is
+   the one already written for `PANEL_MASTER_KEY` in `docs/SECURITY.md` §*Key rotation*:
+   the panel does not store it, cannot reset it, and cannot help. The wording is in
+   [`docs/PORTABILITY.md` §5.6](docs/PORTABILITY.md#56-the-passphrase) and the UI must use
+   it verbatim or better. **KDF parameters are bounded in both directions** —
+   [§7.5](docs/PORTABILITY.md#75-the-kdf-parameters-are-attacker-controlled-too) already
+   caps `m ≤ 262144` KiB, `t ≤ 10`, `p ≤ 4` and floors `m ≥ 65536`, `t ≥ 3`. Upward is a
+   memory-exhaustion kill delivered by a file; downward is a file asking to be cheap to
+   attack offline.
+6. **Provider credentials default to `Bearer` / `ANTHROPIC_AUTH_TOKEN` (M2.6),** and the
+   hint text **must not name a provider**: this operator's base URL is not Anthropic's, the
+   set of gateways changes faster than this panel will, and a hardcoded name is wrong for
+   every deployment but one. Two facts belong with that default because they are
+   observable behaviour and not preference:
+   - `ANTHROPIC_API_KEY` triggers Claude Code's **one-time interactive approval prompt** on
+     first use. So the first spawn in a project configured that way must have a visible
+     terminal, or the agent hangs on a question nobody can see. `ANTHROPIC_AUTH_TOKEN` does
+     not prompt, which is the practical reason it is the default and not merely the
+     stylistic one.
+   - A non-first-party `ANTHROPIC_BASE_URL` **disables MCP tool search and Remote
+     Control**. Not a warning, a capability change, and the settings UI should say so where
+     the base URL is entered rather than leaving the operator to discover that a feature
+     stopped existing.
+7. **M1.7's transport lands before the Telegram UI and before the client (M1.7).** Done:
+   two commits, no UI, everything reachable from the existing JSON API and three CLI
+   commands. The M2.5 configuration surface has an endpoint to call and needs no new one —
+   see §*Built in M1.7*, decision 6.
+
+Three of those arrived as corrections to what was already written down, and are recorded
+where they contradict it:
+
+8. **`mask()` is the wrong display for the Telegram values (M1.7).** Last-four of a
+   nine-digit chat id leaves almost nothing. Report set/unset plus a character count, the
+   way `npm run preflight` does. The M1.7 configuration section below said `mask()`; it is
+   corrected in place.
+9. **The hook token and the panel-wide shared secret do not transfer (M2.4)** — already a
+   row in [`docs/PORTABILITY.md` §2](docs/PORTABILITY.md#2-what-transfers-and-what-does-not),
+   confirmed rather than added. Import generates fresh ones, which is why it must also
+   regenerate each project's generated settings.
+10. **Conversation transcripts are an opt-in checkbox, off by default (M2.4).** The earlier
+    table excluded them from `v1` outright. An operator moving machines may legitimately
+    want their own history; what is not acceptable is it travelling by default or without
+    them having read what is in it. That row is rewritten.
+
+And two that are settled rather than open:
+
+11. **CodeMirror 6 for the `settings.json` editor, no web worker (M2.4).** Decided, not an
+    option to weigh later. The CSP has no `worker-src` and therefore falls back to
+    `default-src 'none'`, so a worker-based editor does not load — and the fix is not to
+    add `worker-src`: a worker is a second script context, and the reason to want one is
+    heavy language tooling this editor does not have. CodeMirror 6 runs on the main thread,
+    needs no `unsafe-eval`, and a `settings.json` document is a few kilobytes. **Do not add
+    `worker-src` to the CSP to make an editor work.**
+12. **Migration numbering: M1.7 took `009`.** It landed first. M2.2's projects table takes
+    the next number, and the rule is the obvious one — a migration number is claimed by the
+    commit that lands, never reserved by a plan.
+
 ## Milestone Order
 
 ### M1 — Security Foundation
@@ -425,8 +519,16 @@ account — it belongs in the same box.
 
 Both go through M1.3 crypto. Neither is ever written to the database in plaintext, to
 a log line, to an audit row, or to an HTTP response body — including the response
-that reads the configuration back, which returns `mask()`ed forms and a
-`configured: boolean`, never the values.
+that reads the configuration back, which returns a `configured: boolean` and, per
+value, **set/unset plus a character count**, never the values.
+
+> **Corrected (decision 8 above).** This paragraph said `mask()`. It is wrong for these
+> two: `mask()` reveals the last four characters, which is harmless on a 46-character bot
+> token and is not harmless on a nine-digit chat id, where four digits is a meaningful
+> fraction of a stable identifier for the operator's Telegram account. Set/unset plus a
+> length is what `npm run preflight` already reports for every credential — it catches a
+> truncated paste and a variable that never arrived, and discloses nothing that
+> accumulates.
 
 **Storage:** the existing `secrets` table, scope `telegram`, names `bot_token` and
 `chat_id`, through `SecretsRepository`, which already returns `SecretString` rather
@@ -474,6 +576,13 @@ where Telegram puts it, which means the URL itself is a secret and must never be
 logged — the transport logs `telegram sendMessage` and a status code, never a URL.
 
 #### Writing the configuration
+
+> **Superseded by what was built.** There is no `POST /api/notifications/telegram`. The
+> credentials are written through the existing `PUT /api/secrets` with scope `telegram`,
+> which is already step-up gated, already audited as `secret.changed`, and already swept
+> by the sentinel test — see §*Built in M1.7*, decision 6. The paragraph below is kept
+> because everything it says about *what the write must satisfy* still holds; only the
+> route is gone.
 
 `POST /api/notifications/telegram` — full session **and step-up**, same as revealing
 or writing any other stored secret. Body `{botToken, chatId}`. It writes both
@@ -925,6 +1034,72 @@ that setting says so in those words.
 The hook endpoint's own files land with **Phase 3**, not here — `routes/internal-hooks.ts`
 and the second listener — but the two credentials it needs are M1.7's, because they are
 stored, rotated and audited by the same machinery as the Telegram pair.
+
+#### Built in M1.7 — and the six places it departs from the design above
+
+The transport exists as of `feat(m1.7): telegram notifications`, plus
+`utils/outbound-http.ts`, `services/telegram-config.ts` and three CLI commands the design
+did not name. Everything above this line is the reasoning and still stands; these six
+things are different in the code, each deliberately.
+
+1. **The queue has four states, not five.** The design lists `pending`, `sending`, `sent`,
+   `failed`, `abandoned`. `failed` is gone: with retries it is indistinguishable from a
+   `pending` row carrying a `last_error` and a `next_attempt_at`, and two names for one
+   condition is how a worker ends up with a row nothing ever picks up. A dead row is
+   `abandoned`.
+2. **`not_configured` does not consume an attempt.** The design's attempt counter would
+   dead-letter every queued alert on a panel whose credentials are not set yet — which is
+   every panel, between first boot and the operator's first visit to the settings screen,
+   and *those* are the alerts most worth keeping (`setup.completed`, the first
+   `login.success`). A send that fails because there is no token retries on a fixed
+   interval with `attempts` left where it was, so the queue is waiting when the credentials
+   arrive rather than full of corpses.
+3. **The queue-full policy refuses the newest event and audits once per fill.** The design
+   said "cap the queue" without saying which end. Refusing the newest is the right way
+   round: the first alert of an attack is the most valuable and the thousandth is the most
+   expendable, so evicting the oldest would discard exactly the row worth keeping.
+   `notification_state` holds the drop count and the timestamp of the first drop since it
+   was last reported, because a silent cap is a cap nobody knows was reached.
+4. **The AAD upgrade is a boot-time code path, not part of migration 009.** The design says
+   the migration re-encrypts any `v1` row. A SQL migration cannot re-encrypt anything, and
+   a JavaScript migration step that threw — wrong master key, tampered row — would make the
+   panel unbootable rather than merely leaving a legacy row in place. So
+   `SecretsRepository.upgradeLegacyPayloads()` runs once after `initChain()`, reports how
+   many rows it moved, and the consequence is written down in `docs/SECURITY.md`: a
+   downgrade below M1.7 cannot read an upgraded row, and a pre-M1.7 backup is the escape
+   hatch. The migration's assertion that the table is empty is also gone — it was not true
+   on this development machine, which had one `v1` row.
+5. **`projectId` is a string.** The design's `turn_complete` event typed it as a number.
+   [Portable identity](docs/PORTABILITY.md#41-every-project-carries-a-uuid) makes a project's
+   identity a UUID, so a numeric field there would have had to be changed by M2.2 in a
+   table that persists across the change. It is a UUID now, before anything writes one.
+6. **There is no `POST /api/notifications/telegram`.** Writing the credentials is
+   `PUT /api/secrets` with scope `telegram` — already step-up gated, already audited as
+   `secret.changed`, already swept by the sentinel test. A second endpoint performing the
+   same two writes is a second thing to gate correctly and a second thing to get wrong, and
+   M2.5's UI needs nothing more than what exists. What the route file does carry is
+   `GET /api/notifications/telegram` (status: configured, set/unset plus length per value,
+   queue counts, drops, last success, last failure category), `POST /api/notifications/test`
+   (full session, **no** step-up, `202` with a queue id — a test send reveals nothing, and
+   demanding a fresh code to check whether notifications work pushes the operator toward
+   not checking), and `GET /api/notifications/queue/:id`.
+
+Two smaller notes that are not departures:
+
+- **`audit.trimmed` is notified on a 24-hour throttle**, not silent. Retention firing is
+  also exactly what a tamper would like to look like. A day rather than fifteen minutes
+  because once the cap is reached *every* retention check trims again, so a busy panel would
+  otherwise send it every few hundred events forever.
+- **`notification-rules.ts` is exhaustive over `AuditEvent` by construction.**
+  `satisfies Record<AuditEventName, AlertRule | null>` makes a newly added audit event a
+  compile error until someone decides whether it notifies, and a silent event carries its
+  reason as a comment on an explicit `null` rather than being absent from the table. The
+  notified subset is derived back out as a mapped type, so it cannot drift.
+
+**Deferred from M1.7, with reasons:** the inbound hook endpoint and its second loopback
+listener (Phase 3 — there is no agent to hook), the resource threshold alerts (they need an
+always-on watcher; see §*Built in M1.7* under *Resource usage*), and the M2.5 configuration
+UI (there is no client).
 
 ## Resource usage — the server side (design)
 

@@ -77,7 +77,7 @@ cannot be the answer to R2.
 | the audit log | see below. |
 | `PANEL_MASTER_KEY` | it is not in the database and never in a file the panel writes. |
 | per-project hook token, panel-wide hook shared secret ([M1.7](../PLAN.md)) | credentials for *this* panel's loopback endpoint. Sharing them across panels destroys the property the two-credential design exists for. **The import generates fresh ones**, which is why it must also regenerate each project's Claude Code settings — see [§4.4](#44-what-import-does-to-a-projects-generated-settings). |
-| conversation history and transcripts under a project's `claude-home` | the least redactable content the panel holds: whatever the operator pasted into a turn is in there verbatim, and the export pipeline has no way to scrub it. Not in format `v1`. If it is ever wanted it is an explicit `include: history` flag with its own warning, never a default. |
+| conversation history and transcripts under a project's `claude-home` | the least redactable content the panel holds: whatever the operator pasted into a turn is in there verbatim, and the export pipeline has no way to scrub it. **Decided: an explicit checkbox in the export dialog, off by default**, carrying that sentence as its warning — not the blanket exclusion an earlier draft of this table had. An operator moving to a new machine may legitimately want their history, and this is their own data leaving on their own instruction; what is not acceptable is it going by default, or going without them having read what is in it. Off by default means an export shared with anyone else does not carry it unless it was chosen. |
 
 ### The audit log specifically
 
@@ -172,7 +172,7 @@ Three cases, and the third is the one that gets a rule rather than an apology.
   never as the default.
 - `overwrite` moves the existing workspace aside to `/data/projects/.replaced-<uuid>-<ts>/`
   rather than deleting it, and the import result names the directory. It is swept by the
-  same retention pass as exports ([§10](#10-where-the-file-lives)) after 7 days.
+  same retention pass as exports ([§10](#10-where-the-export-file-lives)) after 7 days.
 - `import as a copy` mints a **new** UUID, so the copy is a genuinely separate project
   rather than two rows fighting over one identity. Its credentials are re-encrypted under
   the new UUID's AAD.
@@ -224,6 +224,8 @@ frame  ::= u32 plaintextLen | nonce(12) | ciphertext | tag(16)
 - Wrapping is AES-256-GCM over the 32 raw bytes with **AAD = the header bytes**, which is
   what makes the header authenticated without being secret: a header edited to claim a
   cheaper KDF, a different version, or another panel's `installId` makes the unwrap fail.
+  The wrapped key is itself a header field, so the AAD is the header with that one field
+  emptied — [§5.7](#57-the-v1-byte-layout-exactly) pins the exact bytes.
 
 ### 5.2 The header
 
@@ -323,6 +325,76 @@ entry-type rejection list from §7 restored in full.
   not the data. Once the source panel is gone, it costs everything.
 - The passphrase is never logged, never audited, never in a response body, never in the
   export file, and is a `SecretString` from the moment it is parsed.
+
+### 5.7 The `v1` byte layout, exactly
+
+Everything above this heading is the reasoning. This is the wire format, written out so
+that a reader built years from now can open a `v1` file **without consulting the code that
+wrote it** — which is the whole claim §5.5 makes when it prefers a bespoke container to
+`tar`. If the two ever disagree, this table is the specification and the code is the bug.
+
+All integers are **unsigned big-endian**, with no alignment or padding anywhere. Big-endian
+because it is the conventional byte order for a container format and `writeUInt16BE` /
+`readUInt32BE` name it explicitly at every call site, which a native-order helper does not.
+
+**File:**
+
+| Offset | Size | Field | Encoding |
+| :--- | :--- | :--- | :--- |
+| `0` | 4 | magic | ASCII `CCPX`, `43 43 50 58`. Fixed for every `formatVersion`. |
+| `4` | 2 | `headerLen` | u16 BE. Byte length of the header JSON that follows. |
+| `6` | `headerLen` | header | UTF-8 JSON object, no BOM, no trailing newline, exactly the bytes hashed for `fingerprint` and used as the wrapped key's AAD. |
+| `6 + headerLen` | … | frames | one or more frames, back to back, to end of file. The **last** frame is the trailer. |
+
+**Frame** (every frame, data and trailer alike):
+
+| Offset (in frame) | Size | Field | Encoding |
+| :--- | :--- | :--- | :--- |
+| `0` | 4 | `plaintextLen` | u32 BE. |
+| `4` | 12 | nonce | raw bytes, fresh per frame. |
+| `16` | `plaintextLen` | ciphertext | AES-256-GCM. **Its length equals `plaintextLen`**: GCM is counter mode, so there is no padding and no separate ciphertext length. |
+| `16 + plaintextLen` | 16 | tag | GCM tag, 128 bits. |
+
+So a frame occupies `32 + plaintextLen` bytes and a reader advances by exactly that. There
+is no frame count, no offset table and no index: the reader consumes frames until the file
+ends, which is what makes truncation detectable at the trailer rather than reconcilable
+against a count an attacker also wrote.
+
+**Per-frame AAD**, US-ASCII, no separator escaping because none of the parts can contain a
+`:` — `installId` is hex, `createdAt` is ISO-8601, `seq` is decimal without padding:
+
+```
+ccpx1:<sourceInstallId>:<createdAt>:data:<seq>        data frames,   seq = 0, 1, 2, …
+ccpx1:<sourceInstallId>:<createdAt>:trailer:<seq>     trailer frame, seq = the data count
+```
+
+`sourceInstallId` and `createdAt` are the header's own fields, byte-for-byte as they
+appear there. `ccpx1` is a literal, and it is the AAD's own version rather than the
+header's: a future `formatVersion: 2` that keeps this framing keeps `ccpx1`, and one that
+changes the framing changes the label.
+
+The **trailer's `seq` continues the same counter** — it is the number of data frames, not
+`0` — so no data frame can be relabelled as the trailer at its own position, and the
+trailer cannot be relabelled as a data frame.
+
+**Wrapped key**, in the header's `wrappedKey` field: three base64url parts joined by `.`,
+`nonce(12) . ciphertext(32) . tag(16)`, AES-256-GCM over the 32 raw key bytes with
+**AAD = the header bytes with `wrappedKey` set to the empty string** — the header
+authenticates itself, so the field being wrapped cannot be part of what it commits to.
+`kdf.salt` is 16 raw bytes base64url.
+
+**What a reader must refuse before allocating anything**, since both length fields are
+attacker-controlled:
+
+- a `headerLen` above 4096. The u16 admits 65535 and a `v1` writer never emits more than
+  4096; the cap is the reader's, not the format's.
+- a `plaintextLen` above the header's own `frameBytes`. A frame claiming 4 GiB is an
+  allocation bomb delivered by a file, and the header states the writer's frame size for
+  exactly this comparison.
+- a file shorter than `6 + headerLen + 32`, which cannot contain a trailer.
+
+Base64url throughout is RFC 4648 §5, **unpadded** — no `=`, `-` and `_` rather than `+`
+and `/` — the same spelling `src/server/crypto.ts` uses for stored payloads.
 
 ---
 
@@ -503,7 +575,7 @@ If step 2 fails partway, the renames already done are undone (the replaced direc
 moved back, the new ones removed), the staging tree is deleted, and **nothing is committed** —
 the panel's view of the world never contained the half-import. If the process dies between
 steps 2 and 3, the volume holds directories with no rows pointing at them: inert, invisible
-in the UI, and swept by the retention pass in [§10](#10-where-the-file-lives).
+in the UI, and swept by the retention pass in [§10](#10-where-the-export-file-lives).
 
 Committing the database **last** is what makes this work: the panel only ever knows about
 projects whose files are already in place. The alternative — a recorded rollback log — was

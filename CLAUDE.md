@@ -76,8 +76,18 @@ node -e "for (const n of ['fastify','@fastify/static','vitest','vite']) \
 | `argon2`             | `^0.41.0`    | `0.41.1`  | native; CJS-only, imported by name     |
 | `otplib`             | `^13.5.0`    | `13.5.0`  | upgraded from v12 — see below           |
 | `better-sqlite3`     | `^11.3.0`    | `11.10.0` |                                        |
+| `undici`             | `^7.16.0`    | `7.16.0`  | outbound only — see below              |
 | `vitest`             | `^4.1.11`    | `4.1.11`  | `npm test` must print `RUN v4.x`        |
 | `vite`               | `^6.0.11`    | `6.4.3`   |                                        |
+
+`undici` is a direct dependency and not "the thing Node already bundles". Node's global
+`fetch` **ignores `http_proxy` and `https_proxy`** — the WHATWG spec has no notion of a
+proxy — and `api.telegram.org` is unreachable from this operator's country without one, so
+a transport on the global `fetch` works on Railway and fails locally with a network error
+indistinguishable from a wrong bot token. The proxy needs an explicit `ProxyAgent`, and a
+dispatcher from the standalone package is not the same object graph as the `fetch` baked
+into Node: pairing them is not a supported combination. Every outbound request goes through
+`src/server/utils/outbound-http.ts`.
 
 `@fastify/static` must stay on the v10 line. v7 depends on `fastify-plugin@^4`,
 which carries a Fastify 4 peer range, so registering it into this Fastify 5
@@ -130,8 +140,8 @@ build failure, not a warning.
 - Files: `kebab-case` for configs and scripts, `PascalCase` for React components, `camelCase` for TS/JS.
 - Environment variables: `PANEL_*` prefix.
 - Database tables: `users`, `sessions`, `audit_log`, `audit_chain`, `secrets`,
-  `auth_failures`, `recovery_codes`. (`lockouts`, from migration 005, is dropped by
-  007 — there is no lockout.)
+  `auth_failures`, `recovery_codes`, `notification_queue`, `notification_state`.
+  (`lockouts`, from migration 005, is dropped by 007 — there is no lockout.)
 
 ### Error Handling
 - Server: Return generic error messages to avoid leaking info (e.g., "Invalid credentials").
@@ -290,6 +300,74 @@ rather than code:
 - Not built here: threshold-crossing alerts (they need an **always-on** low-cadence
   watcher, which a poll-driven sampler cannot be) and per-project attribution (there are
   no projects, and `perProject` is declared absent rather than empty).
+
+## Notifications (Telegram)
+Outbound only. The inbound hook endpoint that Phase 3's agents will call is **not** built
+— no second listener, no bearer credentials. Full rationale in `PLAN.md` §*M1.7 —
+Notifications (Telegram transport)* and §*Built in M1.7 — and the six places it departs
+from the design above*; `docs/SECURITY.md` §*Outbound requests* for the egress rules. The
+parts that are decisions rather than code:
+
+- **The queue carries a typed event, not a rendered string.** `NotifyEvent` in
+  `services/notification-render.ts` is a discriminated union; the worker renders it at send
+  time. A pre-rendered string would force a later transport to accept Telegram's shape —
+  the 4096-character cap and the truncate-then-attach behaviour are properties of Telegram,
+  not of "a notification" — and would have had to be rendered by whichever producer
+  enqueued it. `notification_queue.event_json` therefore holds the event, and
+  `kind`/`throttle_key` are duplicated out of it as columns so the worker's query and the
+  throttle query do not parse every row's JSON.
+- **This is the one sanctioned server-side locale.** R3 says the server has no locale and
+  the client owns every human string; a Telegram message has no client, so the event
+  carries `locale` (`en`/`fa`, `PANEL_NOTIFY_LOCALE`) and `notification-render.ts` is the
+  only translation table on the server. Do not grow a second one.
+- **`services/notification-rules.ts` is exhaustive over `AuditEvent` by construction.**
+  `satisfies Record<AuditEventName, AlertRule | null>` makes a new audit event a compile
+  error until someone decides whether it notifies, and a silent event is an explicit `null`
+  with its reason in a comment rather than an absence. `NotifiedAuditEvent` is derived back
+  out as a mapped type so it cannot drift. Reaching the queue from the audit log goes
+  through `AuditService.setObserver()` — a post-commit observer, so the audit log has no
+  idea a notification layer exists and cannot be broken by one.
+- **Delivery is at-least-once and the code says so.** A claim is an `UPDATE … WHERE state =
+  'pending'` checked for `changes === 1`, so two workers cannot take one row; a send that
+  succeeds and then fails to record it sends again. At-most-once would instead silently drop
+  the alert that mattered. Backoff is exponential with full jitter and a cap, bounded by an
+  attempt count, then `abandoned` plus a `notification.abandoned` audit row.
+- **`not_configured` retries without consuming an attempt.** Otherwise every alert queued
+  between first boot and the operator's first visit to the settings screen dead-letters —
+  and those (`setup.completed`, the first `login.success`) are the ones most worth keeping.
+- **A full queue refuses the newest event**, counting drops in `notification_state` and
+  auditing once per fill. The first alert of an attack is the most valuable and the
+  thousandth is the most expendable, so evicting the oldest discards the wrong end.
+- **Plain text, no `parse_mode`, ever.** A project name containing `_` or `*` is either a
+  400 from Telegram or a message with pieces missing, and there is no escaping scheme worth
+  maintaining for the panel's own alerts. Over 4096 **code points** the message goes as a
+  document instead, split on a marker rather than mid-word. A 429's
+  `parameters.retry_after` overrides the computed backoff rather than being averaged with
+  it.
+- **`api.telegram.org` is named in exactly one file** (`services/telegram.transport.ts`),
+  enforced by a static scan in `tests/unit/telegram-transport.test.ts` — the same mechanism
+  as the client-IP and cookie rules, and like them it strips comments before scanning.
+- **The URL is a secret.** Telegram puts the bot token in the request *path*, so the
+  transport logs an event name and a status code and never a URL, and
+  `OutboundUnreachableError` carries a Node error **code** and never the underlying
+  message, which quotes the URL it failed on.
+- **`PANEL_NOTIFY_INCLUDE_LINKS` is off by default, and it is also what switches off the
+  base-path half of the egress redaction.** The two milestone rules "elide the base path
+  from every outbound body" and "a message may end with a deep link into the panel" cannot
+  both hold literally — the link *is* the base path, and eliding it yields a URL that 404s:
+  the setting on and silently broken. With links off the prefix cannot leave at all; with
+  links on the operator has said in one deliberate setting that it may. Pattern-based
+  credential redaction applies either way, and both passes run: at enqueue (the queue is
+  storage on the volume) and again on the finished body.
+- **Credentials are reported as set/unset plus a length, never `mask()`.** Last-four of a
+  nine-digit chat id discloses most of it. `services/telegram-config.ts` is the only reader.
+- **No route writes the credentials.** `PUT /api/secrets` with scope `telegram` already
+  does it under step-up with a `secret.changed` row, so M2.5's UI needs no new endpoint. The
+  three routes that do exist are `GET /api/notifications/telegram` (status),
+  `POST /api/notifications/test` (full session, **no** step-up — a test send discloses
+  nothing, and demanding a fresh code to check whether notifications work pushes the
+  operator toward not checking; `202` with a queue id) and
+  `GET /api/notifications/queue/:id`.
 
 ## Response Headers
 The single source of truth is `SECURITY_HEADERS` in
@@ -582,6 +660,17 @@ Implemented in `src/server/crypto.ts`; full rationale in `docs/SECURITY.md`.
   `<table>:<rowId>:<column>` via `columnAad()`.
 - Storage format is versioned and self-describing: `v1.<nonce>.<ciphertext>.<tag>`,
   each part base64url. An unknown version is rejected, not guessed at.
+- **The version selects the AAD scheme, not the cipher.** `v1` binds a `secrets` row's
+  ciphertext to its row id (`secrets:<rowId>:payload`); `v2`, the write version since
+  M1.7, binds it to `(scope, name)` — which `UNIQUE (scope, name)` makes strictly
+  stronger, because the row-id form does not stop an attacker with database write access
+  from **relabelling** a row. Reads pick the scheme from the stored prefix.
+  Injectivity comes free from a check `columnAad()` already had: it refuses a `:` in the
+  table and the column, and `name` is passed as the column, so `('project:7', 'x')` and
+  `('project', '7:x')` cannot collide — the second is refused. A `scope` may contain
+  colons, which it must, since project scopes are `project:<uuid>`. `SecretsRepository.upgradeLegacyPayloads()` re-encrypts `v1` rows at boot —
+  in code, because SQL cannot re-encrypt and a migration that threw would brick the boot.
+  A build older than M1.7 cannot read an upgraded row; a pre-M1.7 backup is the way back.
 - Every authentication failure raises the same opaque `DecryptionError`, so a
   wrong AAD, a tampered byte and a wrong master key are indistinguishable.
 - `SecretString` redacts itself in `toString`, `toJSON`, `Symbol.toPrimitive` and
@@ -605,7 +694,8 @@ Implemented in `src/server/crypto.ts`; full rationale in `docs/SECURITY.md`.
   `totp.failure`, `recovery_code.used`, `auth.delay_applied`, `session.created`,
   `session.revoked`, `password.changed`, `stepup.granted`, `two_factor.disabled`,
   `recovery_codes.regenerated`, `secret.revealed`, `secret.changed`,
-  `base_path.regenerated`, `audit.trimmed`, `origin.absent_admitted`. No lockout
+  `base_path.regenerated`, `audit.trimmed`, `origin.absent_admitted`,
+  `notification.sent`, `notification.abandoned`, `notification.dropped`. No lockout
   event, because there is no lockout.
 - A failure row carries the reason **category** only (`bad_credentials`,
   `bad_totp_code`, `bad_recovery_code`, `replayed_totp_code`, `no_pending_login`,
@@ -734,6 +824,15 @@ Railway's shell as `node dist/server/cli/<name>.js`. Full runbook: `docs/DEPLOY.
   in WAL mode a committed row lives in `panel.db-wal` until a checkpoint, so the main file
   alone is an older database — measured on a fresh install, a plain copy could not be
   opened at all, because every table the migrations created was still only in the WAL.
+- **`npm run telegram:set`**, **`telegram:test`**, **`telegram:discover`** — configure the
+  bot token and chat id, send a test message, and list the chats the bot can see. The token
+  is read from a TTY (with echo off) or from a pipe, **never from argv**, where it would sit
+  in the shell history and be visible in `ps` to anything sharing the container. `telegram:test`
+  distinguishes *could not reach Telegram at all* from *Telegram answered and rejected us*,
+  because collapsing the two is what makes a missing proxy look like a wrong token — and
+  from this operator's own country the first is the expected outcome without
+  `PANEL_OUTBOUND_PROXY`. Telegram's own error text is never forwarded; the three beginner
+  failures (bot never messaged, wrong chat id, revoked token) map to fixed sentences.
 - **`npm run restore -- <path>`** — refuses to overwrite a database whose audit chain
   **currently verifies** (a verifying chain is positive evidence the live database is fine,
   and a restore destroys append-only history) and refuses a snapshot whose chain fails at
@@ -765,6 +864,13 @@ Railway's shell as `node dist/server/cli/<name>.js`. Full runbook: `docs/DEPLOY.
     `Host` becomes the only input. On is safe because only the **rightmost** forwarded
     value is honoured and the expected origin never comes from the request.
     `tests/integration/railway-edge.test.ts` drives both.
+  - `PANEL_OUTBOUND_PROXY` — an `http(s)://` proxy for **every outbound request**. Not a
+    stored secret because it can carry credentials in its userinfo: elided from logs like
+    the base path, reported by preflight as set/unset only, and warned about at boot when a
+    production panel points it at a non-loopback host (that hop sees the request carrying
+    the bot token in its path).
+  - `PANEL_NOTIFY_LOCALE` (`en`|`fa`, default `en`) and `PANEL_NOTIFY_INCLUDE_LINKS`
+    (default off) — see *Notifications (Telegram)*.
   - `PANEL_LISTEN_HOST` — which address to bind. Defaults to `0.0.0.0` in a container
     (`PANEL_IN_CONTAINER=1`, set by the Dockerfile) or in production, and `127.0.0.1`
     otherwise. The old hard-coded `0.0.0.0` was wrong in both directions: unreachable
@@ -845,37 +951,34 @@ what the plan calls for.
   `npm run backup`, `npm run restore` and `docs/DEPLOY.md`. Part 5 reconstructed the eleven
   acceptance criteria — they were never in this repository — recorded them in `PLAN.md`, and
   ran them against a running container: 79 checks, 0 failures.
-- **M1.7 — notifications: designed, not built.** The Telegram transport is specified
-  in `PLAN.md` under *M1.7 — Notifications (Telegram transport): the design*, and the
-  Phase 3 consumer it exists for under *Phase 3 preview*. No code exists: no
-  `notification_queue`, no migration 009, no transport, no route. Two things in that
-  design reach back into finished modules and should not come as a surprise when it
-  is built: the Telegram credentials want AAD `secrets:telegram:bot_token` /
-  `secrets:telegram:chat_id`, which is a **`v2` payload version for
-  `SecretsRepository`** binding a ciphertext to `(scope, name)` rather than to the row
-  id — strictly stronger given `UNIQUE (scope, name)`, and the reason is written out
-  there; and the Phase 3 hook endpoint is a **second Fastify listener bound to
-  `127.0.0.1`**, outside the base path, bearer-token only, that must never see a
-  session cookie. M1.6's review added three things to that design, all in `PLAN.md`: the
-  hook endpoint needs **two** independent header credentials (a per-project bearer *and* a
-  panel-wide shared secret) with byte-identical failure responses; the completion message
-  format is pinned, with the deep link off by default because the base path inside it is a
-  secret and a Telegram message is permanent storage the panel does not control; and the
-  queue carries a **typed event** rather than a rendered string, because the resource
-  alerts and the audit-derived security alerts are producers too.
-- **Resource usage and concurrency: designed, not built.** `PLAN.md` has both, added in
-  M1.6. The resource section exists because `os.totalmem()` reports the *host's* memory
-  inside a container, so the figures must come from cgroup v2 — including the case where
-  `memory.max` is the literal string `max`, and the two-sample requirement for any CPU
-  percentage. The concurrency section answers the asymmetry: agents in different projects
-  need nothing beyond the resource cap, while a second agent in **one** project gets a git
-  worktree or a `409`, because two agents in one working directory is a correctness hazard
-  rather than a capacity one. It also records that the panel runs a shell in a pty and is
-  therefore not Claude-specific: only the `settings.json` editor and the Stop-hook
-  integration assume Claude Code.
-- **M2.0 — Phase 2 architecture: designed, no code.** Seven operator requirements
-  arrived after M1.6 and are recorded as **R1–R7** in `PLAN.md` (*Phase 2–5
-  requirements*), which is now the authoritative requirement set: on-demand complete
+- **M1.7 — notifications and resource metrics: done (API and CLI only, no UI).**
+  `GET /api/metrics` with the cgroup v2 readers and the poll-driven sampler
+  (`4b3c3bc`), then the outbound Telegram transport (`5a28700`): migration 009's
+  `notification_queue` and `notification_state`, the typed-event queue with one worker,
+  exponential backoff with jitter, dead-lettering, a boot sweep and a queue cap;
+  `notification-rules.ts` exhaustive over `AuditEvent` behind a post-commit
+  `AuditObserver`; `notification-render.ts` as the one server-side locale;
+  `utils/outbound-http.ts` on undici with `ProxyAgent`; three routes; three CLI commands;
+  the `v2` payload AAD with a boot-time upgrade of `v1` rows. **Deferred with reasons:**
+  the inbound hook endpoint and its second loopback listener (Phase 3 — there is no agent
+  to hook yet, and the two header credentials it needs are specified in `PLAN.md`), the
+  resource threshold alerts (a poll-driven sampler cannot observe a crossing while nobody
+  polls; they need their own always-on low-cadence watcher), and the M2.5 configuration UI.
+  `PLAN.md` §*Built in M1.7* — one under the notification design, one under the resource
+  design — lists every place the code departs from what was specified.
+- **Concurrency: designed, not built.** `PLAN.md` has it, added in M1.6. It answers the
+  asymmetry: agents in different projects need nothing beyond the resource cap, while a
+  second agent in **one** project gets a git worktree or a `409`, because two agents in one
+  working directory is a correctness hazard rather than a capacity one. It also records
+  that the panel runs a shell in a pty and is therefore not Claude-specific: only the
+  `settings.json` editor and the Stop-hook integration assume Claude Code.
+- **M2.0 — Phase 2 architecture: designed, no code**, plus twelve decisions taken after it
+  and recorded in `PLAN.md` §*Decisions taken after M2.0* — the export defaults, the
+  UUID-collision options, the import caps, the passphrase floor, the provider-credential
+  default and the two verified facts behind it, CodeMirror 6 with **no `worker-src` added to
+  the CSP**, and the migration numbering. Only the M1.7-tagged ones are built. Seven
+  operator requirements arrived after M1.6 and are recorded as **R1–R7** in `PLAN.md`
+  (*Phase 2–5 requirements*), which is now the authoritative requirement set: on-demand complete
   backup, panel-to-panel portability, Persian/English bilingual, a per-project file
   browser, per-project `settings.json`, Telegram configuration from the UI, and
   per-project plus global `api_key`/`api_base_url`. `PLAN.md` §*M2 — Phase 2* carries the
@@ -890,12 +993,22 @@ what the plan calls for.
 - No terminal or Claude Code integration (Phase 3).
 
 ## Next Steps (Phase 2)
-See `PLAN.md` §*M2 — Phase 2* for the milestone map and the blocking decisions. In order:
-the application shell with direction built in (M2.1), projects with portable identity
-(M2.2), the file browser (M2.3), settings documents and provider credentials (M2.4), the
-Telegram configuration UI once M1.7's transport exists (M2.5), portable export and import
-(M2.6), and the resource widget (M2.7). Phase 3 remains the terminal, the pty and the
-Claude Code integration.
+See `PLAN.md` §*M2 — Phase 2* for the milestone map and the blocking decisions, and
+§*Decisions taken after M2.0* for the twelve answers each milestone has to respect. In
+order: the application shell with direction built in (M2.1), projects with portable
+identity (M2.2), the file browser (M2.3), settings documents and provider credentials
+(M2.4), the Telegram configuration UI — whose transport now exists (M2.5) — portable export
+and import (M2.6), and the resource widget (M2.7), which has its endpoint and its poll
+budget already. Phase 3 remains the terminal, the pty, the Claude Code integration and the
+inbound hook endpoint M1.7 deliberately left out.
+
+**Two things M1.7 leaves for Phase 2 to pick up rather than rediscover.** The client's
+metrics poll budget is written down (`PLAN.md`, end of §*Built in M1.7* under the resource
+design): two seconds visible, thirty hidden, nothing when the tab is closed — the hidden
+cadence is deliberately above the sampler's own and below its idle timeout, so a hidden tab
+keeps `cpu.percentOfQuota` a number instead of resetting it to `null`. And the notification
+locale is the one place the server holds a human string, so M2.1's translation work must not
+grow a second one.
 
 ---
 *This document will be updated as the project progresses.*

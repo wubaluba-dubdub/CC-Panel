@@ -374,6 +374,7 @@ are versioned and self-describing:
 
 ```
 v1.<nonce>.<ciphertext>.<tag>     each part base64url
+v2.<nonce>.<ciphertext>.<tag>     identical layout, different AAD scheme
 ```
 
 `decrypt()` rejects a version it does not recognise rather than guessing at the
@@ -384,6 +385,13 @@ containing `:` so the encoding cannot be made ambiguous. Binding to the row and
 column means an attacker with database write access cannot promote their own
 secret into another row, or another column, by copying bytes — the tag will not
 verify.
+
+**The version selects the AAD scheme, not the cipher.** `v1` and `v2` differ in
+nothing but what the tag commits to: `secrets:<rowId>:payload` against
+`secrets:<scope>:<name>`. Same cipher, same layout, same nonce and tag lengths. That
+is what the version prefix was put on the format for in M1.3 — the alternative is
+inferring the scheme from the row, and the row is the part an attacker with database
+write access can edit. *Storage*, below, is why the second scheme exists.
 
 Every authentication failure raises the same opaque `DecryptionError` with the
 same message. A wrong AAD, a flipped ciphertext bit, and a wrong master key are
@@ -404,6 +412,14 @@ four characters. A recognised credential prefix is kept, because it tells an
 operator *which* credential they are looking at without disclosing any of it, and
 is dropped when too little material follows it. Values shorter than eight
 characters get a fixed placeholder.
+
+**`mask()` is the wrong display for a short or low-entropy identifier**, and M1.7 is
+where that first bit. Last-four of a nine-digit Telegram chat id discloses most of
+it, and there is no prefix worth keeping. So the Telegram configuration is reported
+as **set/unset plus a character count** — the form `npm run preflight` already uses
+for every credential, which catches a truncated paste and a variable that never
+arrived while displaying none of the value. `mask()` remains the display for the
+credentials it was written for, which are long and prefixed.
 
 ### Logger redaction
 
@@ -435,6 +451,41 @@ absent: that means a wrong master key or a tampered database, and answering
 Migration `006_secrets_payload.sql` replaces the separate `ciphertext`/`nonce`
 columns from `004` with a single `payload` column, because separate columns cannot
 express the version prefix.
+
+#### Payload version `v2`: the AAD binds the row's logical identity, not its id
+
+M1.7 puts the Telegram bot token and chat id in this table, and the row-id AAD is the
+wrong binding for them. `secrets:<rowId>:payload` stops a ciphertext being moved
+between rows; it says nothing about that row's `scope` and `name`, so an attacker with
+write access to `panel.db` can **relabel** a row and the ciphertext still
+authenticates. Applied to these two values that is not theoretical: swap the
+`bot_token` and `chat_id` labels and the panel puts the bot token into the `chat_id`
+query parameter of a request to `api.telegram.org`. Telegram rejects the call, and the
+token has still left the process.
+
+`UNIQUE (scope, name)` from migration 006 makes the fix free — at most one row can
+hold a given pair, so `secrets:<scope>:<name>` is at least as strong as the row-id
+form and strictly stronger against relabelling. New writes are `v2`; a stored `v1`
+payload keeps decrypting under the old scheme, selected from the stored prefix rather
+than guessed.
+
+**Injectivity comes for free from a check `columnAad()` already had.** It refuses a `:`
+in its *table* and *column* arguments, and `name` is passed as the column — so
+`('project:7', 'x')` yields `secrets:project:7:x` while `('project', '7:x')` is refused
+outright rather than colliding with it. A `scope` **may** contain colons, which it must,
+because project-scoped secrets are spelled `project:<uuid>` (`PORTABILITY.md` §4.1):
+with `name` colon-free the last colon always separates the pair. A unit test asserts the
+collision is rejected rather than merely unlikely. An AAD is only ever compared
+byte-for-byte, never parsed, so injectivity is the entire requirement.
+
+`upgradeLegacyPayloads()` re-encrypts any `v1` row as `v2` at boot, once, and reports
+how many it moved. **In code, not in a migration**, for two reasons: a SQL migration
+cannot re-encrypt anything, and a migration step that threw — wrong master key,
+tampered row — would make the panel unbootable rather than merely leaving a legacy row
+in place. The cost is stated rather than hidden: a **downgrade** to a build older than
+M1.7 cannot read a row this has upgraded, because that build's accepted-version list
+has no `v2` in it. Restoring a pre-M1.7 backup is the escape hatch, which is one more
+reason `npm run backup` exists.
 
 ### Generic error responses
 
@@ -1411,3 +1462,73 @@ asserting that something is *absent* from the database must read all three. A ch
 against `panel.db` alone passed with token hashing removed entirely, which is how the
 hole was found. `databaseBytes()` in `tests/integration/secret-leak.test.ts`
 concatenates all three; use it rather than re-deriving the list.
+
+---
+
+## Outbound requests
+
+Until M1.7 nothing in this panel initiated a connection. The Telegram transport is the
+first door that leads out of the process, and `src/server/utils/outbound-http.ts` is the
+only place it opens — the Telegram transport goes through it now, M2.6's "test this API
+key" action goes through it next.
+
+### Redaction before egress
+
+Every outbound body passes through the **same** `redactSecrets()` the log destination
+uses, plus the base-path elision, immediately before the bytes leave. Twice, in fact,
+and deliberately: once in `NotifyService` when the event is rendered, and once in
+`TelegramTransport` on the finished body. The second pass is the one that matters for a
+string assembled after rendering; the first is what keeps a bad value out of the queue
+table, which is storage.
+
+This is the same "second line of defence" argument as the logger, with the same limit:
+it is pattern-based, so it catches a credential whose *shape* it recognises and nothing
+else. `SecretString` is still the control. What is new is that the destination is a third
+party's server rather than the operator's own stdout, so the sentinel test asserts on the
+bytes a **fake Telegram server actually received** rather than on a return value.
+
+### The base path and the deep link are the same string
+
+`PANEL_NOTIFY_INCLUDE_LINKS` is off by default, and with it off the base path cannot
+leave through this door at all. With it on, the base-path half of the egress pass is
+switched off for the whole body — because the link *is* the base path, and eliding it
+produces a URL that 404s: the setting turned on and silently broken. Credential
+redaction applies either way. The trade is stated where the operator sets it: a Telegram
+message is permanent storage on hardware the panel does not control, so turning links on
+publishes the prefix to Telegram, to every device signed into that account, and to
+anything backing up those devices.
+
+### The URL is a secret
+
+Telegram puts the bot token in the request **path** (`/bot<token>/sendMessage`). So the
+URL is credential material, and the two rules that follow are absolute: the transport
+logs a fixed event name and a status code, never a URL; and `OutboundUnreachableError`
+carries a Node error **code** (`ENOTFOUND`, `UND_ERR_CONNECT_TIMEOUT`) and never the
+underlying message, because an undici failure message quotes the URL it failed on.
+
+### `PANEL_OUTBOUND_PROXY`
+
+Node's global `fetch` ignores `http_proxy` and `https_proxy` — the WHATWG spec has no
+concept of a proxy — so the proxy is wired explicitly through undici's `ProxyAgent`.
+It is an **environment variable, not a stored secret**: it can carry credentials in its
+userinfo, so it is elided from log lines like the base path, and `npm run preflight`
+reports it as set/unset with no value. `proxyBootWarning()` warns once at boot when a
+production panel points it at a non-loopback host, naming neither the host nor the URL:
+that hop sees every outbound request, including the one with the token in its path. A
+warning and not a refusal — an egress proxy is a legitimate thing to have, and boot is
+not the place to argue about it.
+
+### One sender, at-least-once, and nothing in the request path waits
+
+The queue is what keeps a third party's availability out of the panel's own response
+times: an HTTP handler enqueues one row and returns. One worker sends at a time, so a
+burst cannot open a connection per event, and delivery is **at-least-once** — a send
+that succeeds and then fails to record itself sends again. The alternative, at-most-once,
+silently drops the alert that mattered. Retries are exponential with full jitter and a
+cap, bounded by an attempt count, after which the row is `dead` with an audit row rather
+than retried forever. `parameters.retry_after` from a Telegram 429 overrides the computed
+delay.
+
+The queue holds the *typed event*, never a rendered string, and `notify()` throws on a
+`SecretString` or a non-primitive value rather than redacting it — the same rule, for the
+same reason, as `meta_json` validation in the audit log.
