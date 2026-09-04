@@ -52,6 +52,9 @@ and it is strictly better against an attacker who can rotate addresses.
 ├── global/
 │   └── claude-home/           # reserved for future: CLAUDE_CONFIG_DIR
 ├── projects/                  # reserved for future: per-project directories
+├── exports/                   # reserved for M2.6: portable exports, with incoming/
+├── run/
+│   └── panel.run              # the watchdog's run marker — present means running
 └── logs/                      # reserved for future: log files (if any)
 ```
 The container filesystem is ephemeral; all persistent state lives under `/data`.
@@ -306,9 +309,74 @@ rather than code:
   unprivileged process cannot have, which is the question M2.4's import cap asks.
   `projects/` is deliberately **not** walked — a recursive walk of checkouts and
   `node_modules` on a one-second cadence is the display becoming its own load.
-- Not built here: threshold-crossing alerts (they need an **always-on** low-cadence
-  watcher, which a poll-driven sampler cannot be) and per-project attribution (there are
-  no projects, and `perProject` is declared absent rather than empty).
+- Not built here: per-project attribution (there are no projects, and `perProject` is
+  declared absent rather than empty). Threshold-crossing alerts were also deferred from
+  M1.7 for a structural reason and are built in M1.8 — see below.
+
+## The resource watchdog
+`src/server/services/watchdog.service.ts` (the watcher, the run marker, the OOM counter)
+and `services/resource-alerts.ts` (the pure crossing machine and its persistence).
+Migration 010. Always on from boot to shutdown at a 30 s cadence; no route, no UI — M2.7
+is where it becomes visible. Full rationale in `PLAN.md` §*Built in M1.8*; the decisions
+rather than the code:
+
+- **A second sample pair, not a second use of the first.** The poll-driven sampler is
+  armed by a request and disarmed 60 s after the last one, so a crossing that happens
+  while nobody is polling is a crossing nothing observes — an alert machine bolted to it
+  would fire *when the operator opens the panel*, the one moment they are already looking.
+- **They share no mutable state, and that is structural.** Every reader in
+  `resources.service.ts` is a pure function of a path, and the CPU rate is `cpuRate()`,
+  which takes `previous` as an **argument**. Each consumer holds its own previous sample.
+  The failure this rules out is not a crash: one shared slot would make each divide its
+  delta by the other's interval, and at 1000 ms against 30 000 ms the answer is wrong by a
+  factor of thirty — still a number, still in range, still plausible on a dashboard.
+- **Alerts fire on a crossing, not on a level**, with a *separate, lower* clear threshold
+  (derived, ten points down) and a 30-minute cooldown. A sustained 95 % is one message.
+  `alerted` is tracked separately from `above`/`below` so that **every alert that was sent
+  gets a recovery and nothing else does** — a recovery for an alert the cooldown swallowed
+  would be a message about something the operator has no record of.
+- **A missing denominator disables a rule; it never defaults one.** `memory.max` holding
+  the literal `max`, or no cgroup v2 at all, means there is nothing for a fraction to be a
+  fraction of — so the machine *freezes* (no transition, no message, no bookkeeping lost)
+  rather than reading as 0 %. The operator finds out from the boot log line and from
+  `npm run preflight`, which reads the real cgroup and says which rules can arm.
+- **Disk is `(total - available) / total`, not `used / total`.** `available` is `bavail`,
+  the field M2.4's import cap already reads, and the question the alert answers is whether
+  the panel can still *write* — a block reserved for root is not space it has. This reads a
+  few points higher than `df` on a filesystem with a reserve, deliberately. It matters more
+  than it looks: a full volume stops the **audit log**, so the disk rule is protecting the
+  panel's own tamper-evidence and not just the feature that filled the disk.
+- **`oom_kill` from `memory.events`** (hierarchical), falling back to
+  `memory.events.local`. It counts **processes**, not events. A `null` stored baseline is
+  not zero — it means no baseline has been read, so the first sample after an upgrade
+  adopts the counter instead of announcing every kill that predates this build; a *lower*
+  reading is a new cgroup and resets the baseline. **What it can see is a child** — an
+  agent, a build, a git subprocess — because a kill that takes the whole container cannot
+  be reported by the process that died.
+- **That case is covered from the other side: the run marker.** `/data/run/panel.run` is
+  written at boot, rewritten with a fresh `lastSeenAt` and the last memory reading on every
+  tick, and **removed by `onClose`** — which both signal handlers go through. Present at
+  boot means the previous run was not given the chance to shut down or did not take it.
+  Railway, `docker stop` and Ctrl-C all send SIGTERM, so a normal redeploy is clean; what
+  cannot be separated is an OOM kill from a redeploy whose shutdown overran the grace
+  period, because both are a SIGKILL. Hence the message says **did not shut down cleanly**
+  and never *crashed*, and carries the previous run's last memory reading so the operator
+  can tell which it probably was. A file and not a table, because its *absence* is the
+  signal and it must be readable by a boot that has not opened the database — and the
+  crashes worth detecting are the ones that can involve the database or the volume.
+- **No sustained-CPU rule, and that is a decision.** An agent waiting on a model response
+  is idle, so CPU is not this panel's binding constraint — memory and the upstream API are —
+  and a busy agent at 95 % is the product working. An alert nobody can act on is what
+  teaches an operator to ignore the channel that also carries "someone signed in". The
+  figure is still *measured*, because it is what says what the panel was doing when it died:
+  the marker carries it and the unclean-restart message reads it.
+- **The alert state lives in `notification_state` beside the drop counter**, read once per
+  tick and written only when something changed — an idle panel does not dirty a page every
+  thirty seconds. The four watchdog audit events have **explicit `null` rules** in
+  `notification-rules.ts`: the watchdog enqueues its own typed event with the numbers in it,
+  and a rule there would turn the row into a headline-plus-a-time `security_alert` — the
+  operator would get "memory crossed a threshold" and not "940 MB of 1 GB". This is the one
+  place in that map where `null` means *notified elsewhere*.
 
 ## Notifications (Telegram)
 Outbound only. The inbound hook endpoint that Phase 3's agents will call is **not** built
@@ -318,8 +386,10 @@ from the design above*; `docs/SECURITY.md` §*Outbound requests* for the egress 
 parts that are decisions rather than code:
 
 - **The queue carries a typed event, not a rendered string.** `NotifyEvent` in
-  `services/notification-render.ts` is a discriminated union; the worker renders it at send
-  time. A pre-rendered string would force a later transport to accept Telegram's shape —
+  `services/notification-render.ts` is a discriminated union — `turn_complete`,
+  `resource_alert`, `security_alert`, `test`, and M1.8's `oom_kill` and `unclean_restart`;
+  the worker renders it at send time. The `kind` CHECK in the queue enumerates them, so a
+  new kind needs a migration, and `tests/unit/db.test.ts` fails if one is added without. A pre-rendered string would force a later transport to accept Telegram's shape —
   the 4096-character cap and the truncate-then-attach behaviour are properties of Telegram,
   not of "a notification" — and would have had to be rendered by whichever producer
   enqueued it. `notification_queue.event_json` therefore holds the event, and
@@ -707,8 +777,9 @@ Implemented in `src/server/crypto.ts`; full rationale in `docs/SECURITY.md`.
   `session.revoked`, `password.changed`, `stepup.granted`, `two_factor.disabled`,
   `recovery_codes.regenerated`, `secret.revealed`, `secret.changed`,
   `base_path.regenerated`, `audit.trimmed`, `origin.absent_admitted`,
-  `notification.sent`, `notification.abandoned`, `notification.dropped`. No lockout
-  event, because there is no lockout.
+  `notification.sent`, `notification.abandoned`, `notification.dropped`,
+  `resource.threshold_crossed`, `resource.threshold_cleared`, `resource.oom_kill`,
+  `panel.unclean_restart`. No lockout event, because there is no lockout.
 - A failure row carries the reason **category** only (`bad_credentials`,
   `bad_totp_code`, `bad_recovery_code`, `replayed_totp_code`, `no_pending_login`,
   `two_factor_not_enrolled`) — never the attempted username, password, or code.
@@ -883,6 +954,11 @@ Railway's shell as `node dist/server/cli/<name>.js`. Full runbook: `docs/DEPLOY.
     the bot token in its path).
   - `PANEL_NOTIFY_LOCALE` (`en`|`fa`, default `en`) and `PANEL_NOTIFY_INCLUDE_LINKS`
     (default off) — see *Notifications (Telegram)*.
+  - `PANEL_WATCHDOG_ENABLED` (default on), `PANEL_WATCHDOG_MEMORY_PERCENT` (85) and
+    `PANEL_WATCHDOG_DISK_PERCENT` (80) — see *The resource watchdog*. The clear
+    thresholds are **derived** (ten points lower), not configurable: two settable numbers
+    can be set the wrong way round, and `clear` above `alert` is a machine that alternates
+    on every sample rather than a hysteresis band.
   - `PANEL_LISTEN_HOST` — which address to bind. Defaults to `0.0.0.0` in a container
     (`PANEL_IN_CONTAINER=1`, set by the Dockerfile) or in production, and `127.0.0.1`
     otherwise. The old hard-coded `0.0.0.0` was wrong in both directions: unreachable
@@ -975,9 +1051,21 @@ what the plan calls for.
   the inbound hook endpoint and its second loopback listener (Phase 3 — there is no agent
   to hook yet, and the two header credentials it needs are specified in `PLAN.md`), the
   resource threshold alerts (a poll-driven sampler cannot observe a crossing while nobody
-  polls; they need their own always-on low-cadence watcher), and the M2.5 configuration UI.
+  polls; they need their own always-on low-cadence watcher — **built in M1.8**), and the
+  M2.5 configuration UI.
   `PLAN.md` §*Built in M1.7* — one under the notification design, one under the resource
   design — lists every place the code departs from what was specified.
+- **M1.8 — the resource watchdog: done (no UI).** The always-on 30 s watcher, the memory
+  and disk crossing rules with derived clear thresholds and a 30-minute cooldown, the
+  `oom_kill` counter, and unclean-restart detection through a run marker in `/data/run`;
+  migration 010 widening `notification_queue.kind` and adding the crossing state to
+  `notification_state`; four new audit events, all with explicit `null` notification rules
+  because the watchdog sends better messages than a rule could; `cpuRate()` extracted as a
+  pure function so the two consumers of `resources.service.ts` cannot share a sample slot;
+  `PANEL_WATCHDOG_ENABLED` / `_MEMORY_PERCENT` / `_DISK_PERCENT` and a preflight section
+  that says which rules can actually arm on this machine. `MAX_ATTEMPTS` 12 → 15.
+  **Deferred with reasons:** no sustained-CPU rule (see *The resource watchdog*), and no
+  route or widget (M2.7 — the watchdog exposes `status()` for it and nothing else).
 - **Concurrency: designed, not built.** `PLAN.md` has it, added in M1.6. It answers the
   asymmetry: agents in different projects need nothing beyond the resource cap, while a
   second agent in **one** project gets a git worktree or a `409`, because two agents in one

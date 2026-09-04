@@ -29,6 +29,7 @@ import {
   type NotifyServiceOptions,
 } from './services/notify.service.js';
 import { ResourceSampler, type StartTimer } from './services/resources.service.js';
+import { RUN_DIR, Watchdog } from './services/watchdog.service.js';
 import { readTelegramCredentials } from './services/telegram-config.js';
 import { TelegramTransport, type NotificationTransport } from './services/telegram.transport.js';
 import { seedAdminUser } from './services/user.service.js';
@@ -70,6 +71,8 @@ declare module 'fastify' {
     metrics: ResourceSampler;
     /** The notification queue and its worker. */
     notify: NotifyService;
+    /** The always-on resource watcher. Present even when disabled, so tests can ask. */
+    watchdog: Watchdog;
   }
 }
 
@@ -131,6 +134,23 @@ export interface ServerConfig {
     /** Start the real timer chain even under vitest. Off by default, for a reason. */
     autoStart?: boolean;
   };
+  /**
+   * Test seams for the always-on watchdog: a fixture cgroup directory and a timer the
+   * suite drives by hand. Production passes none of it.
+   *
+   * `cgroupRoot` is deliberately **separate** from `metrics.cgroupRoot` even though a
+   * test usually points both at the same fixture — the two consumers are independent by
+   * construction, and a single shared option would be the first place that stopped being
+   * true.
+   */
+  watchdog?: {
+    cgroupRoot?: string;
+    cadenceMs?: number;
+    cooldownMs?: number;
+    startTimer?: StartTimer;
+    /** Arm the real 30 s interval even under vitest. Off by default. */
+    autoStart?: boolean;
+  };
 }
 
 function ensureDir(dir: string): void {
@@ -152,6 +172,12 @@ export function ensureDataLayout(dataDir: string): void {
   // filename convention inside `exports/`.
   ensureDir(join(dataDir, 'exports'));
   ensureDir(join(dataDir, 'exports', 'incoming'));
+  // The watchdog's run marker. Its *presence* at boot is what says the previous run
+  // did not shut down cleanly, so it lives in a directory of its own rather than
+  // beside `instance.json` — a marker is not configuration, and a reader of `config/`
+  // should not have to know that one file in it is ephemeral. Listed in
+  // `entrypoint.sh`'s LAYOUT_DIRS for the same reason every other directory here is.
+  ensureDir(join(dataDir, RUN_DIR));
 }
 
 export function checkDataWritable(dataDir: string): void {
@@ -356,11 +382,37 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   // message; nothing here does.
   runtime.audit.setObserver((record) => notify.observeAudit(record));
 
+  // ── The always-on watchdog ─────────────────────────────────────────────────
+  //
+  // A **second** sample pair from the same reading functions, at 30 s, from boot to
+  // shutdown — because the sampler above is armed by a request and disarmed a minute
+  // after the last one, so a crossing that happens while nobody is polling is a
+  // crossing nothing observes. The two share no mutable state: each holds its own
+  // previous CPU sample and the arithmetic between them is a pure function. See the
+  // class comment in `services/watchdog.service.ts`.
+  const watchdog = new Watchdog({
+    dataDir,
+    notify,
+    audit: runtime.audit,
+    db: runtime.db,
+    clock: runtime.clock,
+    memoryPercent: env.PANEL_WATCHDOG_MEMORY_PERCENT,
+    diskPercent: env.PANEL_WATCHDOG_DISK_PERCENT,
+    log: (event) => {
+      if (!isTestEnv) app.log.info(event, event.message);
+    },
+    ...(config.watchdog?.cgroupRoot !== undefined ? { cgroupRoot: config.watchdog.cgroupRoot } : {}),
+    ...(config.watchdog?.cadenceMs !== undefined ? { cadenceMs: config.watchdog.cadenceMs } : {}),
+    ...(config.watchdog?.cooldownMs !== undefined ? { cooldownMs: config.watchdog.cooldownMs } : {}),
+    ...(config.watchdog?.startTimer ? { startTimer: config.watchdog.startTimer } : {}),
+  });
+
   app.decorate('basePath', basePath);
   app.decorate('auth', runtime);
   app.decorate('publicOrigin', origin);
   app.decorate('metrics', metrics);
   app.decorate('notify', notify);
+  app.decorate('watchdog', watchdog);
 
   // Chain any audit row written before migration 008 existed, so `verify()` fails
   // only for tampering and not for history. No-op on every boot after the first.
@@ -517,6 +569,26 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   notify.sweepStale();
   if (!isTestEnv || config.notify?.autoStart === true) notify.start();
 
+  // ── The watchdog: the boot check always, the timer only when it should run ──
+  //
+  // `bootCheck()` is the half that has to happen on every boot: it reads the previous
+  // run's marker, reports an unclean shutdown if one was left behind, and writes a
+  // fresh marker. It costs one `readFileSync` and one `writeFileSync` and arms nothing,
+  // which is why it is not gated on the test environment — the suite's temp data
+  // directories find no marker, and each server's `onClose` removes the one it wrote.
+  //
+  // It runs **after** the boot guards above, so a deployment that dies in
+  // `seedAdminUser` or the public-origin check does not leave a marker behind and
+  // report itself as an unclean restart on the next attempt.
+  //
+  // The timer is gated the way the notification worker's is, and additionally on
+  // `PANEL_WATCHDOG_ENABLED`: a development box with a nearly-full disk would otherwise
+  // queue alerts for a transport nobody has configured.
+  if (env.PANEL_WATCHDOG_ENABLED) {
+    watchdog.bootCheck();
+    if (!isTestEnv || config.watchdog?.autoStart === true) watchdog.start();
+  }
+
   const proxyWarning = proxyBootWarning(env.PANEL_OUTBOUND_PROXY, env.NODE_ENV);
   if (proxyWarning !== null && !isTestEnv) app.log.warn(proxyWarning);
 
@@ -543,6 +615,12 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
     // closed database and a deleted data directory for a minute after every test.
     metrics.stop();
     notify.stop();
+    // Disarms the timer **and** removes the run marker: `app.close()` is the panel's
+    // own definition of going down deliberately, and the marker's absence at the next
+    // boot is what says so. Every path that reaches a graceful shutdown goes through
+    // here — the SIGTERM and SIGINT handlers below both call `app.close()` — so there is
+    // no second place that has to remember.
+    watchdog.stop();
     done();
   });
 

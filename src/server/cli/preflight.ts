@@ -9,6 +9,9 @@ import { cookieProfileFor } from '../plugins/cookies.js';
 import { AuditService } from '../services/audit.service.js';
 import { SecretsRepository } from '../services/secrets.service.js';
 import { telegramConfigStatus } from '../services/telegram-config.js';
+import { bandFromPercent } from '../services/resource-alerts.js';
+import { cgroupV2Present, readCgroup, readDisk, readOomKills } from '../services/resources.service.js';
+import { readMarker } from '../services/watchdog.service.js';
 import { listenHostFor } from '../utils/listen-host.js';
 import { proxyBootWarning } from '../utils/outbound-http.js';
 import { resolvePublicOrigin } from '../utils/public-origin.js';
@@ -193,8 +196,33 @@ export function runPreflight(opts: PreflightOptions = {}): PreflightResult {
   // `user:password@host`, so it gets the same set-or-not-set-and-a-length treatment as
   // the master key rather than being echoed for convenience.
   report.info('PANEL_OUTBOUND_PROXY', describeSecret(raw.PANEL_OUTBOUND_PROXY));
-  const proxyWarning = proxyBootWarning(raw.PANEL_OUTBOUND_PROXY, nodeEnv);
-  if (proxyWarning !== null) report.warn('outbound proxy is loopback or unset', proxyWarning);
+
+  // **The decision this check exists to enforce: the proxy is for local work only.**
+  //
+  // Telegram puts the bot token in the request *path*, so every hop between this
+  // process and `api.telegram.org` sees every token the panel will ever send. Railway
+  // reaches Telegram directly, so a proxy there buys nothing and costs the token. The
+  // boot log warns about a non-loopback hop; this warns about the variable being set at
+  // all in production, because a loopback proxy is still another process in the same
+  // container reading the same URLs, and the boot log is not somewhere the operator
+  // looks before deploying.
+  const proxySet = raw.PANEL_OUTBOUND_PROXY !== undefined && raw.PANEL_OUTBOUND_PROXY.length > 0;
+  if (proxySet && nodeEnv === 'production') {
+    report.warn(
+      'PANEL_OUTBOUND_PROXY is unset in production',
+      proxyBootWarning(raw.PANEL_OUTBOUND_PROXY, nodeEnv) ??
+        'it is set, and Telegram carries the bot token in the request path — so every hop ' +
+          'on the way sees every token this panel sends. Railway reaches Telegram ' +
+          'directly. Unset it unless that hop is deliberate.',
+    );
+  } else if (proxySet) {
+    report.pass(
+      'PANEL_OUTBOUND_PROXY is unset in production',
+      'set, and NODE_ENV is not production — the local-development case it exists for',
+    );
+  } else {
+    report.pass('PANEL_OUTBOUND_PROXY is unset in production', 'not set — outbound requests go direct');
+  }
 
   const includeLinks =
     raw.PANEL_NOTIFY_INCLUDE_LINKS === 'true' || raw.PANEL_NOTIFY_INCLUDE_LINKS === '1';
@@ -207,6 +235,99 @@ export function runPreflight(opts: PreflightOptions = {}): PreflightResult {
   } else {
     report.pass('PANEL_NOTIFY_INCLUDE_LINKS', 'off — no notification carries the base path');
   }
+
+  // ── The watchdog ────────────────────────────────────────────────────────────
+  //
+  // **This section exists because a threshold rule with no denominator is silently
+  // disabled, and there is no other place the operator would find out.** A memory rule
+  // needs `memory.max` to be a number; a cgroup that has no limit, or no cgroup at all,
+  // leaves nothing for a fraction to be a fraction of — and the honest outcome is a
+  // disabled rule rather than a defaulted one. That is a fact about the machine the
+  // panel is running on, so the only place it can be checked is on that machine, which
+  // is what this command is for.
+  report.section('Resource watchdog');
+  const watchdogEnabled = env?.PANEL_WATCHDOG_ENABLED ?? true;
+  if (!watchdogEnabled) {
+    report.warn(
+      'the resource watchdog is on',
+      'PANEL_WATCHDOG_ENABLED is off, so nothing watches memory, the volume or the OOM counter. Threshold crossings and OOM kills will not be reported at all',
+    );
+  } else {
+    report.pass('the resource watchdog is on');
+  }
+
+  const memoryBand = bandFromPercent(env?.PANEL_WATCHDOG_MEMORY_PERCENT ?? 85);
+  const diskBand = bandFromPercent(env?.PANEL_WATCHDOG_DISK_PERCENT ?? 80);
+  report.info(
+    'memory thresholds',
+    `alert at ${Math.round(memoryBand.alert * 100)}%, clears at ${Math.round(memoryBand.clear * 100)}%`,
+  );
+  report.info(
+    'disk thresholds',
+    `alert at ${Math.round(diskBand.alert * 100)}%, clears at ${Math.round(diskBand.clear * 100)}%`,
+  );
+
+  if (!cgroupV2Present()) {
+    // Correct and expected outside a container: the true root cgroup carries none of
+    // these files. It is a *warning* rather than a pass because in production it means
+    // the memory rule cannot arm, and a panel whose memory alert is off is a panel that
+    // will report a failed login and not an OOM kill.
+    report.warn(
+      'cgroup v2 is readable, so the memory rule can arm',
+      'no cgroup v2 at /sys/fs/cgroup. Memory figures would come from the host and the memory threshold rule is disabled. Expected outside a container; not expected on Railway',
+    );
+  } else {
+    const cgroup = readCgroup();
+    if (cgroup.limit.kind === 'bytes') {
+      report.pass(
+        'cgroup v2 is readable, so the memory rule can arm',
+        `memory.max is ${cgroup.limit.bytes} bytes`,
+      );
+    } else if (cgroup.limit.kind === 'unlimited') {
+      report.warn(
+        'cgroup v2 is readable, so the memory rule can arm',
+        'memory.max is the literal "max", so this cgroup has no ceiling and there is no denominator for a percentage. The memory threshold rule is disabled — disk and the OOM counter are unaffected',
+      );
+    } else {
+      report.warn(
+        'cgroup v2 is readable, so the memory rule can arm',
+        `memory.max is ${cgroup.limit.why}. The memory threshold rule is disabled`,
+      );
+    }
+
+    const oom = readOomKills();
+    if (oom.kind === 'count') {
+      report.pass('the OOM-kill counter is readable', `oom_kill is at ${oom.kills}`);
+    } else {
+      report.warn(
+        'the OOM-kill counter is readable',
+        `memory.events is ${oom.why}, so a child process killed for memory cannot be reported. Expected outside a container`,
+      );
+    }
+  }
+
+  const volume = readDisk(env?.PANEL_DATA_DIR ?? raw.PANEL_DATA_DIR ?? '/data');
+  if (volume.totalBytes > 0) {
+    const used = Math.round(((volume.totalBytes - volume.availableBytes) / volume.totalBytes) * 1000) / 10;
+    report.pass('the volume is measurable, so the disk rule can arm', `${used}% in use`);
+  } else {
+    report.warn(
+      'the volume is measurable, so the disk rule can arm',
+      'statfs returned nothing for the data directory, so the disk threshold rule is disabled',
+    );
+  }
+
+  // Present means one of two things and preflight cannot tell them apart, so it says
+  // both rather than picking one: a running panel keeps its marker in place.
+  const marker = readMarker(env?.PANEL_DATA_DIR ?? raw.PANEL_DATA_DIR ?? '/data');
+  report.info(
+    'run marker',
+    marker.present
+      ? marker.marker === null
+        ? 'present but unreadable — the next boot will report an unclean restart'
+        : `present, from a run started at ${marker.marker.startedAt} (the panel is running, or the previous run did not shut down cleanly)`
+      : 'absent — the previous run shut down cleanly',
+  );
 
   // ── The base path, described and never printed ─────────────────────────────
   report.section('Base path (value never printed)');

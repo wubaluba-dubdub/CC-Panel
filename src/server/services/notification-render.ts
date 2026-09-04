@@ -54,7 +54,46 @@ export type NotifyEvent =
   | {
       readonly kind: 'resource_alert';
       readonly resource: 'memory' | 'cpu' | 'disk';
+      /**
+       * A crossing, or the return from one.
+       *
+       * Both directions are the same event with a flag, because they carry the same
+       * numbers about the same rule — and because a recovery that did not look like
+       * the alert it answers is harder to read on a phone, not easier.
+       */
+      readonly state: 'above' | 'cleared';
+      /**
+       * 0–100, one decimal place.
+       *
+       * A percentage in a *notification* is not the percentage M1.7 removed from
+       * `GET /api/metrics`. That one was removed because the client formats and the
+       * server has no locale; this module is the sanctioned exception to that rule,
+       * for the one recipient that is a chat window and cannot divide.
+       */
       readonly percent: number;
+      /** The threshold it crossed, so the message says what "high" meant. */
+      readonly thresholdPercent: number;
+      readonly usedBytes: number | null;
+      readonly limitBytes: number | null;
+      /** How long it was above. Set on `cleared`, null on `above`. */
+      readonly aboveForSeconds: number | null;
+    }
+  | {
+      readonly kind: 'oom_kill';
+      /** Processes killed since the last message. The kernel counts processes, not events. */
+      readonly newKills: number;
+      /** The cgroup's cumulative counter, for context. */
+      readonly totalKills: number;
+      readonly usedBytes: number | null;
+      readonly limitBytes: number | null;
+    }
+  | {
+      readonly kind: 'unclean_restart';
+      /** From the previous run's marker. Null when the marker could not be parsed. */
+      readonly previousStartedAt: string | null;
+      readonly lastSeenAt: string | null;
+      readonly ranForSeconds: number | null;
+      /** The previous run's last recorded memory reading — the OOM clue. */
       readonly usedBytes: number | null;
       readonly limitBytes: number | null;
     }
@@ -89,6 +128,19 @@ interface Dict {
   headline: Record<NotifiedAuditEvent, string>;
   outcome: Record<TurnOutcome, string>;
   resource: Record<'memory' | 'cpu' | 'disk', string>;
+  resourceAbove(resource: string, percent: number): string;
+  resourceCleared(resource: string, percent: number): string;
+  aboveThreshold(percent: number): string;
+  aboveFor(duration: string): string;
+  oomTitle: string;
+  oomKilled(newKills: number, total: number): string;
+  oomChildOnly: string;
+  uncleanTitle: string;
+  uncleanWindow(startedAt: string, lastSeenAt: string): string;
+  uncleanRanFor(duration: string): string;
+  uncleanLastReading(reading: string): string;
+  uncleanNoMarkerDetail: string;
+  uncleanCause: string;
   /** `4m 12s`. The units are words, so they are in here and not in a shared helper. */
   duration(ms: number): string;
   bytes(value: number): string;
@@ -130,6 +182,22 @@ const en: Dict = {
     failed: 'failed',
   },
   resource: { memory: 'memory', cpu: 'CPU', disk: 'disk' },
+  resourceAbove: (resource, percent) => `${resource} is at ${percent}%`,
+  resourceCleared: (resource, percent) => `${resource} is back to normal, ${percent}%`,
+  aboveThreshold: (percent) => `the alert threshold is ${percent}%`,
+  aboveFor: (duration) => `it was above the threshold for ${duration}`,
+  oomTitle: 'Claude Code panel — something was killed for memory',
+  oomKilled: (newKills, total) =>
+    `${newKills === 1 ? '1 process' : `${newKills} processes`} killed just now, ${total} in total for this container`,
+  oomChildOnly:
+    'The panel is still running, so what was killed was one of its child processes — an agent, a build, or a command it ran — and not the panel itself.',
+  uncleanTitle: 'Claude Code panel — the previous run did not shut down cleanly',
+  uncleanWindow: (startedAt, lastSeenAt) => `it started at ${startedAt} and was last seen at ${lastSeenAt}`,
+  uncleanRanFor: (duration) => `it had been running for ${duration}`,
+  uncleanLastReading: (reading) => `its last memory reading was ${reading}`,
+  uncleanNoMarkerDetail: 'nothing else about it could be read',
+  uncleanCause:
+    'The cause cannot be known from inside the panel: a container killed for memory, a platform restart that ran out of time, and a crash all look the same from here.',
   duration: (ms) => formatDuration(ms, { h: 'h', m: 'm', s: 's', joiner: ' ' }),
   bytes: (value) => formatBytes(value, ['B', 'KB', 'MB', 'GB', 'TB']),
   backgroundTasks: (count) =>
@@ -182,6 +250,22 @@ const fa: Dict = {
     failed: 'شکست خورد',
   },
   resource: { memory: 'حافظه', cpu: 'پردازنده', disk: 'فضای دیسک' },
+  resourceAbove: (resource, percent) => `${resource} روی ${percent}% است`,
+  resourceCleared: (resource, percent) => `${resource} به حالت عادی برگشت، ${percent}%`,
+  aboveThreshold: (percent) => `آستانهٔ هشدار ${percent}% است`,
+  aboveFor: (duration) => `به مدت ${duration} بالاتر از آستانه بود`,
+  oomTitle: 'پنل Claude Code — چیزی به دلیل کمبود حافظه کشته شد',
+  oomKilled: (newKills, total) =>
+    `${newKills} فرایند همین حالا کشته شد، در کل ${total} فرایند در این کانتینر`,
+  oomChildOnly:
+    'خود پنل هنوز در حال اجراست، پس آنچه کشته شد یکی از فرایندهای فرزند آن بوده است — یک عامل، یک ساخت، یا فرمانی که اجرا کرده — و نه خود پنل.',
+  uncleanTitle: 'پنل Claude Code — اجرای قبلی به‌درستی خاتمه نیافت',
+  uncleanWindow: (startedAt, lastSeenAt) => `شروع در ${startedAt} و آخرین نشانه از آن در ${lastSeenAt}`,
+  uncleanRanFor: (duration) => `به مدت ${duration} در حال اجرا بود`,
+  uncleanLastReading: (reading) => `آخرین اندازه‌گیری حافظهٔ آن ${reading} بود`,
+  uncleanNoMarkerDetail: 'چیز دیگری از آن قابل خواندن نبود',
+  uncleanCause:
+    'علت را از داخل پنل نمی‌توان دانست: کشته‌شدن کانتینر به دلیل حافظه، راه‌اندازی مجددی که فرصت کافی نداشت، و خرابی برنامه از این‌جا یکسان به نظر می‌رسند.',
   duration: (ms) => formatDuration(ms, { h: 'س', m: 'د', s: 'ث', joiner: ' و ' }),
   bytes: (value) => formatBytes(value, ['B', 'KB', 'MB', 'GB', 'TB']),
   backgroundTasks: (count) => `${count} کار پس‌زمینه هنوز در حال اجراست`,
@@ -259,7 +343,14 @@ export function renderEvent(event: NotifyEvent, opts: RenderOptions): RenderedMe
     }
 
     case 'resource_alert': {
-      lines.push(`${dict.resourceTitle} — ${dict.resource[event.resource]} ${event.percent}%`);
+      const resource = dict.resource[event.resource];
+      lines.push(
+        `${dict.resourceTitle} — ${
+          event.state === 'above'
+            ? dict.resourceAbove(resource, event.percent)
+            : dict.resourceCleared(resource, event.percent)
+        }`,
+      );
       if (event.usedBytes !== null) {
         lines.push(
           event.limitBytes === null
@@ -267,6 +358,55 @@ export function renderEvent(event: NotifyEvent, opts: RenderOptions): RenderedMe
             : dict.ofLimit(dict.bytes(event.usedBytes), dict.bytes(event.limitBytes)),
         );
       }
+      lines.push(
+        event.state === 'above'
+          ? dict.aboveThreshold(event.thresholdPercent)
+          : event.aboveForSeconds === null
+            ? dict.aboveThreshold(event.thresholdPercent)
+            : dict.aboveFor(dict.duration(event.aboveForSeconds * 1000)),
+      );
+      break;
+    }
+
+    case 'oom_kill': {
+      lines.push(dict.oomTitle, dict.oomKilled(event.newKills, event.totalKills));
+      if (event.usedBytes !== null) {
+        lines.push(
+          event.limitBytes === null
+            ? dict.usedOnly(dict.bytes(event.usedBytes))
+            : dict.ofLimit(dict.bytes(event.usedBytes), dict.bytes(event.limitBytes)),
+        );
+      }
+      // The one sentence that stops this alert being read as "the panel died", which
+      // it cannot be: a kill that takes the panel is reported by the *next* boot as an
+      // unclean restart, because the process that died cannot send anything.
+      lines.push('', dict.oomChildOnly);
+      break;
+    }
+
+    case 'unclean_restart': {
+      lines.push(dict.uncleanTitle);
+      if (event.previousStartedAt !== null && event.lastSeenAt !== null) {
+        lines.push(dict.uncleanWindow(event.previousStartedAt, event.lastSeenAt));
+      } else {
+        lines.push(dict.uncleanNoMarkerDetail);
+      }
+      if (event.ranForSeconds !== null) {
+        lines.push(dict.uncleanRanFor(dict.duration(event.ranForSeconds * 1000)));
+      }
+      if (event.usedBytes !== null) {
+        lines.push(
+          dict.uncleanLastReading(
+            event.limitBytes === null
+              ? dict.bytes(event.usedBytes)
+              : dict.ofLimit(dict.bytes(event.usedBytes), dict.bytes(event.limitBytes)),
+          ),
+        );
+      }
+      // "did not shut down cleanly" and never "crashed". A normal platform redeploy
+      // that overran its grace period is a SIGKILL too, and from in here it is the
+      // same evidence as an OOM kill: the marker was left behind.
+      lines.push('', dict.uncleanCause);
       break;
     }
 
@@ -308,6 +448,8 @@ export function mapEventStrings(
     case 'security_alert':
       return { ...event, reason: event.reason === null ? null : transform(event.reason) };
     case 'resource_alert':
+    case 'oom_kill':
+    case 'unclean_restart':
     case 'test':
       return event;
   }
@@ -321,6 +463,8 @@ export function isNotifyEvent(value: unknown): value is NotifyEvent {
     kind === 'turn_complete' ||
     kind === 'resource_alert' ||
     kind === 'security_alert' ||
+    kind === 'oom_kill' ||
+    kind === 'unclean_restart' ||
     kind === 'test'
   );
 }

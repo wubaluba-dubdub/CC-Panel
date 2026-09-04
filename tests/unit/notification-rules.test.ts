@@ -79,6 +79,33 @@ describe('the rule map', () => {
       expect(ruleFor(event), event).toBeNull();
     }
   });
+
+  it('leaves the watchdog\'s four to the watchdog, which sends better messages than a rule could', () => {
+    // These are silent *here* rather than unnotified, which is a distinction worth a test
+    // because they are four of the most alert-worthy events the panel produces. A rule
+    // would turn each audit row into a `security_alert` — a headline plus a time — so the
+    // operator would get "memory crossed a threshold" and not "940 MB of 1 GB, the
+    // threshold is 85 %". The watchdog enqueues its own typed event with the numbers in it.
+    for (const event of [
+      AuditEvent.ResourceThresholdCrossed,
+      AuditEvent.ResourceThresholdCleared,
+      AuditEvent.ResourceOomKill,
+      AuditEvent.UncleanRestart,
+    ]) {
+      expect(ruleFor(event), event).toBeNull();
+    }
+  });
+
+  it('writes no notification of its own for a watchdog audit row', () => {
+    // The other half of the same property: if one of these ever gained a rule, the
+    // operator would get two messages about one event — the rich one and the headline.
+    audit.write({
+      event: AuditEvent.ResourceThresholdCrossed,
+      outcome: 'failure',
+      meta: { resource: 'memory', percent: 91.2 },
+    });
+    expect(queued()).toHaveLength(0);
+  });
 });
 
 describe('audit events becoming notifications', () => {

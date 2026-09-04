@@ -51,8 +51,35 @@ describe('renderEvent', () => {
     const events: NotifyEvent[] = [
       turn,
       { kind: 'test', at: '2026-01-01T00:00:00.000Z' },
-      { kind: 'resource_alert', resource: 'memory', percent: 87, usedBytes: 934_281_216, limitBytes: 1_073_741_824 },
-      { kind: 'resource_alert', resource: 'disk', percent: 81, usedBytes: 934_281_216, limitBytes: null },
+      {
+        kind: 'resource_alert',
+        resource: 'memory',
+        state: 'above',
+        percent: 87,
+        thresholdPercent: 85,
+        usedBytes: 934_281_216,
+        limitBytes: 1_073_741_824,
+        aboveForSeconds: null,
+      },
+      {
+        kind: 'resource_alert',
+        resource: 'disk',
+        state: 'cleared',
+        percent: 68.5,
+        thresholdPercent: 80,
+        usedBytes: 934_281_216,
+        limitBytes: null,
+        aboveForSeconds: 754,
+      },
+      { kind: 'oom_kill', newKills: 2, totalKills: 5, usedBytes: 640_000_000, limitBytes: 1_073_741_824 },
+      {
+        kind: 'unclean_restart',
+        previousStartedAt: '2026-01-01T00:00:00.000Z',
+        lastSeenAt: '2026-01-01T02:12:30.000Z',
+        ranForSeconds: 7950,
+        usedBytes: 1_020_000_000,
+        limitBytes: 1_073_741_824,
+      },
       {
         kind: 'security_alert',
         event: 'login.failure',
@@ -74,8 +101,9 @@ describe('renderEvent', () => {
 
     // The Persian strings are actually Persian, rather than the English ones copied
     // across: the same failure mode the client's dictionary test is specified to catch.
-    const en = renderEvent(events[4]!, { locale: 'en' }).text;
-    const fa = renderEvent(events[4]!, { locale: 'fa' }).text;
+    const security = events.find((e) => e.kind === 'security_alert')!;
+    const en = renderEvent(security, { locale: 'en' }).text;
+    const fa = renderEvent(security, { locale: 'fa' }).text;
     expect(fa).not.toBe(en);
     expect(fa).toMatch(/[؀-ۿ]/);
     // The machine values stay Latin in both, deliberately: they are the values that would

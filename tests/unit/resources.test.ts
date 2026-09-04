@@ -8,10 +8,13 @@ import {
   cgroupV2Present,
   parseCpuMax,
   parseCpuStat,
+  cpuRate,
   parseMemoryMax,
+  parseOomKills,
   parseWholeNumber,
   readCgroup,
   readDisk,
+  readOomKills,
   type StartTimer,
 } from '../../src/server/services/resources.service.js';
 
@@ -99,6 +102,35 @@ describe('cgroup v2 parsers', () => {
     expect(parseCpuStat(null)).toEqual({ kind: 'unavailable', why: 'absent' });
   });
 
+  it('reads oom_kill and nothing else out of memory.events', () => {
+    // The kernel's own key name, so the panel and `cat` agree about what is counted.
+    expect(parseOomKills('low 0\nhigh 0\noom 4\noom_kill 2\noom_group_kill 1\n')).toEqual({
+      kind: 'count',
+      kills: 2,
+    });
+    // Deliberately not `oom`: that counts the times usage was *about* to exceed the limit,
+    // which reclaim usually resolves. Alerting on it would report the panel working.
+    expect(parseOomKills('oom 9\n')).toEqual({ kind: 'unavailable', why: 'unparseable' });
+    expect(parseOomKills('oom_group_kill 3\n')).toEqual({ kind: 'unavailable', why: 'unparseable' });
+    // Absent is not zero. "This kernel does not expose the counter" and "nothing has been
+    // killed" call for opposite conclusions and only one of them is good news.
+    expect(parseOomKills(null)).toEqual({ kind: 'unavailable', why: 'absent' });
+    expect(parseOomKills('oom_kill abc\n')).toEqual({ kind: 'unavailable', why: 'unparseable' });
+  });
+
+  it('falls back to memory.events.local, and never adds the two together', () => {
+    const both = cgroup({ 'memory.events': 'oom_kill 5\n', 'memory.events.local': 'oom_kill 2\n' });
+    // Hierarchical first: it counts kills in this cgroup *and its descendants*, which is
+    // the question the watchdog asks — the panel's children are the interesting victims.
+    expect(readOomKills(both)).toEqual({ kind: 'count', kills: 5 });
+
+    const localOnly = cgroup({ 'memory.events.local': 'oom_kill 2\n' });
+    expect(readOomKills(localOnly)).toEqual({ kind: 'count', kills: 2 });
+
+    // Neither file: the true root cgroup, which is what a machine outside a container has.
+    expect(readOomKills(cgroup({}))).toEqual({ kind: 'unavailable', why: 'absent' });
+  });
+
   it('detects v2 by cgroup.controllers and does not guess at a v1 layout', () => {
     const v2 = limitedCgroup();
     expect(cgroupV2Present(v2)).toBe(true);
@@ -132,6 +164,43 @@ describe('cgroup v2 parsers', () => {
     expect(readings.limit).toEqual({ kind: 'bytes', bytes: 107374182 });
     expect(readings.quota).toEqual({ kind: 'unavailable', why: 'unparseable' });
     expect(readings.usage).toEqual({ kind: 'unavailable', why: 'unparseable' });
+  });
+});
+
+describe('cpuRate', () => {
+  it('remembers nothing, which is what keeps the two consumers apart', () => {
+    // A pure function taking `previous` as an argument. The metrics sampler and the
+    // watchdog each hold their own previous sample and pass it in, so there is no
+    // module-level slot for either to overwrite — and two consumers sharing one would
+    // divide each other's deltas by the wrong interval, giving a number that is in range
+    // and wrong by the ratio of the cadences.
+    const previous = { usageUsec: 1_000_000, atMs: 0 };
+
+    // One second of CPU in one second of wall clock, inside a two-core quota: 50 %.
+    expect(cpuRate(previous, { usageUsec: 2_000_000, atMs: 1000 }, 2)).toEqual({
+      percentOfQuota: 50,
+      sampleWindowMs: 1000,
+    });
+    // The same delta over thirty seconds is a thirtieth of the percentage. Identical
+    // inputs but for the interval, which is the whole point.
+    expect(cpuRate(previous, { usageUsec: 2_000_000, atMs: 30_000 }, 2)).toEqual({
+      percentOfQuota: 1.67,
+      sampleWindowMs: 30_000,
+    });
+    // And the `× cores` term: one core of the same allowance doubles it.
+    expect(cpuRate(previous, { usageUsec: 2_000_000, atMs: 1000 }, 1).percentOfQuota).toBe(100);
+  });
+
+  it('answers null rather than a number for every case that is not a rate', () => {
+    const current = { usageUsec: 2_000_000, atMs: 1000 };
+    const none = { percentOfQuota: null, sampleWindowMs: null };
+    // No previous sample, no quota to be a percentage of, a quota of zero, a counter that
+    // went backwards (a recreated cgroup), and a clock that did not move.
+    expect(cpuRate(null, current, 2)).toEqual(none);
+    expect(cpuRate({ usageUsec: 0, atMs: 0 }, current, null)).toEqual(none);
+    expect(cpuRate({ usageUsec: 0, atMs: 0 }, current, 0)).toEqual(none);
+    expect(cpuRate({ usageUsec: 9_000_000, atMs: 0 }, current, 2)).toEqual(none);
+    expect(cpuRate({ usageUsec: 0, atMs: 1000 }, current, 2)).toEqual(none);
   });
 });
 

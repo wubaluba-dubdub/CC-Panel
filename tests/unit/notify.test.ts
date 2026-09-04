@@ -260,6 +260,51 @@ describe('the worker', () => {
     expect(auditEvents()).not.toContain(AuditEvent.NotificationAbandoned);
   });
 
+  it('honours a caller-supplied throttle window, for producers with no rule of their own', async () => {
+    // The audit-derived alerts are throttled by `notification-rules.ts`. The watchdog's
+    // OOM and unclean-restart alerts do not come through that path — nothing audit-shaped
+    // produces them — so they carry their own key and window. Without this a container
+    // that restarts every ten seconds enqueues one row per boot until the queue cap starts
+    // refusing the security alerts that would say why.
+    const notify = build();
+    const first = notify.notify(
+      { kind: 'test', at: '2026-01-01T00:00:00.000Z' },
+      { throttleKey: 'watchdog.thing', throttleMs: 60_000 },
+    );
+    expect(first).toMatchObject({ reason: 'queued' });
+
+    clock.advance(59_000);
+    const second = notify.notify(
+      { kind: 'test', at: '2026-01-01T00:00:59.000Z' },
+      { throttleKey: 'watchdog.thing', throttleMs: 60_000 },
+    );
+    expect(second).toEqual({ queued: null, reason: 'throttled' });
+    expect(rows()).toHaveLength(1);
+
+    // Past the window it queues again — and a *different* key was never affected, because
+    // a key is a bucket and not a global mute.
+    clock.advance(2000);
+    expect(
+      notify.notify(
+        { kind: 'test', at: '2026-01-01T00:01:01.000Z' },
+        { throttleKey: 'watchdog.thing', throttleMs: 60_000 },
+      ),
+    ).toMatchObject({ reason: 'queued' });
+    expect(
+      notify.notify(
+        { kind: 'test', at: '2026-01-01T00:01:01.000Z' },
+        { throttleKey: 'watchdog.other', throttleMs: 60_000 },
+      ),
+    ).toMatchObject({ reason: 'queued' });
+    expect(rows()).toHaveLength(3);
+
+    // And a key with no window is not throttled at all, which is every other caller.
+    for (let i = 0; i < 3; i += 1) {
+      notify.notify({ kind: 'test', at: '2026-01-01T00:01:01.000Z' }, { throttleKey: 'watchdog.thing' });
+    }
+    expect(rows()).toHaveLength(6);
+  });
+
   it('claims a row atomically, so two workers cannot both send it', async () => {
     const notify = build();
     notify.notify({ kind: 'test', at: '2026-01-01T00:00:00.000Z' });

@@ -63,6 +63,9 @@ export function makeTestEnv(overrides: EnvOverrides = {}): Env {
     PORT: 0,
     PANEL_NOTIFY_INCLUDE_LINKS: false,
     PANEL_NOTIFY_LOCALE: 'en',
+    PANEL_WATCHDOG_ENABLED: true,
+    PANEL_WATCHDOG_MEMORY_PERCENT: 85,
+    PANEL_WATCHDOG_DISK_PERCENT: 80,
     NODE_ENV: 'test',
   };
 
@@ -117,6 +120,18 @@ export interface CreateTestServerOptions {
     maxPending?: number;
     autoStart?: boolean;
   };
+  /**
+   * Watchdog seams. A separate `cgroupRoot` from `metrics` on purpose: a test that
+   * points both at one fixture is asserting that two independent consumers agree, and a
+   * single shared option would make that assertion vacuous.
+   */
+  watchdog?: {
+    cgroupRoot?: string;
+    cadenceMs?: number;
+    cooldownMs?: number;
+    startTimer?: StartTimer;
+    autoStart?: boolean;
+  };
   /** Reuse an existing data directory, to simulate a restart against the same volume. */
   dataDir?: string;
   /** Skip removing the data directory on cleanup, so a restart can reuse it. */
@@ -145,6 +160,7 @@ export async function createTestServer(
     ...(opts.rateLimit ? { rateLimit: opts.rateLimit } : {}),
     ...(opts.metrics ? { metrics: opts.metrics } : {}),
     ...(opts.notify ? { notify: opts.notify } : {}),
+    ...(opts.watchdog ? { watchdog: opts.watchdog } : {}),
   });
 
   // Routes must be added before the first inject(), which triggers ready().

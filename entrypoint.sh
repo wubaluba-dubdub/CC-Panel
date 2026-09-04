@@ -72,6 +72,7 @@ $DATA_DIR/projects
 $DATA_DIR/logs
 $DATA_DIR/exports
 $DATA_DIR/exports/incoming
+$DATA_DIR/run
 "
 
 # Files at the top level that the server must be able to write. They do not exist on
@@ -82,6 +83,7 @@ $DATA_DIR/panel.db
 $DATA_DIR/panel.db-wal
 $DATA_DIR/panel.db-shm
 $DATA_DIR/config/instance.json
+$DATA_DIR/run/panel.run
 "
 
 # Sets ownership on one path, but only if it is not already correct. The `stat` is

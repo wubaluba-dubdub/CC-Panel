@@ -72,6 +72,18 @@ export type UsageReading =
   | { kind: 'usec'; usec: number }
   | { kind: 'unavailable'; why: Unavailable };
 
+/**
+ * The cgroup's cumulative count of processes killed by the OOM killer.
+ *
+ * Cumulative, so like {@link UsageReading} one reading says nothing; the *increase*
+ * is the event. `unavailable` is a third state and not zero, because "this kernel
+ * does not expose the counter" and "nothing has been killed" call for opposite
+ * conclusions and only one of them is good news.
+ */
+export type OomReading =
+  | { kind: 'count'; kills: number }
+  | { kind: 'unavailable'; why: Unavailable };
+
 // ─── Primitive parsers, all total functions ──────────────────────────────────
 
 function readText(path: string): string | null {
@@ -143,6 +155,31 @@ export function parseCpuStat(text: string | null): UsageReading {
   return { kind: 'unavailable', why: 'unparseable' };
 }
 
+/**
+ * `/sys/fs/cgroup/memory.events`, of which only `oom_kill` is used.
+ *
+ * The kernel's own key names, so the panel and `cat` agree about what is being
+ * counted. `oom_kill` is the number of **processes** killed, not the number of
+ * events, so several agents dying in one reclaim failure moves it by more than one —
+ * which is worth reporting and is why the delta is carried into the message.
+ *
+ * Deliberately not `oom`: that counts the times usage was *about* to exceed the
+ * limit, which reclaim usually resolves, and alerting on it would report the panel
+ * working as designed.
+ */
+export function parseOomKills(text: string | null): OomReading {
+  if (text === null) return { kind: 'unavailable', why: 'absent' };
+  for (const line of text.split('\n')) {
+    const match = /^oom_kill\s+(\d+)$/.exec(line.trim());
+    if (match !== null) {
+      const kills = parseWholeNumber(match[1]!);
+      if (kills !== null) return { kind: 'count', kills };
+      return { kind: 'unavailable', why: 'unparseable' };
+    }
+  }
+  return { kind: 'unavailable', why: 'unparseable' };
+}
+
 // ─── cgroup v2 ───────────────────────────────────────────────────────────────
 
 /**
@@ -173,6 +210,30 @@ export function readCgroup(root: string = CGROUP_V2_ROOT): CgroupReadings {
     usage: parseCpuStat(readText(join(root, 'cpu.stat'))),
     quota: parseCpuMax(readText(join(root, 'cpu.max'))),
   };
+}
+
+/**
+ * The OOM-kill counter, hierarchical first and local second.
+ *
+ * `memory.events` counts kills in this cgroup **and its descendants**;
+ * `memory.events.local` counts only this cgroup. The hierarchical file is the one
+ * that answers the question the watchdog asks — *was anything in this container
+ * killed for memory* — because the panel's children are the interesting victims and
+ * a future build that gives each agent its own sub-cgroup would put them below this
+ * one rather than in it. `.local` is the fallback for a kernel that has one and not
+ * the other, never a second reading added to the first.
+ *
+ * Neither file exists on the **true** root cgroup, which is what a developer's
+ * machine outside a container has at `/sys/fs/cgroup`. Inside a container the cgroup
+ * namespace makes the container's own (non-root) cgroup appear as the root, so both
+ * files are there. That asymmetry is the reason `unavailable` is a named outcome
+ * rather than a zero.
+ */
+export function readOomKills(root: string = CGROUP_V2_ROOT): OomReading {
+  const hierarchical = parseOomKills(readText(join(root, 'memory.events')));
+  if (hierarchical.kind === 'count') return hierarchical;
+  const local = parseOomKills(readText(join(root, 'memory.events.local')));
+  return local.kind === 'count' ? local : hierarchical;
 }
 
 // ─── The volume ──────────────────────────────────────────────────────────────
@@ -286,6 +347,56 @@ export type MetricsSnapshot = MetricsResponse & {
   }[];
 };
 
+// ─── The CPU rate, as a pure function ────────────────────────────────────────
+
+/** One reading of the cumulative counter, and when it was taken. */
+export interface CpuSample {
+  readonly usageUsec: number;
+  readonly atMs: number;
+}
+
+export interface CpuRate {
+  /** Null when there is no previous sample, no quota, or the counter went backwards. */
+  readonly percentOfQuota: number | null;
+  /** The wall-clock window the percentage was computed over. Null with the percentage. */
+  readonly sampleWindowMs: number | null;
+}
+
+/**
+ * `Δusage_usec / (Δwall_µs × cores) × 100`, and **nothing is remembered here**.
+ *
+ * A pure function taking `previous` as an argument, which is the mechanism that keeps
+ * the two consumers of this module apart. {@link ResourceSampler} (poll-driven, 1000
+ * ms, disarmed after a minute of nobody looking) and the watchdog (always on, 30 s)
+ * each hold their **own** previous sample and pass it in. There is no module-level
+ * slot for either of them to overwrite: two consumers sharing one previous-sample
+ * slot would give each other's deltas the wrong interval, and the resulting
+ * percentage would be wrong in a way that looks entirely plausible — a number, in
+ * range, off by the ratio of the two cadences.
+ *
+ * The `× cores` term is the one that is easy to omit and it is wrong by exactly the
+ * core allowance: a process fully using one core inside a two-core quota is at 50 %,
+ * not 100 %. It is arithmetic in one place for the same reason.
+ */
+export function cpuRate(
+  previous: CpuSample | null,
+  current: CpuSample,
+  quotaCores: number | null,
+): CpuRate {
+  if (previous === null || quotaCores === null || quotaCores <= 0) {
+    return { percentOfQuota: null, sampleWindowMs: null };
+  }
+  const elapsedMs = current.atMs - previous.atMs;
+  const deltaUsec = current.usageUsec - previous.usageUsec;
+  // A counter that went backwards means the cgroup was recreated; a window of zero or
+  // less means the clock did not move. Neither is a percentage.
+  if (elapsedMs <= 0 || deltaUsec < 0) return { percentOfQuota: null, sampleWindowMs: null };
+  return {
+    sampleWindowMs: elapsedMs,
+    percentOfQuota: round2((deltaUsec / (elapsedMs * 1000 * quotaCores)) * 100),
+  };
+}
+
 /** How often the sampler refreshes while someone is polling. */
 export const SAMPLE_CADENCE_MS = 1000;
 
@@ -351,7 +462,7 @@ export class ResourceSampler {
   readonly #startTimer: StartTimer;
 
   #timer: TimerHandle | null = null;
-  #previous: { usageUsec: number; atMs: number } | null = null;
+  #previous: CpuSample | null = null;
   #latest: MetricsSnapshot | null = null;
   #lastRequestAt = 0;
   #samples = 0;
@@ -457,19 +568,13 @@ export class ResourceSampler {
         : null
       : hostBusyUsec();
 
-    let percentOfQuota: number | null = null;
-    let sampleWindowMs: number | null = null;
-    const previous = this.#previous;
-    if (usageUsec !== null && previous !== null && quotaCores !== null && quotaCores > 0) {
-      const elapsedMs = atMs - previous.atMs;
-      const deltaUsec = usageUsec - previous.usageUsec;
-      // A counter that went backwards means the cgroup was recreated; a window of zero
-      // or less means the clock did not move. Neither is a percentage.
-      if (elapsedMs > 0 && deltaUsec >= 0) {
-        sampleWindowMs = elapsedMs;
-        percentOfQuota = round2((deltaUsec / (elapsedMs * 1000 * quotaCores)) * 100);
-      }
-    }
+    // `#previous` is this sampler's own slot, and the arithmetic is the shared pure
+    // function above precisely so it cannot become anybody else's.
+    const rate =
+      usageUsec === null
+        ? { percentOfQuota: null, sampleWindowMs: null }
+        : cpuRate(this.#previous, { usageUsec, atMs }, quotaCores);
+    const { percentOfQuota, sampleWindowMs } = rate;
     if (usageUsec !== null) this.#previous = { usageUsec, atMs };
 
     return {

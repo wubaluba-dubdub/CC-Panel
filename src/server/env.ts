@@ -48,6 +48,16 @@ const envSchema = z.object({
   // Which language notifications are rendered in. The one place the server holds a
   // locale, because a Telegram message has no client to render it.
   PANEL_NOTIFY_LOCALE: z.enum(['en', 'fa']).optional(),
+  // The always-on resource watcher. On by default: the panel could already report a
+  // failed login and not the thing that actually kills it. Off is for a development box
+  // where a nearly-full disk would queue alerts nobody configured a transport for.
+  PANEL_WATCHDOG_ENABLED: z.string().optional(),
+  // The alert thresholds, as whole percentages. One per rule, because the clear
+  // threshold is derived from it (HYSTERESIS_POINTS in services/resource-alerts.ts) —
+  // an operator who could set both could set the clear threshold above the alert one,
+  // which is not a hysteresis band but a machine that alternates on every sample.
+  PANEL_WATCHDOG_MEMORY_PERCENT: z.string().optional(),
+  PANEL_WATCHDOG_DISK_PERCENT: z.string().optional(),
   NODE_ENV: z.string().optional(),
 });
 
@@ -67,7 +77,27 @@ export interface Env {
   PANEL_OUTBOUND_PROXY?: string;
   PANEL_NOTIFY_INCLUDE_LINKS: boolean;
   PANEL_NOTIFY_LOCALE: 'en' | 'fa';
+  PANEL_WATCHDOG_ENABLED: boolean;
+  /** Whole percentage, clamped to 10–99 by `clampPercent`. */
+  PANEL_WATCHDOG_MEMORY_PERCENT: number;
+  PANEL_WATCHDOG_DISK_PERCENT: number;
   NODE_ENV: string;
+}
+
+/**
+ * A whole percentage, or a boot failure naming the variable.
+ *
+ * Not a silent fallback to the default: a typo in a threshold is the kind of mistake
+ * that produces a panel which looks configured and never alerts, and the only place it
+ * would ever be noticed is the incident it failed to report.
+ */
+function parsePercent(name: string, raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.length === 0) return fallback;
+  const value = Number(raw.trim());
+  if (!Number.isInteger(value) || value < 1 || value > 100) {
+    throw new Error(`${name} must be a whole percentage between 1 and 100 (got "${raw}")`);
+  }
+  return value;
 }
 
 /**
@@ -133,6 +163,20 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     PANEL_NOTIFY_INCLUDE_LINKS:
       raw.PANEL_NOTIFY_INCLUDE_LINKS === 'true' || raw.PANEL_NOTIFY_INCLUDE_LINKS === '1',
     PANEL_NOTIFY_LOCALE: raw.PANEL_NOTIFY_LOCALE ?? 'en',
+    PANEL_WATCHDOG_ENABLED:
+      raw.PANEL_WATCHDOG_ENABLED === undefined
+        ? true
+        : raw.PANEL_WATCHDOG_ENABLED === 'true' || raw.PANEL_WATCHDOG_ENABLED === '1',
+    PANEL_WATCHDOG_MEMORY_PERCENT: parsePercent(
+      'PANEL_WATCHDOG_MEMORY_PERCENT',
+      raw.PANEL_WATCHDOG_MEMORY_PERCENT,
+      85,
+    ),
+    PANEL_WATCHDOG_DISK_PERCENT: parsePercent(
+      'PANEL_WATCHDOG_DISK_PERCENT',
+      raw.PANEL_WATCHDOG_DISK_PERCENT,
+      80,
+    ),
     NODE_ENV: raw.NODE_ENV ?? 'development',
   };
 

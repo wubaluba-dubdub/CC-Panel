@@ -116,6 +116,24 @@ export const NOTIFICATION_RULES = {
   [AuditEvent.NotificationSent]: null,
   [AuditEvent.NotificationAbandoned]: null,
   [AuditEvent.NotificationDropped]: null,
+  // ── The watchdog's four, and they are silent *here* rather than unnotified ────
+  //
+  // Each of these already reaches the operator, and by a better route: the watchdog
+  // enqueues its own typed event with the numbers in it. A rule here would turn the
+  // audit row into a `security_alert`, whose shape is a headline plus a time — so the
+  // operator would get "memory crossed a threshold" and *not* "940 MB of 1 GB, the
+  // threshold is 85 %", which is the entire content. Worse, they would get both.
+  //
+  // So the row is written for the log, which is where "when did this start happening"
+  // is answered, and the message is enqueued directly. This is the one place in the
+  // map where `null` means "notified elsewhere" rather than "not worth notifying", and
+  // it is spelled out because a future reader deciding whether to add a rule here
+  // would otherwise be looking at four of the most alert-worthy events in the panel
+  // marked silent.
+  [AuditEvent.ResourceThresholdCrossed]: null,
+  [AuditEvent.ResourceThresholdCleared]: null,
+  [AuditEvent.ResourceOomKill]: null,
+  [AuditEvent.UncleanRestart]: null,
 } satisfies Record<AuditEventName, AlertRule | null>;
 
 /**

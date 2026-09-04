@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ensureDataLayout } from '../../src/server/app.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const read = (name: string): string => readFileSync(join(ROOT, name), 'utf-8');
@@ -91,30 +93,49 @@ describe('entrypoint.sh', () => {
   });
 
   it('prepares exactly the directories the server expects, and no fewer', () => {
-    // Derived from app.ts rather than repeated. `ensureDataLayout` is the authority on
-    // the layout; the entrypoint's job is to have made all of it writable first.
-    const app = read('src/server/app.ts');
-    const layout = /export function ensureDataLayout[\s\S]*?\n}/.exec(app);
-    expect(layout, 'ensureDataLayout was renamed or removed').not.toBeNull();
+    // **Derived by running `ensureDataLayout`, not by reading its source.** It used to
+    // be a regex over the function body, which meant a directory named by a constant
+    // rather than by a string literal — `join(dataDir, RUN_DIR)` — extracted the
+    // identifier and matched nothing in the entrypoint. The property worth asserting is
+    // "the entrypoint prepares every directory the server actually creates", and the
+    // only authority on that is the function.
+    const probe = mkdtempSync(join(tmpdir(), 'panel-layout-'));
+    try {
+      ensureDataLayout(probe);
+      const found: string[] = [];
+      const walk = (dir: string, prefix: string): void => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          const relative = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+          found.push(relative);
+          walk(join(dir, entry.name), relative);
+        }
+      };
+      walk(probe, '');
 
-    const expected = [
-      ...layout![0].matchAll(/join\(dataDir,\s*([^)]*)\)/g),
-    ].map((m) => m[1]!.split(',').map((part) => part.trim().replace(/^['"]|['"]$/g, '')).join('/'));
-    expect(expected).toEqual([
-      'home',
-      'config',
-      'global/claude-home',
-      'projects',
-      'logs',
-      // M2.4's export/import staging, created in M1.7 because the ownership pass runs
-      // from this explicit list: a directory the server creates and the entrypoint
-      // does not know about is a root-owned directory on a live volume.
-      'exports',
-      'exports/incoming',
-    ]);
+      expect(found.sort()).toEqual(
+        [
+          'home',
+          'config',
+          'global',
+          'global/claude-home',
+          'projects',
+          'logs',
+          // M2.4's export/import staging, created in M1.7 because the ownership pass runs
+          // from an explicit list: a directory the server creates and the entrypoint
+          // does not know about is a root-owned directory on a live volume.
+          'exports',
+          'exports/incoming',
+          // M1.8's run marker, for the same reason.
+          'run',
+        ].sort(),
+      );
 
-    for (const dir of expected) {
-      expect(entrypoint, dir).toContain(`$DATA_DIR/${dir}`);
+      for (const dir of found) {
+        expect(entrypoint, dir).toContain(`$DATA_DIR/${dir}`);
+      }
+    } finally {
+      rmSync(probe, { recursive: true, force: true });
     }
     // The top level itself, and `global` on its own — the entrypoint lists the
     // intermediate directory explicitly because `mkdir -p` creates it with root's

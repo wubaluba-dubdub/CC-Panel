@@ -67,6 +67,34 @@ export const AuditEvent = {
    * still be working when everything else is not.
    */
   NotificationDropped: 'notification.dropped',
+  /**
+   * A resource crossed its alert threshold, or came back below the clear threshold.
+   *
+   * Written by the watchdog, on the **crossing** and not on the level, so a volume
+   * that has been 92 % full for a week is one row and not one every thirty seconds.
+   * The pair matters: a log that recorded the crossing and never the return leaves a
+   * reader with the same ambiguous silence the notification design exists to avoid.
+   */
+  ResourceThresholdCrossed: 'resource.threshold_crossed',
+  ResourceThresholdCleared: 'resource.threshold_cleared',
+  /**
+   * The cgroup's `oom_kill` counter went up: something in this container was killed
+   * for memory.
+   *
+   * Almost always a **child** — an agent, a build, a git subprocess — because a kill
+   * that takes the panel cannot be recorded by the panel. That case appears in the
+   * log as {@link AuditEvent.UncleanRestart} on the next boot instead.
+   */
+  ResourceOomKill: 'resource.oom_kill',
+  /**
+   * The previous run left its marker behind, so it was not given the chance to shut
+   * down or did not take it.
+   *
+   * Deliberately not called a crash. A container killed for memory, a platform
+   * redeploy whose graceful shutdown overran the grace period, and a genuine crash
+   * are the same evidence from in here — a marker that is still there.
+   */
+  UncleanRestart: 'panel.unclean_restart',
 } as const;
 
 export type AuditEventName = (typeof AuditEvent)[keyof typeof AuditEvent];

@@ -12,7 +12,10 @@ build is `tsc -p tsconfig.build.json` and there is no client to bundle until M2)
 added instead. M1.6 added the deployment artefacts this tree never listed
 (`entrypoint.sh`, `.gitattributes`, `src/server/cli/*`, `docs/DEPLOY.md`) alongside
 the `Dockerfile` and `railway.json` it did. M1.7's files are listed in its own
-design section below.
+design section below, and M1.8's under §*Built in M1.8*
+(`services/watchdog.service.ts`, `services/resource-alerts.ts`,
+`migrations/010_watchdog.sql`, `tests/unit/resource-alerts.test.ts`,
+`tests/unit/watchdog.test.ts`, `tests/integration/watchdog.test.ts`).
 
 ```
 .
@@ -258,7 +261,8 @@ second, competing design for anything already specified.
 The M2.0 design left open questions; these are the answers, recorded here rather than in
 the milestone prose so that the set can be checked off. Each is tagged with the milestone
 that builds it. **Only the M1.7-tagged ones are built** as of `feat(m1.7): telegram
-notifications`; the rest are decided and waiting.
+notifications`; the rest are decided and waiting. The M1.8 decisions continue the numbering
+in their own dated subsection below.
 
 1. **Export defaults to including workspace files (M2.4).** A project without its files is
    not the project, and an operator who wanted the metadata alone can uncheck it. The dry
@@ -345,7 +349,47 @@ And two that are settled rather than open:
     `worker-src` to the CSP to make an editor work.**
 12. **Migration numbering: M1.7 took `009`.** It landed first. M2.2's projects table takes
     the next number, and the rule is the obvious one — a migration number is claimed by the
-    commit that lands, never reserved by a plan.
+    commit that lands, never reserved by a plan. *M1.8 then took `010`* by the same rule, so
+    **M2.2's projects table is `011`**.
+
+### Decisions taken in M1.8 (2026-09-05)
+
+Numbered on from the list above so the whole set stays checkable. 13–15 are built here;
+16–18 are recorded and deliberately not built.
+
+13. **The threshold alerts get M1.8 rather than waiting for M2.7 (M1.8).** The argument that
+    decided it: the panel could already tell the operator about a failed login and not about
+    the thing that actually stops it. Built with one addition the design did not have —
+    unclean-restart detection, which is the only way an OOM kill that takes the whole
+    container becomes visible at all. See §*Built in M1.8*.
+14. **`MAX_ATTEMPTS` 12 → 15 (M1.8).** A little over two and a half hours of trying instead
+    of a little over two, at the same 15-minute ceiling. The figure is stated in three places
+    — the constant, the test that pins the ladder, and this document — and all three move
+    together.
+15. **`PANEL_OUTBOUND_PROXY` stays unset in production, and `preflight` now says so
+    (M1.8).** Telegram puts the bot token in the request **path**, so every hop between the
+    panel and Telegram sees every token the panel will ever send. The boot warning only fired
+    for a *non-loopback* hop; preflight now warns whenever the variable is set at all in
+    production, because a loopback proxy is still another process in the same container
+    reading the same URLs, and the boot log is not where an operator looks before deploying.
+16. **`PANEL_NOTIFY_LOCALE` and `PANEL_NOTIFY_INCLUDE_LINKS` become runtime settings in
+    M2.5, with the environment variable as the initial default (M2.5).** A settings screen
+    that displays two values it cannot change is worse than one that does not show them.
+    Both are read once at construction today (`app.ts` passes `locale` and `linkFor` into
+    `NotifyService`), so M2.5's work is to make them a stored setting the constructor falls
+    back to the variable for — not a new mechanism.
+17. **The dead-channel banner in M2.5 is based on the age of the last successful send
+    (M2.5).** Not on queue depth and the last failure alone. Three states have to look
+    different: a channel that has never worked, a channel that stopped working, and a queue
+    that is empty because nothing was enqueued — and only the age of the last success
+    separates the third from healthy. `NotifyService.lastSuccessAt()` and `lastFailure()`
+    already exist for it; the banner is the interpretation.
+18. **`PANEL_NOTIFY_LOCALE=fa` on Railway (M1.8, configuration only).** The operator reads
+    Telegram in Persian. The better secondary reason is that it gets the `fa` dictionary
+    exercised against a real client's bidirectional rendering **before** M2.1 is built on top
+    of it — the panel's own bidi rules are designed and unproven, and a chat window is the
+    cheapest place to find out that a Latin-digit island reads wrong in a right-to-left line.
+    This is an environment variable on the deployment, not a code change.
 
 ## Milestone Order
 
@@ -1312,6 +1356,72 @@ each deliberately.
    already happened — is likewise not read yet, and it is the first thing that watcher
    needs.
 
+### Built in M1.8 — the watcher, and the five places it departs from the design above
+
+The threshold alerts exist as of `feat(m1.8): the resource watchdog`. Everything above this
+line is the reasoning and still stands; these five things are different in the code, each
+deliberately.
+
+1. **No sustained-CPU rule.** The table above has one (90 % sustained 60 s, clearing at
+   70 %) and it is not built. An agent waiting on a model response is *idle*, so CPU is not
+   this panel's binding constraint — the row three sections down under *The binding limits
+   are memory and the upstream API, not CPU* says exactly that — and a busy agent at 95 % is
+   the product working. An alert nobody can act on is what teaches an operator to ignore the
+   channel that also carries "someone signed in". The figure is still measured, because it
+   is what says what the panel was doing when it died: the run marker carries it and the
+   unclean-restart message reads it. **If a CPU rule is ever added it needs the sustain
+   window, not just the threshold** — that is the term that makes it mean anything.
+2. **The clear threshold is derived, not configured.** The design gives two numbers per
+   rule; the code takes one (`PANEL_WATCHDOG_MEMORY_PERCENT`, `PANEL_WATCHDOG_DISK_PERCENT`)
+   and derives the other ten points lower. Two settable numbers can be set the wrong way
+   round, and `clear` above `alert` is not a hysteresis band but a machine that alternates on
+   every sample. The shipped defaults are the design's 85/75 and 80/70 exactly.
+3. **Hysteresis is not the whole answer, so there is also a cooldown and an `alerted`
+   flag.** The band stops chatter *on the boundary*; a workload genuinely swinging through
+   the whole band would still alert on every cycle, so one alert per rule per thirty minutes.
+   The consequence needed a decision: a crossing whose alert the cooldown swallowed must not
+   produce a recovery either, because a "back to normal" for something the operator was
+   never told about is a message about nothing. So `alerted` is tracked separately from the
+   crossing state, and the property is **every alert that was sent gets a recovery, and
+   nothing else does**.
+4. **Disk is `(total - available) / total`.** The design says "80 %" without saying of what.
+   `available` is `bavail` — the field M2.4's import cap already reads — and the question the
+   alert answers is whether the panel can still *write*, for which a block reserved for root
+   is not space it has. On a filesystem with a reserve this reads a few points higher than
+   `df` for an unprivileged user, which is the conservative direction and is deliberate.
+5. **Unclean-restart detection, which is not in the design at all.** The `oom_kill` counter
+   can only see a kill the panel *survived*; a kill that takes the container cannot be
+   reported by the process that died, and on Railway the restarted container's counter is
+   back at zero with `memory.current` looking healthy. So `/data/run/panel.run` is written at
+   boot, rewritten with a fresh `lastSeenAt` and the last memory reading every tick, and
+   removed by the `onClose` hook — which both signal handlers go through. Present at boot
+   means the previous run was not given the chance to shut down, or did not take it.
+
+   **What it can and cannot distinguish, because the wording depends on it.** Railway,
+   `docker stop` and a local Ctrl-C all send SIGTERM, and the panel has handlers, so a normal
+   redeploy is clean and a SIGKILL is not. What it cannot separate is a container killed for
+   memory from a redeploy whose graceful shutdown overran the platform's grace period — both
+   are a SIGKILL and both leave the marker. So the message says *did not shut down cleanly*
+   and never *crashed*, and it carries the previous run's last memory reading, which is what
+   lets the operator tell which it probably was. For this operator that alert is the only way
+   an OOM kill on Railway becomes visible at all.
+
+   A file rather than a row, for two reasons that are not style: its *absence* is the signal,
+   so it must be readable by a boot that has not opened the database yet — and the crashes
+   most worth detecting are exactly the ones that can involve the database or the volume. It
+   is also one ~200-byte write every thirty seconds instead of a dirtied page, which is the
+   same objection that keeps a write probe out of `/healthz`.
+
+**Independence from the metrics sampler, which is the one thing that had to be right.** The
+two consumers call the same reading functions and share no mutable state: every reader is a
+pure function of a path, and the CPU rate is `cpuRate(previous, current, quotaCores)`, which
+takes the previous sample as an **argument** and remembers nothing. The failure this rules
+out is not a crash — one shared slot would make each consumer divide its delta by the other's
+interval, and at 1000 ms against 30 000 ms the result is wrong by a factor of thirty while
+remaining a plausible number on a dashboard. `tests/unit/watchdog.test.ts` and
+`tests/integration/watchdog.test.ts` both point the two at *one* fixture cgroup and assert
+they still disagree about the interval, so the assertion is not vacuous.
+
 **The client's poll budget, for M2.1.** Two seconds visible, thirty seconds hidden
 (`document.visibilityState`), and nothing at all when the tab is closed. Two seconds is
 30 requests a minute against a session bucket that refills 240 a minute and holds 120, so
@@ -1884,8 +1994,14 @@ Specified in [`docs/PORTABILITY.md`](docs/PORTABILITY.md).
 #### M2.7 — the resource widget
 
 The server side is already designed under
-[Resource usage](#resource-usage--the-server-side-design); M2.7 is the widget over it, plus
-the crossing-alert state machine feeding M1.7. Every figure in it is a `dir="ltr"` island with
+[Resource usage](#resource-usage--the-server-side-design); M2.7 is the widget over it. **The
+crossing-alert state machine is no longer part of this milestone** — it was built in M1.8,
+because a poll-driven sampler cannot observe a crossing while nobody is polling and the
+panel could otherwise report a failed login and not an OOM kill. What M2.7 inherits is
+`Watchdog.status()`: whether each rule is *armed*, its thresholds, its current state, and the
+OOM counter. Showing "memory alerting: disabled — this container has no memory limit" is part
+of the widget, not a footnote: a rule with no denominator is disabled rather than healthy, and
+the boot log and `npm run preflight` are the only places that say so today. Every figure in it is a `dir="ltr"` island with
 `formatTechnical`, and a `null` limit renders as a used-only figure with no bar — which is the
 requirement that section exists for.
 **Commit:** `feat(m2.7): resource widget`

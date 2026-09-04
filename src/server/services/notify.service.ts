@@ -196,11 +196,27 @@ export class NotifyService {
    */
   notify(
     event: NotifyEvent,
-    opts: { locale?: NotifyLocale; throttleKey?: string } = {},
+    opts: { locale?: NotifyLocale; throttleKey?: string; throttleMs?: number } = {},
   ): EnqueueResult {
     assertNoSecrets(event);
     const clean = mapEventStrings(event, this.#scrub);
     const now = this.#clock.now();
+
+    // The caller's own throttle, for producers that do not come through
+    // `observeAudit` — the watchdog's OOM and unclean-restart alerts, both of which a
+    // crash-looping container would otherwise enqueue every few seconds until the
+    // queue cap started refusing security alerts to make room for them. Its absence
+    // is the unthrottled behaviour every other caller already has, and
+    // `EnqueueResult.reason` has carried a `'throttled'` variant since M1.7 for
+    // exactly this.
+    if (
+      opts.throttleKey !== undefined &&
+      opts.throttleMs !== undefined &&
+      opts.throttleMs > 0 &&
+      this.#throttled(opts.throttleKey, opts.throttleMs, now)
+    ) {
+      return { queued: null, reason: 'throttled' };
+    }
 
     if (this.#pendingCount() >= this.#maxPending) return this.#drop();
 
@@ -306,6 +322,17 @@ export class NotifyService {
       });
     }
     return { queued: null, reason: 'dropped' };
+  }
+
+  /**
+   * Whether a row for this bucket is newer than the window.
+   *
+   * Reads the queue rather than an in-memory tally, so a restart does not reset the
+   * window — which matters most for the one alert a crash loop produces on every boot.
+   */
+  #throttled(key: string, windowMs: number, nowMs: number): boolean {
+    const previous = this.#lastThrottled(key);
+    return previous !== null && nowMs - Date.parse(previous) < windowMs;
   }
 
   #lastThrottled(key: string): string | null {
