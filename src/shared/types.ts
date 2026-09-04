@@ -195,6 +195,49 @@ export interface MetricsResponse {
   }[];
 }
 
+/**
+ * `GET /api/notifications/telegram`.
+ *
+ * **Neither credential appears here in any form, not even a masked one.** `mask()` keeps
+ * the last four characters, which is harmless for a 46-character bot token and is not
+ * harmless for a nine-digit chat id — four digits of a stable identifier for the
+ * operator's Telegram account, in a response that can be read again and again. Set or
+ * not set, and a length, which is what `npm run preflight` reports for every credential
+ * and for the same reason: it catches a truncated paste and a variable that never
+ * arrived, and reveals nothing else.
+ */
+export interface NotificationStatusResponse {
+  configured: boolean;
+  botToken: { set: boolean; length: number | null };
+  chatId: { set: boolean; length: number | null };
+  /** Whether a message may end with a deep link carrying the base path. */
+  includeLinks: boolean;
+  locale: 'en' | 'fa';
+  queue: { pending: number; sending: number; sent: number; abandoned: number };
+  /** Events refused because the queue was full, since it last drained. */
+  dropped: { count: number; since: string | null };
+  lastSuccessAt: string | null;
+  /** A category and a time. Never Telegram's own text, which echoes what was sent. */
+  lastFailure: { at: string; category: string } | null;
+}
+
+/** `POST /api/notifications/test` — `202`, because delivery is never synchronous. */
+export interface NotificationQueuedResponse {
+  queued: number;
+}
+
+/** `GET /api/notifications/queue/:id`. */
+export interface NotificationQueueRowResponse {
+  id: number;
+  kind: 'turn_complete' | 'resource_alert' | 'security_alert' | 'test';
+  state: 'pending' | 'sending' | 'sent' | 'abandoned';
+  attempts: number;
+  createdAt: string;
+  nextAttemptAt: string;
+  lastError: string | null;
+  sentAt: string | null;
+}
+
 /** Every error response in the application. Nothing else is ever returned. */
 export interface ErrorResponse {
   error: string;

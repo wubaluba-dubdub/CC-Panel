@@ -15,13 +15,25 @@ import {
   requireValidOriginAndHost,
 } from './plugins/origin-check.js';
 import { RateLimiter } from './plugins/rate-limit.js';
-import { createRedactedLogger } from './plugins/logger-redaction.js';
+import {
+  createBasePathElider,
+  createRedactedLogger,
+  redactSecrets,
+} from './plugins/logger-redaction.js';
 import apiRoutes from './routes/api.js';
 import healthzRoutes, { createHealthProbe, shippedMigrationCount } from './routes/healthz.js';
 import { createAuthRuntime, type AuthRuntime } from './services/auth-runtime.js';
+import {
+  NotifyService,
+  type ScheduleTimer,
+  type NotifyServiceOptions,
+} from './services/notify.service.js';
 import { ResourceSampler, type StartTimer } from './services/resources.service.js';
+import { readTelegramCredentials } from './services/telegram-config.js';
+import { TelegramTransport, type NotificationTransport } from './services/telegram.transport.js';
 import { seedAdminUser } from './services/user.service.js';
 import type { Clock, Sleep } from './utils/clock.js';
+import { proxyBootWarning } from './utils/outbound-http.js';
 import { resolvePublicOrigin, type PublicOrigin } from './utils/public-origin.js';
 
 /**
@@ -56,6 +68,8 @@ declare module 'fastify' {
     publicOrigin: PublicOrigin;
     /** The resource sampler behind `GET /api/metrics`. */
     metrics: ResourceSampler;
+    /** The notification queue and its worker. */
+    notify: NotifyService;
   }
 }
 
@@ -100,6 +114,22 @@ export interface ServerConfig {
     cadenceMs?: number;
     idleMs?: number;
     startTimer?: StartTimer;
+  };
+  /**
+   * Test seams for notifications. The suite points the Telegram transport at a local
+   * fake server (so the assertions are about the bytes that left the process, not about
+   * a mock's recorded arguments), drives the worker by hand, and pins the backoff jitter.
+   * Production passes none of it.
+   */
+  notify?: {
+    telegramBaseUrl?: string;
+    transport?: NotificationTransport;
+    startTimer?: ScheduleTimer;
+    random?: () => number;
+    maxAttempts?: number;
+    maxPending?: number;
+    /** Start the real timer chain even under vitest. Off by default, for a reason. */
+    autoStart?: boolean;
   };
 }
 
@@ -219,12 +249,17 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   // never reaches a log line with the real prefix in it.
   // Typed as FastifyServerOptions so passing a concrete pino instance does not
   // narrow the instance's logger generic away from FastifyBaseLogger.
+  // `PANEL_OUTBOUND_PROXY` joins the base path as a literal to elide. It can carry
+  // `user:password@host` credentials, no pattern would recognise it, and the errors it
+  // turns up in are written by libraries rather than by us — which is exactly the shape
+  // `SecretString` cannot help with.
+  const elide = env.PANEL_OUTBOUND_PROXY === undefined ? [] : [env.PANEL_OUTBOUND_PROXY];
   const loggerOptions: FastifyServerOptions =
     config.logTarget !== undefined
-      ? { loggerInstance: createRedactedLogger({ basePath, target: config.logTarget }) }
+      ? { loggerInstance: createRedactedLogger({ basePath, elide, target: config.logTarget }) }
       : isTestEnv
         ? { logger: false }
-        : { loggerInstance: createRedactedLogger({ basePath }) };
+        : { loggerInstance: createRedactedLogger({ basePath, elide }) };
 
   const app = Fastify({
     ...loggerOptions,
@@ -256,14 +291,89 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
     ...(config.metrics ?? {}),
   });
 
+  // ── Notifications ──────────────────────────────────────────────────────────
+  //
+  // The transport reads the credentials itself, immediately before each request and
+  // never into anything that outlives the call, because the bot token is a path segment
+  // of the URL it builds. `sanitise` is the egress pass: the event's strings were
+  // already scrubbed when the row was written, and this is the same scrub applied to the
+  // finished body at the last possible moment — this is the first door in the project
+  // that leads outside the machine, and both sides of it are worth guarding.
+  //
+  // **The base-path half of that pass is exactly `PANEL_NOTIFY_INCLUDE_LINKS`, and this
+  // is where the milestone's two rules meet.** "Elide the base path from every outbound
+  // body" and "a message may end with a deep link into the panel" cannot both hold
+  // literally: the link *is* the base path, and eliding it produces
+  // `https://panel.example.com/<base>/projects/…`, a URL that 404s — the setting turned
+  // on and silently broken. So with links **off**, which is the default, the prefix
+  // cannot leave through this door at all, belt and braces over the elision already done
+  // at enqueue. With links **on**, the operator has said in one deliberate setting that
+  // the prefix may go into a Telegram message, and eliding an accidental copy of a value
+  // that is deliberately in the same body would protect nothing. Pattern-based credential
+  // redaction applies either way, in both cases.
+  const elideBasePath = createBasePathElider(basePath);
+  const sanitiseOutbound = env.PANEL_NOTIFY_INCLUDE_LINKS
+    ? (text: string): string => redactSecrets(text)
+    : (text: string): string => elideBasePath(redactSecrets(text));
+
+  const transport: NotificationTransport =
+    config.notify?.transport ??
+    new TelegramTransport({
+      credentials: () => readTelegramCredentials(runtime.secrets),
+      sanitise: sanitiseOutbound,
+      ...(env.PANEL_OUTBOUND_PROXY !== undefined ? { proxyUrl: env.PANEL_OUTBOUND_PROXY } : {}),
+      ...(config.notify?.telegramBaseUrl !== undefined
+        ? { baseUrl: config.notify.telegramBaseUrl }
+        : {}),
+      log: (event) => {
+        if (!isTestEnv) app.log.info(event, event.message);
+      },
+    });
+
+  const notifyOptions: NotifyServiceOptions = {
+    transport,
+    audit: runtime.audit,
+    db: runtime.db,
+    clock: runtime.clock,
+    basePath,
+    locale: env.PANEL_NOTIFY_LOCALE,
+    log: (event) => {
+      if (!isTestEnv) app.log.info(event, event.message);
+    },
+    ...(config.notify?.startTimer ? { startTimer: config.notify.startTimer } : {}),
+    ...(config.notify?.random ? { random: config.notify.random } : {}),
+    ...(config.notify?.maxAttempts !== undefined ? { maxAttempts: config.notify.maxAttempts } : {}),
+    ...(config.notify?.maxPending !== undefined ? { maxPending: config.notify.maxPending } : {}),
+    // Off by default, and the setting says why in one sentence: the link contains the
+    // base path, and anyone who can read that chat can reach the login page.
+    ...(env.PANEL_NOTIFY_INCLUDE_LINKS
+      ? { linkFor: (projectId: string) => `${origin.origin}/${basePath}/projects/${projectId}` }
+      : {}),
+  };
+  const notify = new NotifyService(notifyOptions);
+
+  // One subscriber, set once. `notification-rules.ts` decides which events become a
+  // message; nothing here does.
+  runtime.audit.setObserver((record) => notify.observeAudit(record));
+
   app.decorate('basePath', basePath);
   app.decorate('auth', runtime);
   app.decorate('publicOrigin', origin);
   app.decorate('metrics', metrics);
+  app.decorate('notify', notify);
 
   // Chain any audit row written before migration 008 existed, so `verify()` fails
   // only for tampering and not for history. No-op on every boot after the first.
   runtime.audit.initChain();
+
+  // Rebind any secret still carrying migration 009's predecessor AAD. In code and not
+  // in the migration, because re-encryption needs the master key and a migration is
+  // SQL. No-op on every install that has never written a secret, which is all of them
+  // until the first `PUT /api/secrets`.
+  const upgraded = runtime.secrets.upgradeLegacyPayloads();
+  if (upgraded.upgraded > 0 && !isTestEnv) {
+    app.log.info({ upgraded: upgraded.upgraded }, 'rebound stored secrets to the (scope, name) AAD');
+  }
 
   const limiter = new RateLimiter({
     basePath,
@@ -387,7 +497,28 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
 
   // ── Base path scoped routes ────────────────────────────────────────────────
   await app.register(basePathPlugin, { basePath, rateLimit: limiter.anonymousOnly() });
-  await app.register(apiRoutes, { runtime, limiter, metrics, prefix: `/${basePath}` });
+  await app.register(apiRoutes, {
+    runtime,
+    limiter,
+    metrics,
+    notify,
+    prefix: `/${basePath}`,
+  });
+
+  // ── The notification worker ────────────────────────────────────────────────
+  //
+  // Reclaim first, then arm. A row left `sending` by a crash is reclaimed rather than
+  // stranded, which risks a duplicate message and never a lost one — for a notification
+  // that is the right way round.
+  //
+  // Not armed under vitest unless a test asks: the suite builds hundreds of servers and
+  // drives `tick()` by hand, and a real timer chain in each of them would be a
+  // background job racing a database the test is about to delete.
+  notify.sweepStale();
+  if (!isTestEnv || config.notify?.autoStart === true) notify.start();
+
+  const proxyWarning = proxyBootWarning(env.PANEL_OUTBOUND_PROXY, env.NODE_ENV);
+  if (proxyWarning !== null && !isTestEnv) app.log.warn(proxyWarning);
 
 
   // ── Graceful shutdown ──────────────────────────────────────────────────────
@@ -411,6 +542,7 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
     // A sampler armed by the last request would otherwise keep ticking against a
     // closed database and a deleted data directory for a minute after every test.
     metrics.stop();
+    notify.stop();
     done();
   });
 

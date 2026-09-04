@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { initDb, closeDb, getDb } from '../../src/server/db.js';
+import { initDb, closeDb, getDb, migrationFiles } from '../../src/server/db.js';
 
 describe('Migration runner', () => {
   let dataDir: string | null = null;
@@ -51,7 +51,11 @@ describe('Migration runner', () => {
       .all()
       .map((r) => (r as { version: number }).version);
 
-    expect(migrations).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    // Derived from the files on disk rather than a literal: a hard-coded list means
+    // every migration after this one starts by editing a test that is not about it,
+    // and the property worth asserting is "every shipped migration is recorded", not
+    // "there are exactly eight of them".
+    expect(migrations).toEqual(migrationFiles().map((m) => m.version));
   });
 
   it('is idempotent — running twice does not fail', () => {
@@ -64,6 +68,6 @@ describe('Migration runner', () => {
     initDb(dbPath);
     const db = getDb();
     const count = db.prepare('SELECT COUNT(*) as c FROM schema_migrations').get() as { c: number };
-    expect(count.c).toBe(8);
+    expect(count.c).toBe(migrationFiles().length);
   });
 });

@@ -3,10 +3,12 @@ import { attachSession } from '../plugins/auth.js';
 import { requireCsrfToken } from '../plugins/csrf.js';
 import type { RateLimiter } from '../plugins/rate-limit.js';
 import type { AuthRuntime } from '../services/auth-runtime.js';
+import type { NotifyService } from '../services/notify.service.js';
 import type { ResourceSampler } from '../services/resources.service.js';
 import auditRoutes from './audit.js';
 import authRoutes from './auth.js';
 import metricsRoutes from './metrics.js';
+import notificationRoutes from './notifications.js';
 import securityRoutes from './security.js';
 import sessionRoutes from './sessions.js';
 
@@ -24,6 +26,7 @@ export default async function apiRoutes(
     runtime: AuthRuntime;
     limiter: RateLimiter;
     metrics: ResourceSampler;
+    notify: NotifyService;
   },
 ): Promise<void> {
   const { runtime, limiter } = opts;
@@ -69,4 +72,5 @@ export default async function apiRoutes(
   await app.register(securityRoutes, { runtime });
   await app.register(auditRoutes, { runtime });
   await app.register(metricsRoutes, { metrics: opts.metrics });
+  await app.register(notificationRoutes, { runtime, notify: opts.notify });
 }

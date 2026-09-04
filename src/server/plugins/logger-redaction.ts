@@ -146,8 +146,42 @@ export interface LoggerRedactionOptions {
    * log line and from the `req` serialiser's `url`.
    */
   readonly basePath?: string;
+  /**
+   * Extra literal values to elide from every log line, whatever they look like.
+   *
+   * For a secret this process knows at boot and no pattern would recognise. The one
+   * caller today is `PANEL_OUTBOUND_PROXY`, which may carry `user:password@host`
+   * credentials and would otherwise be a plain string in whatever error a failed
+   * dispatch produces. Values shorter than {@link MIN_ELIDABLE_LENGTH} are ignored: a
+   * four-character literal would match unrelated text in half the lines and the result
+   * would be unreadable rather than redacted.
+   */
+  readonly elide?: readonly string[];
   /** Where scrubbed lines go. Defaults to `process.stdout`. */
   readonly target?: { write(chunk: string): void };
+}
+
+/** Below this length an elided literal does more damage than the leak it prevents. */
+export const MIN_ELIDABLE_LENGTH = 8;
+
+/**
+ * One function that applies the base-path elision and every extra literal.
+ *
+ * Built as a chain rather than one alternating pattern so each value keeps its own
+ * placeholder: the base path reads as `<base>` (a shape worth grepping for) and a
+ * credential reads as `[redacted]` (a value that should not be there at all).
+ */
+function createEliderChain(opts: LoggerRedactionOptions): (text: string) => string {
+  const steps: ((text: string) => string)[] = [];
+  if (opts.basePath !== undefined && opts.basePath.length > 0) {
+    steps.push(createBasePathElider(opts.basePath));
+  }
+  for (const value of opts.elide ?? []) {
+    if (value.length < MIN_ELIDABLE_LENGTH) continue;
+    steps.push(createBasePathElider(value, REDACTED));
+  }
+  if (steps.length === 0) return IDENTITY;
+  return (text: string): string => steps.reduce((acc, step) => step(acc), text);
 }
 
 /**
@@ -167,12 +201,11 @@ export function createRedactingDestination(
   opts: LoggerRedactionOptions = {},
 ): { write(chunk: string): void } {
   const target = opts.target ?? process.stdout;
-  const elideBasePath =
-    opts.basePath === undefined ? IDENTITY : createBasePathElider(opts.basePath);
+  const elide = createEliderChain(opts);
 
   return {
     write(chunk: string): void {
-      target.write(elideBasePath(redactSecrets(chunk)));
+      target.write(elide(redactSecrets(chunk)));
     },
   };
 }

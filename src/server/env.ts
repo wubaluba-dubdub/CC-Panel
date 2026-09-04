@@ -32,6 +32,22 @@ const envSchema = z.object({
   // Set to '1' by the Dockerfile. A fact the image asserts about itself, rather than
   // something inferred from the filesystem.
   PANEL_IN_CONTAINER: z.string().optional(),
+  // Where outbound notification requests are dispatched through. An environment
+  // variable and not a stored secret: it belongs in the platform's variable store
+  // beside PANEL_MASTER_KEY, it is read once at boot, and a panel that cannot reach
+  // its own database has no business decrypting a proxy URL to find out why. It may
+  // carry credentials, so it is never printed and never logged — `app.ts` hands it to
+  // the redacting log destination as a literal to elide, and `preflight` reports it as
+  // set or not set.
+  PANEL_OUTBOUND_PROXY: z.string().optional(),
+  // Whether a notification may end with a deep link into the panel. Off by default,
+  // because the link contains the base path, and a Telegram message is permanent
+  // storage the panel does not control — synced to every device the operator has ever
+  // signed in from.
+  PANEL_NOTIFY_INCLUDE_LINKS: z.string().optional(),
+  // Which language notifications are rendered in. The one place the server holds a
+  // locale, because a Telegram message has no client to render it.
+  PANEL_NOTIFY_LOCALE: z.enum(['en', 'fa']).optional(),
   NODE_ENV: z.string().optional(),
 });
 
@@ -47,6 +63,10 @@ export interface Env {
   PORT: number;
   PANEL_LISTEN_HOST?: string;
   PANEL_IN_CONTAINER?: string;
+  /** Never log this value. See the schema comment. */
+  PANEL_OUTBOUND_PROXY?: string;
+  PANEL_NOTIFY_INCLUDE_LINKS: boolean;
+  PANEL_NOTIFY_LOCALE: 'en' | 'fa';
   NODE_ENV: string;
 }
 
@@ -90,11 +110,29 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
 
   const dataDir = raw.PANEL_DATA_DIR ?? '/data';
 
+  // Parsed here so a malformed proxy URL is a boot failure with a clear message rather
+  // than an `ECONNREFUSED` from the first notification, half an hour later, in a code
+  // path nobody is watching. The value itself is not echoed into the error.
+  if (raw.PANEL_OUTBOUND_PROXY !== undefined && raw.PANEL_OUTBOUND_PROXY.length > 0) {
+    let parsed: URL;
+    try {
+      parsed = new URL(raw.PANEL_OUTBOUND_PROXY);
+    } catch {
+      throw new Error('PANEL_OUTBOUND_PROXY is not a valid URL');
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error('PANEL_OUTBOUND_PROXY must be an http:// or https:// URL');
+    }
+  }
+
   const result: Env = {
     PANEL_MASTER_KEY: raw.PANEL_MASTER_KEY,
     PANEL_TRUST_PROXY: trustProxy,
     PANEL_DATA_DIR: dataDir,
     PORT: port,
+    PANEL_NOTIFY_INCLUDE_LINKS:
+      raw.PANEL_NOTIFY_INCLUDE_LINKS === 'true' || raw.PANEL_NOTIFY_INCLUDE_LINKS === '1',
+    PANEL_NOTIFY_LOCALE: raw.PANEL_NOTIFY_LOCALE ?? 'en',
     NODE_ENV: raw.NODE_ENV ?? 'development',
   };
 
@@ -118,6 +156,9 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   }
   if (raw.PANEL_IN_CONTAINER !== undefined) {
     result.PANEL_IN_CONTAINER = raw.PANEL_IN_CONTAINER;
+  }
+  if (raw.PANEL_OUTBOUND_PROXY !== undefined && raw.PANEL_OUTBOUND_PROXY.length > 0) {
+    result.PANEL_OUTBOUND_PROXY = raw.PANEL_OUTBOUND_PROXY;
   }
 
   return result;

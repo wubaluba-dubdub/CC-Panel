@@ -189,6 +189,9 @@ Service → **Variables**. Add these, exactly.
 | `PANEL_LISTEN_HOST` | `0.0.0.0` in the container | Do not set it. Loopback here means Railway's edge cannot reach the service while the logs still say the server is listening. |
 | `NODE_ENV` | `production` | Baked into the image. Do not override it: outside production the panel accepts loopback origins and does not send HSTS. |
 | `PANEL_IN_CONTAINER` | `1` | Set by the `Dockerfile`; a fact the image asserts about itself so the listen host does not have to be guessed. Never set it by hand, and never set it to anything else. |
+| `PANEL_OUTBOUND_PROXY` | unset | An `http://` or `https://` proxy for the panel's **outbound** requests — today only Telegram. Leave it unset on Railway, which can reach `api.telegram.org` directly. Set it for local work from a country that cannot. It may carry `user:password@host`, so it is never printed: `preflight` reports it as set or not set, and it is elided from every log line. A malformed value is a boot failure with a clear message rather than a connection error half an hour later. |
+| `PANEL_NOTIFY_INCLUDE_LINKS` | `false` | Whether a notification may end with a deep link into the panel. **Leave it off unless you have read [the consequence](#notifications-telegram).** |
+| `PANEL_NOTIFY_LOCALE` | `en` | `en` or `fa`. The language notifications are written in — the one place the server holds a locale, because a Telegram message has no browser to render it. |
 
 ---
 
@@ -478,6 +481,99 @@ node -e "console.log(require('crypto').randomBytes(16).toString('base64url').sli
 The session cookie is scoped to `Path=/<basePath>`, so rotating it makes every existing
 cookie unattachable — which is a logout for every session, including yours. That is the
 correct behaviour and worth knowing before you do it mid-task.
+
+---
+
+## Notifications (Telegram)
+
+Optional, and off until you configure it. The panel queues an event, a single worker
+delivers it, and **nothing in a request path ever waits on Telegram** — so a wrong token
+or a blocked network slows nothing down and loses nothing: the queue keeps the events and
+drains when the configuration works.
+
+### 1. Make a bot and find your chat id
+
+1. In Telegram, message **@BotFather**, send `/newbot`, and follow it. You get a token
+   that looks like `123456789:AA...` — that is a **credential**, and it stops working the
+   moment you press `/revoke`.
+2. Find your new bot and **press Start**. This step is not optional and is the one people
+   miss: *a bot cannot message someone who has not messaged it first.*
+3. Store the token, then ask the panel to find the chat:
+
+```bash
+node dist/server/cli/telegram-set.js         # prompts for the token, then the chat id
+node dist/server/cli/telegram-discover.js    # lists the chats that have messaged the bot
+```
+
+`telegram-set` reads each value from a **prompt or a pipe, never from the command line** —
+an argument would be in your shell history and in the process list. Run it with only the
+token first, take the chat id from `telegram-discover`, then run it again to store that.
+
+Locally, the same three commands are `npm run telegram:set`, `npm run telegram:test` and
+`npm run telegram:discover`.
+
+### 2. Send a test message
+
+```bash
+node dist/server/cli/telegram-test.js
+```
+
+It reports **which stage** succeeded — credentials present, Telegram reachable, Telegram
+accepted the token, message queued, message delivered — because those failures need
+completely different fixes.
+
+> ### A failure from your own machine is expected, and does not mean the token is wrong
+>
+> `api.telegram.org` is unreachable from some countries, including this operator's. From a
+> local container with no proxy, `telegram-test` will report **"could not reach Telegram at
+> all"** — which is a *network* result and looks nothing like "Telegram answered and
+> refused us", which is what a wrong token produces. The command distinguishes them on
+> purpose. Set `PANEL_OUTBOUND_PROXY` for local testing; on Railway it works without one.
+
+### 3. What it sends, and what it never sends
+
+- **Plain text.** No Markdown, no HTML, and that is a decision rather than a limitation: a
+  single unescaped `_` or `[` in a report makes Telegram reject the whole message with
+  `can't parse entities`, and a Claude Code report is made of exactly those characters.
+- Above **4096 characters** the message is truncated at a character boundary with a marker
+  line, and the full text follows as a `.txt` attachment. The attachment is a second
+  request and is allowed to fail on its own — you keep the readable part.
+- **Never a credential, and never the base path.** Every event is redacted and the base
+  path elided *before the row is written*, so neither is in the queue table either, and
+  the outbound body is scrubbed again on its way out.
+- **The audit log records that a notification was sent, never what it said.**
+
+### The link setting, and the one sentence that matters
+
+`PANEL_NOTIFY_INCLUDE_LINKS=true` makes a message end with a link straight to the panel.
+That link contains your **base path**.
+
+> **Anyone who can read that chat can reach your login page.** A Telegram message is
+> permanent storage that the panel does not control: it lives on Telegram's servers, syncs
+> to every device you have ever signed in from, and is readable by anyone who gets at your
+> phone or your account. If you turn this on and later suspect your Telegram account, treat
+> the base path as disclosed and [rotate it](#rotating-the-base-path).
+
+Off is the default. There is no middle setting, deliberately: a link without the base path
+is a URL that 404s, and a short-lived signed link would be a second way into the panel that
+starts from a chat message.
+
+### Rotating the token
+
+Like every other stored credential: `npm run telegram:set` again, or
+`PUT /api/secrets` with `{"scope":"telegram","name":"bot_token"}` — which needs a
+**step-up** (password plus a fresh code within five minutes), the same as writing any
+secret. Sending a test message needs only a full session: it discloses nothing.
+
+### When delivery keeps failing
+
+`GET /api/notifications/telegram` reports the queue: pending, sent, abandoned, the time of
+the last success, and the **category** of the last failure — never Telegram's own message,
+because those echo back what was sent. A row retries with exponential backoff (1 s
+doubling to a 15-minute ceiling, jittered) and after **12 attempts** becomes a dead letter
+that stays in the table: "the panel tried to tell you and could not" is itself information.
+An unconfigured panel is the one exception — those rows wait and never dead-letter, so
+configuring it later drains the backlog.
 
 ---
 

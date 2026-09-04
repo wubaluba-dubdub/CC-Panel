@@ -6,6 +6,7 @@ import { closeDb } from '../../src/server/db.js';
 import type { Env } from '../../src/server/env.js';
 import type { Clock, Sleep } from '../../src/server/utils/clock.js';
 import type { StartTimer } from '../../src/server/services/resources.service.js';
+import type { ScheduleTimer } from '../../src/server/services/notify.service.js';
 import type { FastifyInstance } from 'fastify';
 
 export interface TestContext {
@@ -60,6 +61,8 @@ export function makeTestEnv(overrides: EnvOverrides = {}): Env {
     PANEL_TRUST_PROXY: true,
     PANEL_DATA_DIR: dataDir,
     PORT: 0,
+    PANEL_NOTIFY_INCLUDE_LINKS: false,
+    PANEL_NOTIFY_LOCALE: 'en',
     NODE_ENV: 'test',
   };
 
@@ -102,6 +105,18 @@ export interface CreateTestServerOptions {
     idleMs?: number;
     startTimer?: StartTimer;
   };
+  /**
+   * Notification seams: point the Telegram transport at a local fake server, drive the
+   * worker by hand, pin the jitter. The suite never talks to Telegram.
+   */
+  notify?: {
+    telegramBaseUrl?: string;
+    startTimer?: ScheduleTimer;
+    random?: () => number;
+    maxAttempts?: number;
+    maxPending?: number;
+    autoStart?: boolean;
+  };
   /** Reuse an existing data directory, to simulate a restart against the same volume. */
   dataDir?: string;
   /** Skip removing the data directory on cleanup, so a restart can reuse it. */
@@ -129,6 +144,7 @@ export async function createTestServer(
       : {}),
     ...(opts.rateLimit ? { rateLimit: opts.rateLimit } : {}),
     ...(opts.metrics ? { metrics: opts.metrics } : {}),
+    ...(opts.notify ? { notify: opts.notify } : {}),
   });
 
   // Routes must be added before the first inject(), which triggers ready().

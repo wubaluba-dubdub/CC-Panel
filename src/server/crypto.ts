@@ -90,7 +90,35 @@ export function deriveSubkey(info: string): Buffer {
 
 // ─── Encryption ──────────────────────────────────────────────────────────────
 
-const PAYLOAD_VERSION = 'v1';
+/**
+ * The payload envelope versions this module knows.
+ *
+ * Both are the same bytes on the wire — `<version>.<nonce>.<ciphertext>.<tag>` — and
+ * the version does not describe the *format*. It describes **which AAD the payload was
+ * written under**, which is the one thing a reader cannot work out for itself and must
+ * not guess at:
+ *
+ * - `v1` — `secrets:<rowId>:payload`, the row-id form M1.3 shipped. Binds a ciphertext
+ *   to the row it was written into, so it cannot be moved between rows. It does *not*
+ *   bind the row's logical identity: an attacker with write access to `panel.db` can
+ *   rename a row's `scope`/`name` and the ciphertext still decrypts.
+ * - `v2` — `secrets:<scope>:<name>`, and strictly stronger given `UNIQUE (scope, name)`
+ *   in migration 006, because at most one row can hold a given pair. Applied to the
+ *   Telegram credentials that difference is not theoretical: swap the `bot_token` and
+ *   `chat_id` labels under `v1` and the panel puts the bot token into the `chat_id`
+ *   query parameter of an outbound request. Telegram rejects it, and the token has
+ *   still left the building.
+ *
+ * The version prefix exists precisely so this could be changed once without guessing,
+ * and {@link decryptToBuffer} still rejects anything it does not know. **New callers
+ * should pass `'v2'`;** the default stays `v1` so the two existing row-bound users
+ * (`users.totp_secret_encrypted` and any secret written before migration 009) keep
+ * their meaning without a per-call-site audit.
+ */
+export const PAYLOAD_VERSIONS = ['v1', 'v2'] as const;
+export type PayloadVersion = (typeof PAYLOAD_VERSIONS)[number];
+
+const PAYLOAD_VERSION: PayloadVersion = 'v1';
 const NONCE_BYTES = 12; // 96-bit, the GCM-recommended size
 const TAG_BYTES = 16; // 128-bit authentication tag
 const ALGORITHM = 'aes-256-gcm';
@@ -143,7 +171,11 @@ export function columnAad(table: string, rowId: string | number, column: string)
  * each part base64url. A fresh 96-bit nonce is drawn for every call, so the same
  * plaintext never produces the same payload twice.
  */
-export function encrypt(plaintext: string | Buffer, aad: string): string {
+export function encrypt(
+  plaintext: string | Buffer,
+  aad: string,
+  version: PayloadVersion = PAYLOAD_VERSION,
+): string {
   const key = deriveSubkey(KeyPurpose.SecretColumn);
   const nonce = randomBytes(NONCE_BYTES);
   const cipher = createCipheriv(ALGORITHM, key, nonce, { authTagLength: TAG_BYTES });
@@ -154,7 +186,7 @@ export function encrypt(plaintext: string | Buffer, aad: string): string {
   const tag = cipher.getAuthTag();
 
   return [
-    PAYLOAD_VERSION,
+    version,
     nonce.toString('base64url'),
     ciphertext.toString('base64url'),
     tag.toString('base64url'),
@@ -171,7 +203,7 @@ export function decryptToBuffer(payload: string, aad: string): Buffer {
   const [version, nonceB64, ciphertextB64, tagB64] = parts as [string, string, string, string];
 
   // Reject unknown versions outright rather than guessing at the layout.
-  if (version !== PAYLOAD_VERSION) {
+  if (!isPayloadVersion(version)) {
     throw new PayloadFormatError(`unknown payload version: ${JSON.stringify(version)}`);
   }
 
@@ -198,6 +230,25 @@ export function decryptToBuffer(payload: string, aad: string): Buffer {
     // learn which of the inputs was wrong.
     throw new DecryptionError();
   }
+}
+
+function isPayloadVersion(value: string): value is PayloadVersion {
+  return (PAYLOAD_VERSIONS as readonly string[]).includes(value);
+}
+
+/**
+ * Which AAD scheme a stored payload was written under.
+ *
+ * Read *before* the AAD is built, because the version is what says how to build it.
+ * Throws for anything this module does not recognise, so a caller cannot fall back to
+ * a guess — the same stance as {@link decryptToBuffer}.
+ */
+export function payloadVersionOf(payload: string): PayloadVersion {
+  const version = payload.split('.', 1)[0] ?? '';
+  if (!isPayloadVersion(version)) {
+    throw new PayloadFormatError(`unknown payload version: ${JSON.stringify(version)}`);
+  }
+  return version;
 }
 
 /** Decrypts a payload produced by {@link encrypt}, returning UTF-8 text. */

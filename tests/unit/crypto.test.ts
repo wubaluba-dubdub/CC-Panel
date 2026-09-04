@@ -159,7 +159,10 @@ describe('encrypt / decrypt', () => {
     const payload = encrypt('value', AAD);
     const parts = payload.split('.');
 
-    for (const version of ['v0', 'v2', 'v11', 'V1', '1', '']) {
+    // `v2` is no longer in this list: migration 009 introduced it for the
+    // `(scope, name)`-bound secrets AAD. The list is every spelling that is still not a
+    // version, including the two that look like one.
+    for (const version of ['v0', 'v3', 'v11', 'V1', '1', '']) {
       const forged = [version, ...parts.slice(1)].join('.');
       expect(() => decrypt(forged, AAD), version).toThrow(PayloadFormatError);
     }

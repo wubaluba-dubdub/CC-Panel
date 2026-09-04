@@ -62,6 +62,10 @@ export const sessionIdParams = z.object({
   id: z.coerce.number().int().positive(),
 });
 
+export const queueIdParams = z.object({
+  id: z.coerce.number().int().positive(),
+});
+
 /**
  * The audit query string.
  *

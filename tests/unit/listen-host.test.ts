@@ -26,6 +26,8 @@ const BASE_ENV: Env = {
   PANEL_TRUST_PROXY: true,
   PANEL_DATA_DIR: '/tmp/panel-listen-host-unused',
   PORT: 3000,
+  PANEL_NOTIFY_INCLUDE_LINKS: false,
+  PANEL_NOTIFY_LOCALE: 'en',
   NODE_ENV: 'development',
 };
 

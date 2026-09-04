@@ -46,6 +46,27 @@ export const AuditEvent = {
    * throttled, and carrying the path and method — never the cookie.
    */
   OriginAbsentAdmitted: 'origin.absent_admitted',
+  /**
+   * A queued notification reached its destination. Records the queue row, the kind and
+   * how many attempts it took — **never the message body**, which is a rendered event
+   * and would put in the audit log exactly what the queue table already holds.
+   */
+  NotificationSent: 'notification.sent',
+  /**
+   * A queued notification was given up on after the attempt cap.
+   *
+   * The row stays in `notification_queue` as well: "the panel tried to tell you and
+   * could not" is itself information, and the queue is the only place it exists.
+   */
+  NotificationAbandoned: 'notification.abandoned',
+  /**
+   * The queue was at its cap and an event was refused.
+   *
+   * Written once per fill, not once per refusal — a flood that fills the queue would
+   * otherwise flood the audit log behind it, and the audit log is the thing that must
+   * still be working when everything else is not.
+   */
+  NotificationDropped: 'notification.dropped',
 } as const;
 
 export type AuditEventName = (typeof AuditEvent)[keyof typeof AuditEvent];
@@ -248,6 +269,17 @@ export interface AuditServiceOptions {
   trimCheckEvery?: number;
 }
 
+/**
+ * Told about every row after it is committed.
+ *
+ * The one subscriber is `NotifyService`, which turns some events into a message on the
+ * operator's phone. An observer rather than a call in each route, so
+ * `notification-rules.ts` stays the single answer to "what does this panel tell me
+ * about?" — and an observer rather than a dependency, so the audit log has no idea a
+ * notification layer exists and cannot be broken by one.
+ */
+export type AuditObserver = (record: AuditRecord) => void;
+
 export class AuditService {
   readonly #db: Database;
   readonly #clock: Clock;
@@ -255,6 +287,7 @@ export class AuditService {
   readonly #maxRows: number;
   readonly #trimCheckEvery: number;
   #sinceTrimCheck: number;
+  #observer: AuditObserver | null = null;
 
   constructor(opts: AuditServiceOptions = {}) {
     this.#db = opts.db ?? getDb();
@@ -266,6 +299,16 @@ export class AuditService {
     // Check on the first write of the process, so a cap lowered by configuration
     // takes effect at boot rather than after another 64 events.
     this.#sinceTrimCheck = this.#trimCheckEvery;
+  }
+
+  /**
+   * Registers the one observer. Later calls replace it.
+   *
+   * Set at boot, after the notification service exists. Nothing else in the application
+   * uses it, and nothing should: an observer that writes rows would recurse.
+   */
+  setObserver(observer: AuditObserver | null): void {
+    this.#observer = observer;
   }
 
   /**
@@ -358,7 +401,21 @@ export class AuditService {
       return id;
     });
 
-    return txn();
+    const id = txn();
+
+    // **After the commit, and never able to break it.** An observer that threw inside
+    // the transaction would roll back an audit row because a notification could not be
+    // queued, which is exactly the wrong way round: the log is the thing that must
+    // survive. `NotifyService.observeAudit` guards its own body as well; this is the belt.
+    if (this.#observer !== null) {
+      try {
+        this.#observer(this.#toRecord({ ...row, id }));
+      } catch {
+        // Deliberately swallowed. The observer's own logging is its business.
+      }
+    }
+
+    return id;
   }
 
   write(entry: AuditEntry): void {

@@ -87,7 +87,7 @@ export function createAuthRuntime(opts: AuthRuntimeOptions): AuthRuntime {
     recovery: new RecoveryCodesService({ db, clock }),
     delay: new AuthDelayService({ db, clock, sleep }),
     audit: new AuditService({ db, clock, basePath: opts.basePath }),
-    secrets: new SecretsRepository(db),
+    secrets: new SecretsRepository({ db, clock }),
     gate: new SingleFlight(opts.queueLimit ?? 1),
   };
 }

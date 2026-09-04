@@ -17,6 +17,9 @@
     "preflight": "node --env-file-if-exists=.env node_modules/tsx/dist/cli.mjs src/server/cli/preflight.ts",
     "backup": "node --env-file-if-exists=.env node_modules/tsx/dist/cli.mjs src/server/cli/backup.ts",
     "restore": "node --env-file-if-exists=.env node_modules/tsx/dist/cli.mjs src/server/cli/restore.ts",
+    "telegram:set": "node --env-file-if-exists=.env node_modules/tsx/dist/cli.mjs src/server/cli/telegram-set.ts",
+    "telegram:test": "node --env-file-if-exists=.env node_modules/tsx/dist/cli.mjs src/server/cli/telegram-test.ts",
+    "telegram:discover": "node --env-file-if-exists=.env node_modules/tsx/dist/cli.mjs src/server/cli/telegram-discover.ts",
     "acceptance": "bash scripts/acceptance.sh"
   },
   "dependencies": {
@@ -31,6 +34,7 @@
     "pino": "^9.6.0",
     "pino-pretty": "^11.3.0",
     "qrcode": "^1.5.0",
+    "undici": "^7.16.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {

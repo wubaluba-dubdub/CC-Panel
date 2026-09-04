@@ -7,7 +7,10 @@ import { loadEnv, type Env } from '../env.js';
 import { appliedMigrations, migrationFiles } from '../db.js';
 import { cookieProfileFor } from '../plugins/cookies.js';
 import { AuditService } from '../services/audit.service.js';
+import { SecretsRepository } from '../services/secrets.service.js';
+import { telegramConfigStatus } from '../services/telegram-config.js';
 import { listenHostFor } from '../utils/listen-host.js';
+import { proxyBootWarning } from '../utils/outbound-http.js';
 import { resolvePublicOrigin } from '../utils/public-origin.js';
 import { MIN_PASSWORD_LENGTH, WEAK_PASSWORDS } from '../utils/weak-passwords.js';
 import { Report, describeSecret } from './report.js';
@@ -184,6 +187,27 @@ export function runPreflight(opts: PreflightOptions = {}): PreflightResult {
     }
   }
 
+  // ── Notifications ──────────────────────────────────────────────────────────
+  report.section('Notifications (no value is printed)');
+  // A proxy URL is a credential under this command's rule: it can carry
+  // `user:password@host`, so it gets the same set-or-not-set-and-a-length treatment as
+  // the master key rather than being echoed for convenience.
+  report.info('PANEL_OUTBOUND_PROXY', describeSecret(raw.PANEL_OUTBOUND_PROXY));
+  const proxyWarning = proxyBootWarning(raw.PANEL_OUTBOUND_PROXY, nodeEnv);
+  if (proxyWarning !== null) report.warn('outbound proxy is loopback or unset', proxyWarning);
+
+  const includeLinks =
+    raw.PANEL_NOTIFY_INCLUDE_LINKS === 'true' || raw.PANEL_NOTIFY_INCLUDE_LINKS === '1';
+  report.info('PANEL_NOTIFY_LOCALE', raw.PANEL_NOTIFY_LOCALE ?? 'en (default)');
+  if (includeLinks) {
+    report.warn(
+      'PANEL_NOTIFY_INCLUDE_LINKS is off',
+      'it is on, so every notification ends with a link containing the base path. Anyone who can read that chat can reach your login page, and Telegram stores the message permanently',
+    );
+  } else {
+    report.pass('PANEL_NOTIFY_INCLUDE_LINKS', 'off — no notification carries the base path');
+  }
+
   // ── The base path, described and never printed ─────────────────────────────
   report.section('Base path (value never printed)');
   const dataDir = env?.PANEL_DATA_DIR ?? raw.PANEL_DATA_DIR ?? '/data';
@@ -308,6 +332,29 @@ export function runPreflight(opts: PreflightOptions = {}): PreflightResult {
         if (masterKey !== undefined && Buffer.from(masterKey, 'base64').length >= 32) {
           try {
             initCrypto(masterKey);
+
+            // The Telegram pair, through the same repository the server uses, so this
+            // also proves the stored payloads decrypt under this key. Set or not set and
+            // a length — never `mask()`, which would reveal four of the nine digits of a
+            // chat id every time anyone ran this command.
+            try {
+              const telegram = telegramConfigStatus(new SecretsRepository({ db }));
+              const describePresence = (presence: { set: boolean; length: number | null }): string =>
+                presence.set ? `set, ${presence.length} characters` : 'not set';
+              report.info('telegram bot token', describePresence(telegram.botToken));
+              report.info('telegram chat id', describePresence(telegram.chatId));
+              if (telegram.botToken.set !== telegram.chatId.set) {
+                report.warn(
+                  'telegram configuration is complete',
+                  'one of the two values is missing, so notifications queue and never deliver. Run telegram:set',
+                );
+              }
+            } catch (err) {
+              report.fail(
+                'stored secrets decrypt',
+                err instanceof Error ? err.message : String(err),
+              );
+            }
             const verification = new AuditService({ db }).verify();
             if (verification.ok) {
               report.pass('audit chain verifies', `${verification.checked} rows`);

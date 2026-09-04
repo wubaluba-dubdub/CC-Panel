@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { closeDb, getDb, initDb } from '../../src/server/db.js';
+import { closeDb, getDb, initDb, migrationFiles } from '../../src/server/db.js';
 import {
   DecryptionError,
   SecretString,
@@ -72,7 +72,8 @@ describe('SecretsRepository', () => {
     };
 
     expect(row.payload).not.toContain(plaintext);
-    expect(row.payload).toMatch(/^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    // `v2` since migration 009: the version says which AAD the payload is bound to.
+    expect(row.payload).toMatch(/^v2\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
   });
 
   it('overwrites in place, keeping the row id', () => {
@@ -165,17 +166,70 @@ describe('SecretsRepository', () => {
     expect(new SecretsRepository().has('global', 'token')).toBe(true);
   });
 
-  it('uses the row id in the AAD, matching the documented format', () => {
-    const meta = repo.set('global', 'token', 'value');
-    const payload = (
-      getDb().prepare('SELECT payload FROM secrets WHERE id = ?').get(meta.id) as {
-        payload: string;
-      }
-    ).payload;
+  it('binds the payload to (scope, name), matching the documented AAD', () => {
+    repo.set('telegram', 'bot_token', 'value');
 
-    expect(decrypt(payload, `secrets:${meta.id}:payload`)).toBe('value');
+    // Proven by decrypting with the AAD spelled out by hand, rather than by asking the
+    // repository to agree with itself. This is the pair PLAN.md fixes for the Telegram
+    // credentials, and it is the reason the scheme changed: under the row-id AAD an
+    // attacker with write access to panel.db could swap the `bot_token` and `chat_id`
+    // labels and the panel would put the token in a `chat_id` query parameter.
+    expect(decrypt(payloadOf('bot_token'), 'secrets:telegram:bot_token')).toBe('value');
+  });
+
+  it('rejects a name containing a colon, so the AAD stays injective', () => {
+    // Without this rule `('project:7', 'x')` and `('project', '7:x')` would produce the
+    // same AAD — a payload written for one readable as the other. `columnAad` refuses a
+    // colon in the column, and `name` is the column, so the collision is impossible
+    // rather than merely unlikely. A scope may contain colons: project scopes are
+    // `project:<uuid>`, and with a colon-free name the last colon always separates them.
+    expect(() => repo.set('project', '7:x', 'value')).toThrow(/must not contain/);
+    expect(() => repo.set('project:7', 'x', 'value')).not.toThrow();
+    expect(repo.get('project:7', 'x')!.reveal()).toBe('value');
+  });
+
+  it('still reads a v1 row written under the old row-id AAD', () => {
+    // The row M1.3 would have written: `v1` payload, `secrets:<id>:payload` AAD.
+    const meta = repo.set('global', 'legacy', 'placeholder');
+    getDb()
+      .prepare('UPDATE secrets SET payload = ? WHERE id = ?')
+      .run(encrypt('legacy-value', columnAad('secrets', meta.id, 'payload'), 'v1'), meta.id);
+
+    expect(repo.get('global', 'legacy')!.reveal()).toBe('legacy-value');
+  });
+
+  it('upgrades a v1 row to v2 in place, and is a no-op the second time', () => {
+    const meta = repo.set('global', 'legacy', 'placeholder');
+    getDb()
+      .prepare('UPDATE secrets SET payload = ? WHERE id = ?')
+      .run(encrypt('legacy-value', columnAad('secrets', meta.id, 'payload'), 'v1'), meta.id);
+
+    expect(repo.upgradeLegacyPayloads()).toEqual({ upgraded: 1 });
+    expect(payloadOf('legacy').startsWith('v2.')).toBe(true);
+    // The value is untouched, and it is now bound to the pair.
+    expect(repo.get('global', 'legacy')!.reveal()).toBe('legacy-value');
+    expect(decrypt(payloadOf('legacy'), 'secrets:global:legacy')).toBe('legacy-value');
+    // Idempotent: every boot after the first has nothing to do.
+    expect(repo.upgradeLegacyPayloads()).toEqual({ upgraded: 0 });
+  });
+
+  it('writes both timestamps as ISO-8601 with an explicit Z', () => {
+    // `datetime('now')` writes `YYYY-MM-DD HH:MM:SS`, which a browser reads as *local*
+    // time — so these two columns, served raw, were the one place in the panel whose
+    // times were wrong, by exactly this operator's +03:30. A Jalali calendar would have
+    // hidden it rather than revealed it.
+    const meta = repo.set('global', 'token', 'value');
+    expect(meta.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    expect(meta.updatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
   });
 });
+
+/** One row's stored payload, by name. */
+function payloadOf(name: string): string {
+  return (
+    getDb().prepare('SELECT payload FROM secrets WHERE name = ?').get(name) as { payload: string }
+  ).payload;
+}
 
 describe('migration 006', () => {
   it('leaves the secrets table with a single versioned payload column', () => {
@@ -193,6 +247,6 @@ describe('migration 006', () => {
       .prepare('SELECT version FROM schema_migrations ORDER BY version')
       .all() as { version: number }[];
 
-    expect(applied.map((r) => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(applied.map((r) => r.version)).toEqual(migrationFiles().map((m) => m.version));
   });
 });

@@ -92,6 +92,9 @@ const EXPECTED_ROUTE_TREE =
   '        ├── api/secrets (GET, HEAD, PUT)\n' +
   '        │   └── /reveal (POST)\n' +
   '        ├── api/metrics (GET, HEAD)\n' +
+  '        ├── api/notifications/telegram (GET, HEAD)\n' +
+  '        ├── api/notifications/test (POST)\n' +
+  '        ├── api/notifications/queue/:id (GET, HEAD)\n' +
   '        └── __throw (GET, HEAD)\n';
 
 /**
@@ -212,9 +215,11 @@ describe('M1.3 — sentinel leak sweep', () => {
         `/${BASE}/`,
         `/${BASE}/bootstrap.js`,
         `/${BASE}/__throw`,
-        // Answers 401 without a session. In the sweep because a route that rejects is
+        // Answer 401 without a session. In the sweep because a route that rejects is
         // still a route that writes a body, and the sentinels are fed in as input below.
         `/${BASE}/api/metrics`,
+        `/${BASE}/api/notifications/telegram`,
+        `/${BASE}/api/notifications/queue/1`,
         `/${BASE}/does-not-exist`,
         '/',
         '/outside-the-base-path',
