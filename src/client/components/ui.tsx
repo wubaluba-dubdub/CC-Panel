@@ -16,7 +16,7 @@ export function Card({
   children,
 }: {
   title?: ReactNode;
-  children: ReactNode;
+  children?: ReactNode;
 }): ReactNode {
   return (
     <section className="card">

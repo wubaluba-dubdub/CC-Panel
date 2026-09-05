@@ -1,16 +1,27 @@
-import { Link, useRouter } from './lib/router.js';
-import { useLocale } from './i18n/index.js';
+import { Link, useRouter, type Route } from './lib/router.js';
+import { useLocale, LOCALES } from './i18n/index.js';
 import { Button } from './components/ui.js';
 import { api } from './lib/api.js';
+import { Audit } from './pages/Audit.js';
+import { Overview } from './pages/Overview.js';
+import { Secrets } from './pages/Secrets.js';
+import { Security } from './pages/Security.js';
+import { Sessions } from './pages/Sessions.js';
 import type { MeResponse } from '../shared/types.js';
 
 /**
- * Part 3's placeholder shell: navigation, the identity, sign out.
+ * The shell: navigation, the signed-in identity, sign out, and the language switch.
  *
- * Part 4 fills the screens in. What is here is the frame they hang on, and the three things a
- * frame has to get right: a skip link that is reachable by keyboard, navigation whose current
- * item is announced (`aria-current`) rather than merely coloured, and a `<main>` that can take
- * focus so a navigation lands somewhere for a screen reader.
+ * **No command palette.** It has nothing to search until there are projects — the only things it
+ * could offer are the five links already on screen — and a palette that lists five links teaches
+ * the operator that it is not worth opening. Recorded for M2.2, where projects give it something
+ * to find.
+ *
+ * Three things a frame has to get right, and all three are keyboard or screen-reader properties
+ * that a mouse never exercises: a skip link that is reachable (off-screen, never
+ * `display: none`, which would take it out of the tab order), navigation whose current item is
+ * *announced* through `aria-current` rather than only coloured, and a `<main>` that can take
+ * focus so a navigation lands somewhere.
  */
 export function Shell({
   me,
@@ -60,6 +71,7 @@ export function Shell({
         </nav>
         <div className="identity">
           <span>{t('app.signedInAs', { username: me.username })}</span>
+          <LocaleSwitch />
           <Button onClick={() => void signOut()}>{t('app.signOut')}</Button>
         </div>
       </div>
@@ -71,27 +83,69 @@ export function Shell({
   );
 }
 
+/**
+ * The language switch, which is the one setting the client may write.
+ *
+ * `PATCH /api/settings/locale` needs a full session, so this is the authenticated half of the
+ * same control the sign-in screen offers client-side. The local change is applied first and the
+ * request follows: the operator's language must not wait on a round trip, and a failed write
+ * costs them the *persistence* of the choice rather than the choice.
+ */
+function LocaleSwitch(): React.JSX.Element {
+  const { t, ts, locale, setLocale } = useLocale();
+  return (
+    <div className="row" role="radiogroup" aria-label={ts('common.language')}>
+      {LOCALES.map((candidate) => (
+        <button
+          key={candidate}
+          type="button"
+          role="radio"
+          aria-checked={locale === candidate}
+          className={locale === candidate ? 'chip chip-on' : 'chip'}
+          onClick={() => {
+            setLocale(candidate);
+            void api.patch('/api/settings/locale', { locale: candidate }).catch(() => {
+              /* the choice still applies to this browser; only the stored copy is missing */
+            });
+          }}
+        >
+          {candidate === 'en' ? t('common.english') : t('common.persian')}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function Screen({
   route,
+  refresh,
+  me,
 }: {
-  route: ReturnType<typeof useRouter>['route'];
+  route: Route;
   refresh: () => Promise<void>;
   navigate: (path: string) => void;
   me: MeResponse;
 }): React.JSX.Element {
   const { t } = useLocale();
-  if (route.name === 'not-found') {
-    return (
-      <>
-        <h1>{t('notFound.title')}</h1>
-        <p className="lede">{t('notFound.explain')}</p>
-      </>
-    );
+  switch (route.name) {
+    case 'overview':
+      return <Overview />;
+    case 'sessions':
+      return <Sessions />;
+    case 'security':
+      return <Security me={me} refresh={refresh} />;
+    case 'secrets':
+      return <Secrets />;
+    case 'audit':
+      return <Audit />;
+    default:
+      // The client's own not-found screen, not the server's. A hard refresh of this path was
+      // answered with the shell (Part 1) precisely so this screen is what renders.
+      return (
+        <>
+          <h1>{t('notFound.title')}</h1>
+          <p className="lede">{t('notFound.explain')}</p>
+        </>
+      );
   }
-  return (
-    <>
-      <h1>{t(`nav.${route.name}`)}</h1>
-      <p className="lede">{t('common.loading')}</p>
-    </>
-  );
 }
