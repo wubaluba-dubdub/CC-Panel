@@ -1892,9 +1892,24 @@ cannot: identical key sets at runtime (catching a `fa` built with `as Dict`), no
 values, and no key whose Persian value still equals its English one for text that must be
 translated. Specified now, written in M2.1.
 
-- **The choice is stored on `users`** (`locale TEXT`, nullable), returned by
+- **The choice is stored on `users`** (`locale TEXT`, nullable, migration 011), returned by
   `GET /api/auth/me`, set by `PATCH /api/settings/locale`. There is one user, so a column is
   the honest place; `config/instance.json` is for facts the installer set.
+  - **Null is not `'en'`**, and the distinction is what makes a Persian browser's first visit
+    Persian: null means *never chosen*, so the `Accept-Language` guess is still in force, and
+    `'en'` means *chose English*, which overrides the header. Collapsing them would make the
+    guess unreachable the moment a row existed.
+  - **`PATCH` needs a full session, and deliberately no step-up.** A language is not a
+    security control, but it is a write to the `users` row and a `pre` session must not be able
+    to make one — so the toggle on the login screen works entirely client-side, storing the
+    choice in `localStorage` where `bootstrap.js` reads it on the next load. An unauthenticated
+    visitor can change what their browser shows and cannot change what the panel stores. It is
+    also the one write in the panel with **no audit row**: the log records what an attacker
+    could do with a stolen session, it is capped, and a row per language toggle costs the
+    oldest real row.
+  - **This row is what M2.5 should read for the notification locale.** `PANEL_NOTIFY_LOCALE`
+    then becomes the initial default for one stored value rather than a second independent
+    setting — which is decision 16 above, and this column is the place it lands.
 - **First guess from `Accept-Language`**, resolved server-side and emitted into
   `bootstrap.js` as `window.__LOCALE__` — which is already generated per request and already
   `no-store`. The script runs in `<head>`, blocking, before the module bundle, so it sets

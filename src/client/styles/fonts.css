@@ -1,0 +1,97 @@
+/*
+ * The self-hosted webfonts.
+ *
+ * ── Why they are files and not a CDN ────────────────────────────────────────
+ *
+ * `font-src 'self'` has no CDN in it, and there is no version of this policy that has one:
+ * a font is parsed by a complex binary parser in the browser, and a third party that can
+ * change those bytes can attack it. `assetsInlineLimit: 0` in `vite.config.ts` keeps them
+ * as real file requests rather than `data:` URLs, which `font-src 'self'` would refuse.
+ *
+ * The `url()` values here are **relative on purpose** and Vite keeps them relative — see
+ * `renderBuiltUrl` in `vite.config.ts`. A stylesheet is served straight off disk by
+ * `@fastify/static` and is never templated, so a sentinel in here would reach the browser;
+ * a `url()` resolves against the *stylesheet's* URL rather than the document's, which makes
+ * a relative reference correct under any base path and at any route depth.
+ *
+ * ── Why the ranges matter more than the files ───────────────────────────────
+ *
+ * These are `@fontsource`'s per-script subsets, and the `unicode-range` on each rule is
+ * what makes an English-only page download the 16 KB Latin file and never the 21 KB Arabic
+ * one. A range that disagrees with the file it names is a font that silently never loads,
+ * so the ranges are copied from fontsource's own CSS rather than guessed — and
+ * `scripts/fonts.mjs` pins each file by SHA-256 so the pairing cannot drift.
+ *
+ * ── Vazirmatn for both scripts, and no Inter ────────────────────────────────
+ *
+ * PLAN.md pairs Inter with Vazirmatn, and this ships Vazirmatn's own Latin companion
+ * instead. The reason is this panel specifically: every technical value in it — a byte
+ * count, a port, a hash, a path — is Latin with Latin digits and sits *inside* a Persian
+ * sentence, so Latin and Persian meet on nearly every line. Vazirmatn's companion is
+ * designed against its Arabic metrics; Inter is not, and mixing two designs mid-line is
+ * exactly the artefact the bidi work exists to avoid. Shipping both would also mean one
+ * font that never renders a glyph — dead weight in the image, and a licence to track.
+ *
+ * `font-display: swap`: the fallback stack in `globals.css` renders immediately and the
+ * webfont replaces it. The alternative is invisible text while a font loads, and on a
+ * connection where that is slow the operator is looking at a blank panel.
+ */
+
+/* ── Vazirmatn — SIL Open Font License 1.1. See fonts/OFL-Vazirmatn.txt ────── */
+
+@font-face {
+  font-family: Vazirmatn;
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/vazirmatn-arabic-400.woff2') format('woff2');
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-088E, U+0890-0891, U+0898-08E1,
+    U+08E3-08FF, U+200C-200E, U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74,
+    U+FE76-FEFC;
+}
+
+@font-face {
+  font-family: Vazirmatn;
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/vazirmatn-latin-400.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: Vazirmatn;
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('../fonts/vazirmatn-arabic-600.woff2') format('woff2');
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-088E, U+0890-0891, U+0898-08E1,
+    U+08E3-08FF, U+200C-200E, U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74,
+    U+FE76-FEFC;
+}
+
+@font-face {
+  font-family: Vazirmatn;
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('../fonts/vazirmatn-latin-600.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+
+/* ── JetBrains Mono — SIL Open Font License 1.1. See fonts/OFL-JetBrainsMono.txt ── */
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/jetbrains-mono-latin-400.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}

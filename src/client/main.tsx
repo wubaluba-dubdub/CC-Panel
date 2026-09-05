@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles/globals.css';
 import { App } from './App.js';
+import { LocaleProvider } from './i18n/index.js';
 
 /**
  * The entry point. One root, mounted once.
@@ -18,6 +19,8 @@ if (container === null) {
 
 createRoot(container).render(
   <StrictMode>
-    <App />
+    <LocaleProvider>
+      <App />
+    </LocaleProvider>
   </StrictMode>,
 );

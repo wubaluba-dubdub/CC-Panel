@@ -11,6 +11,7 @@ import authRoutes from './auth.js';
 import metricsRoutes from './metrics.js';
 import notificationRoutes from './notifications.js';
 import securityRoutes from './security.js';
+import settingsRoutes from './settings.js';
 import sessionRoutes from './sessions.js';
 
 /**
@@ -72,6 +73,7 @@ export default async function apiRoutes(
   await app.register(authRoutes, { runtime });
   await app.register(sessionRoutes, { runtime });
   await app.register(securityRoutes, { runtime });
+  await app.register(settingsRoutes, { runtime });
   await app.register(auditRoutes, { runtime });
   await app.register(metricsRoutes, { metrics: opts.metrics, watchdog: opts.watchdog });
   await app.register(notificationRoutes, { runtime, notify: opts.notify });

@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "npm run build:client && node --env-file=.env node_modules/tsx/dist/cli.mjs watch src/server/index.ts",
-    "build": "tsc -p tsconfig.build.json && node scripts/copy-assets.mjs && vite build",
+    "build": "tsc -p tsconfig.build.json && vite build && node scripts/copy-assets.mjs",
     "start": "node dist/server/index.js",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.client.json",
     "lint": "eslint src tests --ext .ts,.tsx",
@@ -22,7 +22,8 @@
     "telegram:discover": "node --env-file-if-exists=.env node_modules/tsx/dist/cli.mjs src/server/cli/telegram-discover.ts",
     "acceptance": "bash scripts/acceptance.sh",
     "build:client": "vite build",
-    "dev:client": "vite build --watch"
+    "dev:client": "vite build --watch",
+    "fonts": "node scripts/fonts.mjs"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",

@@ -119,8 +119,10 @@ describe('Part 1 — the build runs, and emits what the image runs', () => {
     const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8')) as {
       scripts: Record<string, string>;
     };
+    // The order is load-bearing: `vite build` empties `dist/client`, and `copy-assets` puts
+    // the font licences into it, so the copy has to be last.
     expect(pkg.scripts.build).toBe(
-      'tsc -p tsconfig.build.json && node scripts/copy-assets.mjs && vite build',
+      'tsc -p tsconfig.build.json && vite build && node scripts/copy-assets.mjs',
     );
     expect(existsSync(join(ROOT, 'vite.config.ts'))).toBe(true);
     // Still not at the repository root: Vite's `root` is `src/client`, so an `index.html`
@@ -162,7 +164,7 @@ describe('Part 1 — the client build satisfies the shipped CSP', () => {
     expect(assets.some((f) => f.endsWith('.css')), 'no CSS asset was emitted').toBe(true);
     // Content-hashed, which is what makes the year-long immutable cache directive safe.
     for (const file of assets) {
-      expect(file, `${file} is not content-hashed`).toMatch(/-[A-Za-z0-9_-]{8,}\.[a-z]+$/);
+      expect(file, `${file} is not content-hashed`).toMatch(/-[A-Za-z0-9_-]{8,}\.[a-z0-9]+$/);
     }
   });
 
@@ -203,6 +205,39 @@ describe('Part 1 — the client build satisfies the shipped CSP', () => {
     expect(css.length).toBeGreaterThan(0);
     expect(css, 'a data: URL in the emitted CSS').not.toContain('data:');
     expect(indexHtml(), 'a data: URL in the shell').not.toContain('data:');
+  });
+
+  it('ships the font licences beside the fonts, because the OFL requires it', () => {
+    // Vite emits the woff2 files (hashed, into `assets/`) and emits nothing for a `.txt` that
+    // no module imports. So the licences are copied — and `copy-assets` runs after
+    // `vite build` for exactly that reason, since `emptyOutDir` would delete them.
+    for (const licence of ['OFL-Vazirmatn.txt', 'OFL-JetBrainsMono.txt']) {
+      const file = join(CLIENT, licence);
+      expect(existsSync(file), `${licence} was not emitted`).toBe(true);
+      expect(readFileSync(file, 'utf-8')).toContain('SIL Open Font License');
+    }
+    // And the fonts they cover are actually there, so the pairing is not vacuous.
+    const fonts = readdirSync(join(CLIENT, 'assets')).filter((f) => f.endsWith('.woff2'));
+    expect(fonts.length).toBeGreaterThan(0);
+    expect(fonts.some((f) => f.startsWith('vazirmatn-'))).toBe(true);
+    expect(fonts.some((f) => f.startsWith('jetbrains-mono-'))).toBe(true);
+  });
+
+  it('keeps every font URL relative, because a stylesheet is never templated', () => {
+    // The one place a sentinel would reach the browser. `@fastify/static` serves the
+    // stylesheet straight off disk, so a `/__PANEL_BASE__/…` inside `url()` would 404 — and a
+    // *relative* URL resolves against the stylesheet's own address, which is correct under any
+    // prefix and at any route depth. `renderBuiltUrl` in vite.config.ts is what does it.
+    const css = readdirSync(join(CLIENT, 'assets'))
+      .filter((f) => f.endsWith('.css'))
+      .map((f) => readFileSync(join(CLIENT, 'assets', f), 'utf-8'))
+      .join('\n');
+    expect(css).not.toContain('__PANEL_BASE__');
+    const urls = [...css.matchAll(/url\(([^)]*)\)/g)].map((m) => m[1]!.replace(/["']/g, ''));
+    expect(urls.length).toBeGreaterThan(0);
+    for (const url of urls) {
+      expect(url, `${url} is not relative`).toMatch(/^\.\//);
+    }
   });
 
   it('emits no source map, and no reference to one', () => {

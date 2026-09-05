@@ -54,6 +54,16 @@ export interface UserRecord {
   totpEnabled: boolean;
   lastTotpStep: number;
   recoveryCodesCount: number;
+  /**
+   * The operator's chosen interface language, or null.
+   *
+   * **Null is not `'en'`.** It means they have never chosen, so the guess from
+   * `Accept-Language` is still in force; once they choose, this column is the authority and
+   * the header is ignored. Collapsing the two would make "we do not know yet"
+   * indistinguishable from "they picked English", and the difference is what decides whether
+   * a Persian browser gets a Persian panel on its first visit.
+   */
+  locale: 'en' | 'fa' | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -66,6 +76,7 @@ interface UserRow {
   totp_enabled: number;
   last_totp_step: number;
   recovery_codes_count: number;
+  locale: 'en' | 'fa' | null;
   created_at: string;
   updated_at: string;
 }
@@ -79,6 +90,7 @@ function toRecord(row: UserRow): UserRecord {
     totpEnabled: row.totp_enabled === 1,
     lastTotpStep: row.last_totp_step,
     recoveryCodesCount: row.recovery_codes_count,
+    locale: row.locale,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -147,6 +159,26 @@ export class UserService {
 
   exists(): boolean {
     return this.find() !== null;
+  }
+
+  /**
+   * The stored interface language, or null when the operator has never chosen.
+   *
+   * Deliberately **not** read by `bootstrap.js`: that route is unauthenticated, and
+   * `routes/api.ts` keeps database reads off it on purpose. The stored value reaches the
+   * client through `GET /api/auth/me` and is cached in `localStorage`, which is what the
+   * next boot's bootstrap applies before first paint — so the only wrong-direction frame
+   * anyone ever sees is on a brand-new browser profile whose `Accept-Language` disagrees
+   * with the stored choice.
+   */
+  locale(): 'en' | 'fa' | null {
+    return this.find()?.locale ?? null;
+  }
+
+  setLocale(locale: 'en' | 'fa'): void {
+    this.#db
+      .prepare('UPDATE users SET locale = ?, updated_at = ? WHERE id = ?')
+      .run(locale, isoNow(this.#clock), SINGLE_USER_ID);
   }
 
   /**

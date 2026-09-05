@@ -1,3 +1,5 @@
+@import './fonts.css';
+
 /*
  * The design system, as custom properties.
  *
@@ -155,6 +157,20 @@ bdi {
   unicode-bidi: isolate;
 }
 
+.mono-block {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  /* An `otpauth://` URI has no spaces in it, so a block that cannot break mid-token is a
+   * horizontal scrollbar the operator has to find. */
+  overflow-wrap: anywhere;
+  background: var(--surface-raised);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  padding: var(--s3);
+  margin-block: var(--s2);
+  user-select: all;
+}
+
 .boot {
   padding: var(--s5);
   max-width: 60ch;
@@ -170,4 +186,33 @@ bdi {
 .boot p {
   color: var(--text-muted);
   margin-block: 0 var(--s2);
+}
+
+/* ── The chip, which is the smallest thing that has to work in both directions ── */
+.chip {
+  font: inherit;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  padding: var(--s1) var(--s3);
+  margin-inline-end: var(--s2);
+  cursor: pointer;
+}
+
+.chip-on {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .chip {
+    transition:
+      transform var(--t-fast) var(--ease),
+      opacity var(--t-fast) var(--ease);
+  }
+
+  .chip:active {
+    transform: scale(0.98);
+  }
 }

@@ -86,6 +86,17 @@ export const auditQuery = z.object({
 });
 
 /**
+ * The one setting the client may write.
+ *
+ * A closed enum rather than a string, because it is written straight into a `CHECK`
+ * constrained column and because there are exactly two dictionaries. An unknown locale is a
+ * 400 rather than a stored value nothing can render.
+ */
+export const localeBody = z.object({
+  locale: z.enum(['en', 'fa']),
+});
+
+/**
  * Parses a request body, turning a schema failure into a 400 with the standard
  * reason phrase and nothing else.
  *

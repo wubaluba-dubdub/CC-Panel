@@ -338,6 +338,10 @@ export default async function authRoutes(
       stepUpActive: runtime.sessions.hasStepUp(session),
       stepUpUntil: session.stepUpUntil,
       recoveryCodesRemaining: runtime.recovery.remaining(),
+      // Null when the operator has never chosen, which is not the same as `'en'`: the
+      // client keeps using the `Accept-Language` guess `bootstrap.js` gave it until there
+      // is a stored answer to override it with.
+      locale: user.locale,
       session: toSessionSummary(session, session.id),
     };
     return response;

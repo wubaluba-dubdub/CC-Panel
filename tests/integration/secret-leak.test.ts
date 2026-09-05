@@ -107,6 +107,7 @@ const EXPECTED_ROUTE_TREE =
   '        ├── api/security/base-path/regenerate (POST)\n' +
   '        ├── api/secrets (GET, HEAD, PUT)\n' +
   '        │   └── /reveal (POST)\n' +
+  '        ├── api/settings/locale (PATCH)\n' +
   '        ├── api/metrics (GET, HEAD)\n' +
   '        ├── api/notifications/telegram (GET, HEAD)\n' +
   '        ├── api/notifications/test (POST)\n' +

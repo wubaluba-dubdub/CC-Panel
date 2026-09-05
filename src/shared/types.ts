@@ -7,6 +7,16 @@
  * site.
  */
 
+/**
+ * The two languages the panel has dictionaries for.
+ *
+ * Declared here rather than in the client, because three places need to agree on it: the
+ * client's `t()`, the `users.locale` column the API writes, and the notification transport —
+ * which is the panel's one sanctioned server-side locale, since a Telegram message has no
+ * client to translate it.
+ */
+export type Locale = 'en' | 'fa';
+
 /** Where a login has got to. */
 export type LoginStage =
   /** Password accepted; two-factor is not enrolled yet, so enrolment is next. */
@@ -50,7 +60,21 @@ export interface MeResponse {
   stepUpActive: boolean;
   stepUpUntil: string | null;
   recoveryCodesRemaining: number;
+  /**
+   * The stored interface language, or null when the operator has never chosen one.
+   *
+   * **Null is not `'en'`.** It means the `Accept-Language` guess `bootstrap.js` made is
+   * still in force. The client caches a non-null value in `localStorage`, which is what the
+   * next boot applies before first paint — so the panel has at most one wrong-direction
+   * frame, on a brand-new browser profile, ever.
+   */
+  locale: 'en' | 'fa' | null;
   session: SessionSummary;
+}
+
+/** `PATCH /api/settings/locale`. */
+export interface LocaleResponse {
+  locale: 'en' | 'fa';
 }
 
 /** Contains the TOTP secret. Returned once, at enrolment. */

@@ -41,6 +41,7 @@ import { seedAdminUser } from './services/user.service.js';
 import type { Clock, Sleep } from './utils/clock.js';
 import { proxyBootWarning } from './utils/outbound-http.js';
 import { resolvePublicOrigin, type PublicOrigin } from './utils/public-origin.js';
+import { localeFromAcceptLanguage } from './utils/accept-language.js';
 
 /**
  * Global request body limit.
@@ -614,6 +615,11 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
     basePath,
     clientDir,
     csrfCookieName: runtime.cookies.csrfName,
+    // The *guess*, from the header, and nothing else: no database read on an
+    // unauthenticated route. The operator's stored choice reaches the client through
+    // `GET /api/auth/me`, is cached in `localStorage`, and is applied by this same script on
+    // the next load — where it outranks the guess.
+    localeFor: (req) => localeFromAcceptLanguage(req.headers['accept-language']),
     rateLimit: limiter.anonymousOnly(),
   });
   await app.register(apiRoutes, {
