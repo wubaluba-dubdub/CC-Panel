@@ -40,21 +40,21 @@ export function requireCsrfToken(runtime: AuthRuntime): onRequestAsyncHookHandle
     if (req.session === null) return;
 
     const sessionToken = runtime.cookies.readSession(req);
-    if (sessionToken === null) throw new HttpError(403, 'csrf token missing');
+    if (sessionToken === null) throw new HttpError(403, 'csrf token missing', 'csrf_invalid');
 
     const expected = csrfTokenFor(req.session.id, hashToken(sessionToken));
 
     const header = req.headers[CSRF_HEADER];
     const presented = typeof header === 'string' ? header : null;
-    if (presented === null) throw new HttpError(403, 'csrf token missing');
+    if (presented === null) throw new HttpError(403, 'csrf token missing', 'csrf_invalid');
 
     const cookie = runtime.cookies.readCsrf(req);
-    if (cookie === null) throw new HttpError(403, 'csrf cookie missing');
+    if (cookie === null) throw new HttpError(403, 'csrf cookie missing', 'csrf_invalid');
 
     // Both halves, both constant-time. Checking the header against the cookie as
     // well as against the expected value costs one more comparison and keeps the
     // "double submit" property meaningful for a client that sends a stale pair.
-    if (!timingSafeEqualStrings(presented, expected)) throw new HttpError(403, 'csrf token mismatch');
-    if (!timingSafeEqualStrings(cookie, expected)) throw new HttpError(403, 'csrf cookie mismatch');
+    if (!timingSafeEqualStrings(presented, expected)) throw new HttpError(403, 'csrf token mismatch', 'csrf_invalid');
+    if (!timingSafeEqualStrings(cookie, expected)) throw new HttpError(403, 'csrf cookie mismatch', 'csrf_invalid');
   };
 }

@@ -48,7 +48,7 @@ export default async function securityRoutes(
     try {
       await runtime.users.setPassword(newPassword);
     } catch (err) {
-      if (err instanceof WeakPasswordError) throw new HttpError(400, err.message);
+      if (err instanceof WeakPasswordError) throw new HttpError(400, err.message, 'weak_password');
       throw err;
     }
 
@@ -168,7 +168,7 @@ export default async function securityRoutes(
   // guards exist.
   app.get('/api/secrets', async (req) => {
     if (req.session === null || req.session.authLevel !== 'full') {
-      throw new HttpError(401, 'authentication required');
+      throw new HttpError(401, 'authentication required', 'unauthenticated');
     }
     const response: SecretMetadataResponse = { secrets: runtime.secrets.list() };
     return response;

@@ -216,3 +216,373 @@ bdi {
     transform: scale(0.98);
   }
 }
+
+/* ── Layout ───────────────────────────────────────────────────────────────
+ * A two-column shell that collapses to one. `grid-template-columns` is direction-agnostic
+ * by definition — the first track is the inline start in both languages — which is why the
+ * navigation needs no mirroring.
+ */
+.shell {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+@media (max-width: 720px) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.side {
+  background: var(--surface);
+  border-inline-end: 1px solid var(--hairline);
+  padding: var(--s4) var(--s3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+.side nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+.side nav a {
+  color: var(--text-muted);
+  text-decoration: none;
+  padding: var(--s2) var(--s3);
+  border-radius: var(--radius);
+}
+
+.side nav a[aria-current='page'] {
+  color: var(--text);
+  background: var(--surface-raised);
+}
+
+.brand {
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+
+.identity {
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  align-items: start;
+}
+
+.main {
+  padding: var(--s5) var(--s4);
+  max-width: 76ch;
+  width: 100%;
+}
+
+.main > h1 {
+  font-size: var(--text-2xl);
+  font-weight: 600;
+  margin-block: 0 var(--s2);
+}
+
+.lede {
+  color: var(--text-muted);
+  margin-block: 0 var(--s5);
+}
+
+/* The skip link: off-screen until focused, never `display: none`, which would take it out of
+ * the tab order and defeat the point. */
+.skip {
+  position: absolute;
+  inset-inline-start: -9999px;
+  top: var(--s2);
+  background: var(--surface-raised);
+  padding: var(--s2) var(--s3);
+  border-radius: var(--radius);
+  z-index: 10;
+}
+
+.skip:focus {
+  inset-inline-start: var(--s2);
+}
+
+/* ── Cards and sections ─────────────────────────────────────────────────── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  padding: var(--s4);
+  margin-block-end: var(--s4);
+}
+
+.card h2 {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  margin-block: 0 var(--s2);
+}
+
+.card p {
+  color: var(--text-muted);
+  margin-block: 0 var(--s3);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  align-items: center;
+}
+
+.spread {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3);
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────────────
+ * Three kinds and no more: the one that does the thing, the one that does not, and the one
+ * that cannot be undone.
+ */
+.btn {
+  font: inherit;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--surface-raised);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius);
+  padding: var(--s2) var(--s3);
+  cursor: pointer;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn-primary {
+  color: var(--accent-ink);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.btn-danger {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .btn {
+    transition:
+      transform var(--t-fast) var(--ease),
+      opacity var(--t-fast) var(--ease);
+  }
+
+  .btn:active:not(:disabled) {
+    transform: scale(0.98);
+  }
+}
+
+/* ── Fields ───────────────────────────────────────────────────────────────── */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  margin-block-end: var(--s3);
+}
+
+.field label {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.field input,
+.field textarea,
+.field select {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius);
+  padding: var(--s2) var(--s3);
+  width: 100%;
+}
+
+/* A code, a token or a password is a left-to-right island even in a Persian form: the digits
+ * are Latin and the caret has to move the way the operator expects. */
+.field input.ltr {
+  direction: ltr;
+  text-align: start;
+}
+
+.hint {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+/* ── Notices ──────────────────────────────────────────────────────────────
+ * Colour is never the only signal: each carries its own word, because a red border alone is
+ * invisible to a colour-blind operator and to a screen reader.
+ */
+.notice {
+  border: 1px solid var(--hairline-strong);
+  border-inline-start-width: 3px;
+  border-radius: var(--radius);
+  padding: var(--s3);
+  margin-block-end: var(--s3);
+}
+
+.notice-danger {
+  border-inline-start-color: var(--danger);
+}
+
+.notice-warn {
+  border-inline-start-color: var(--warn);
+}
+
+.notice-ok {
+  border-inline-start-color: var(--ok);
+}
+
+.notice-info {
+  border-inline-start-color: var(--accent);
+}
+
+/* ── The sign-in card, centred ─────────────────────────────────────────── */
+.auth {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: var(--s4);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 44ch;
+}
+
+/* ── Tables ───────────────────────────────────────────────────────────────
+ * `text-align: start` on every cell, so the whole table mirrors with the document instead of
+ * needing a right-aligned variant.
+ */
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.table th,
+.table td {
+  text-align: start;
+  padding: var(--s2);
+  border-block-end: 1px solid var(--hairline);
+  vertical-align: top;
+}
+
+.table th {
+  color: var(--text-faint);
+  font-weight: 500;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ── The dialog ───────────────────────────────────────────────────────────
+ * A real `<dialog>` element: the browser gives the focus trap, the backdrop and Escape for
+ * free, and every hand-rolled modal in the world gets at least one of those wrong.
+ */
+.dialog {
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-lg);
+  padding: var(--s4);
+  max-width: 52ch;
+  width: calc(100% - var(--s5));
+}
+
+.dialog::backdrop {
+  background: rgb(0 0 0 / 60%);
+}
+
+.dialog h2 {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  margin-block: 0 var(--s2);
+}
+
+/* ── The gauge ────────────────────────────────────────────────────────────
+ * The fill is `var(--gauge-fill)`, set through `element.style.setProperty` and never through a
+ * `style` attribute — see the CSP note at the top of this file. This is the one component in
+ * the panel whose geometry depends on data.
+ */
+.gauge {
+  height: 8px;
+  background: var(--surface-raised);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.gauge-bar {
+  height: 100%;
+  width: var(--gauge-fill);
+  background: var(--accent);
+  border-radius: 999px;
+}
+
+.gauge-warn .gauge-bar {
+  background: var(--warn);
+}
+
+.gauge-danger .gauge-bar {
+  background: var(--danger);
+}
+
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  margin-block-end: var(--s3);
+}
+
+.metric-figures {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s2);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.badge {
+  font-size: var(--text-xs);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 999px;
+  padding: 2px var(--s2);
+  color: var(--text-muted);
+}
+
+.badge-ok {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.badge-warn {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.badge-danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}

@@ -67,7 +67,7 @@ describe('GET /api/metrics', () => {
       cookies: { [SESSION_COOKIE]: pre },
     });
     expect(preSession.statusCode).toBe(401);
-    expect(preSession.json()).toEqual({ error: 'Unauthorized' });
+    expect(preSession.json()).toEqual({ error: 'Unauthorized', code: 'unauthenticated' });
   });
 
   it('answers raw numbers and nulls, and no formatted string anywhere', async () => {

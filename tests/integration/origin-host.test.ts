@@ -555,7 +555,7 @@ describe('the wired hook — development, over the wire with curl', () => {
     // because a request rejected before cookie parsing reached the API's `onSend`
     // hook with `req.cookies` still null and turned this into an error page. See the
     // hook-ordering comment in `src/server/app.ts`.
-    expect(JSON.parse(res.body)).toEqual({ error: 'Forbidden' });
+    expect(JSON.parse(res.body)).toEqual({ error: 'Forbidden', code: 'forbidden' });
     expect(res.body).not.toContain('host_mismatch');
     expect(res.body).not.toContain('evil.example');
   });
@@ -567,7 +567,7 @@ describe('the wired hook — development, over the wire with curl', () => {
 
     const rejected = await curl([...args, '-H', 'Origin: https://evil.example', login]);
     expect(rejected.status).toBe(403);
-    expect(JSON.parse(rejected.body)).toEqual({ error: 'Forbidden' });
+    expect(JSON.parse(rejected.body)).toEqual({ error: 'Forbidden', code: 'forbidden' });
 
     // The same credentials with no Origin, and with the real one, are accepted — so
     // the 403 above is the header and not the payload.
@@ -610,7 +610,7 @@ describe('the wired hook — production, over the wire with curl', () => {
     // The very request the development server accepted above.
     const res = await curl([api]);
     expect(res.status).toBe(403);
-    expect(JSON.parse(res.body)).toEqual({ error: 'Forbidden' });
+    expect(JSON.parse(res.body)).toEqual({ error: 'Forbidden', code: 'forbidden' });
   });
 
   it('accepts the configured Host', async () => {

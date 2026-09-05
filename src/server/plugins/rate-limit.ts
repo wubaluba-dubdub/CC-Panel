@@ -138,7 +138,10 @@ export class RateLimiter {
     await reply
       .code(429)
       .header('retry-after', String(retryAfterSeconds))
-      .send({ error: 'Too Many Requests' });
+      // `rate_limited` and not `auth_in_progress`: this is an empty bucket, and the advice is
+      // to wait `Retry-After` seconds. The single-flight gate's 429 means something else and
+      // carries its own code — see `utils/single-flight.ts`.
+      .send({ error: 'Too Many Requests', code: 'rate_limited' });
     return reply;
   }
 

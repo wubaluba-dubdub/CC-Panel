@@ -176,14 +176,14 @@ describe('M1.2 — Base path routing and bootstrap', () => {
         headers: { accept: 'text/html' },
       });
       expect(api.statusCode).toBe(404);
-      expect(api.body).toBe('{"error":"Not Found"}');
+      expect(api.body).toBe('{"error":"Not Found","code":"not_found"}');
 
       // A client that asked for JSON and got a page cannot report a useful error, and a
       // mistyped asset URL must be a 404 in the network panel rather than a page that
       // renders and then fails to parse as JavaScript.
       const asset = await ctx.app.inject({ method: 'GET', url: '/testpath/assets/nope.js' });
       expect(asset.statusCode).toBe(404);
-      expect(asset.body).toBe('{"error":"Not Found"}');
+      expect(asset.body).toBe('{"error":"Not Found","code":"not_found"}');
 
       // And a mutation to an unknown path is not answered with a page either.
       const post = await ctx.app.inject({
@@ -192,7 +192,7 @@ describe('M1.2 — Base path routing and bootstrap', () => {
         headers: { accept: 'text/html' },
       });
       expect(post.statusCode).toBe(404);
-      expect(post.body).toBe('{"error":"Not Found"}');
+      expect(post.body).toBe('{"error":"Not Found","code":"not_found"}');
     });
 
     it('leaves the out-of-prefix sink untouched, whatever it asks for', async () => {
@@ -207,7 +207,7 @@ describe('M1.2 — Base path routing and bootstrap', () => {
           headers: { accept: 'text/html,application/xhtml+xml,*/*' },
         });
         expect(res.statusCode, url).toBe(404);
-        expect(res.body, url).toBe('{"error":"Not Found"}');
+        expect(res.body, url).toBe('{"error":"Not Found","code":"not_found"}');
       }
     });
 
@@ -355,7 +355,7 @@ describe('M1.2 — Base path routing and bootstrap', () => {
 
       responses.forEach((res, i) => {
         expect(res.statusCode, paths[i]).toBe(404);
-        expect(res.body, paths[i]).toBe('{"error":"Not Found"}');
+        expect(res.body, paths[i]).toBe('{"error":"Not Found","code":"not_found"}');
       });
 
       expect(new Set(responses.map((r) => r.body)).size).toBe(1);

@@ -132,7 +132,7 @@ describe('M1.4 — authentication', () => {
       expect(wrongPassword.statusCode).toBe(401);
       expect(unknownUser.statusCode).toBe(401);
       expect(wrongPassword.body).toBe(unknownUser.body);
-      expect(wrongPassword.body).toBe('{"error":"Unauthorized"}');
+      expect(wrongPassword.body).toBe('{"error":"Unauthorized","code":"bad_credentials"}');
 
       // Byte-identical headers too, bar the ones that legitimately vary, and no
       // cookie on either.
@@ -253,7 +253,10 @@ describe('M1.4 — authentication', () => {
         payload: { code: '000000' },
       });
       expect(bad.statusCode).toBe(401);
-      expect(bad.body).toBe('{"error":"Unauthorized"}');
+      // `bad_credentials`, the same code a wrong password gets and the same code a *replayed*
+      // code gets. The audit log keeps the categories apart; the client does not get them,
+      // because "that code was valid and already used" is a fact about the panel's state.
+      expect(bad.body).toBe('{"error":"Unauthorized","code":"bad_credentials"}');
 
       // Still pre, so still useless.
       const sessions = await ctx.inject({
@@ -533,8 +536,12 @@ describe('M1.4 — authentication', () => {
 
       // One running plus one queued are admitted; the rest are turned away.
       expect(codes).toEqual([401, 401, 429, 429, 429]);
+      // `auth_in_progress`, not `rate_limited`. The two 429s mean different things and need
+      // different sentences: an empty bucket says wait `Retry-After` seconds, and this says an
+      // attempt is already running — most likely the operator's own other tab. The gate rejects
+      // before any credential is read, so the distinction discloses nothing.
       expect(results.find((r) => r.statusCode === 429)!.body).toBe(
-        '{"error":"Too Many Requests"}',
+        '{"error":"Too Many Requests","code":"auth_in_progress"}',
       );
       // A rejection at the gate is not a failed credential check.
       expect(failureCount()).toBe(8);
@@ -554,7 +561,7 @@ describe('M1.4 — authentication', () => {
         payload: { username: TEST_USERNAME, password: TEST_PASSWORD },
       });
       expect(res.statusCode).toBe(403);
-      expect(res.body).toBe('{"error":"Forbidden"}');
+      expect(res.body).toBe('{"error":"Forbidden","code":"forbidden"}');
     });
 
     it('accepts a matching origin, and a request with none at all', async () => {

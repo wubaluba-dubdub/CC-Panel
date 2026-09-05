@@ -383,7 +383,99 @@ export interface NotificationQueueRowResponse {
   sentAt: string | null;
 }
 
+/**
+ * The machine-readable half of an error, from a **closed set**.
+ *
+ * ── Why this exists at all ──────────────────────────────────────────────────
+ *
+ * `app.setErrorHandler` sends only the status's standard reason phrase, and that is
+ * deliberate after two credential leaks came out of error bodies (`docs/SECURITY.md`
+ * §*Generic error responses*). But it leaves the client unable to tell *step-up required*
+ * from any other 403, and R3 makes the phrase itself unusable: the interface is translated
+ * client-side, so `"Forbidden"` is a string that can only ever be English. Without a code the
+ * client guesses from status codes until somebody is tempted to put prose in the body.
+ *
+ * ── The rule every member obeys ─────────────────────────────────────────────
+ *
+ * **A code discloses nothing the status and the reason phrase do not already disclose.**
+ * Two consequences that are not obvious:
+ *
+ * - **Every authentication rejection is `bad_credentials`.** An unknown username, a wrong
+ *   password, a wrong TOTP code, a *replayed* TOTP code and a spent recovery code all answer
+ *   with the same code, because the fixed-dummy-hash path exists precisely so those cases are
+ *   indistinguishable — and `replayed_code` would say "that code was valid and already used",
+ *   which is a fact about the panel's state. The audit log keeps the categories; the client
+ *   does not get them.
+ * - **`step_up_required` is safe** because the caller already holds a full session and knows
+ *   perfectly well whether it has stepped up. `auth_in_progress` is safe because the
+ *   single-flight gate rejects before any credential is read.
+ *
+ * Never a message, never a variable, never a value. `tests/integration/error-codes.test.ts`
+ * asserts the set is closed and that no code carries free text.
+ */
+export type ErrorCode =
+  /** No live session, or one at the wrong level. Always 401. */
+  | 'unauthenticated'
+  /** Credentials were not accepted. Always 401, and never says which half was wrong. */
+  | 'bad_credentials'
+  /** A full session that has not stepped up in the last five minutes. Always 403. */
+  | 'step_up_required'
+  /** The double-submit token was missing or did not match. Always 403. */
+  | 'csrf_invalid'
+  /** `Origin`/`Host` validation, or any other refusal. Always 403. */
+  | 'forbidden'
+  /** A token bucket is empty. 429 with `Retry-After`. */
+  | 'rate_limited'
+  /** The single-flight gate: one attempt runs at a time. 429, and not a failure. */
+  | 'auth_in_progress'
+  /** The new password is too weak or too common. 400. */
+  | 'weak_password'
+  /** The body did not parse or did not validate. 400. */
+  | 'bad_request'
+  | 'not_found'
+  /** The panel's state does not permit it — 2FA already off, base path pinned by the env. */
+  | 'conflict'
+  | 'too_large'
+  | 'server_error';
+
+/**
+ * The same set, at runtime, so the error handler can **refuse anything else**.
+ *
+ * Not a convenience. Fastify's own errors carry a `code` — `FST_ERR_CTP_BODY_TOO_LARGE` for a
+ * body over `bodyLimit`, and one per internal failure — and an error handler that forwarded
+ * `err.code` unchecked would put a library's identifier, and whatever a future library chooses
+ * to put there, straight into a response body. That is the same shape as the two credential
+ * leaks that came out of error messages, and it is closed the same way: the response can only
+ * ever contain a value from this list.
+ *
+ * `satisfies` ties the two together — a code added to the union and not here, or here and not
+ * in the union, does not compile.
+ */
+export const ERROR_CODES = [
+  'unauthenticated',
+  'bad_credentials',
+  'step_up_required',
+  'csrf_invalid',
+  'forbidden',
+  'rate_limited',
+  'auth_in_progress',
+  'weak_password',
+  'bad_request',
+  'not_found',
+  'conflict',
+  'too_large',
+  'server_error',
+] as const satisfies readonly ErrorCode[];
+
+/** Whether an unknown value is one of the codes the panel is allowed to send. */
+export function isErrorCode(value: unknown): value is ErrorCode {
+  return typeof value === 'string' && (ERROR_CODES as readonly string[]).includes(value);
+}
+
 /** Every error response in the application. Nothing else is ever returned. */
 export interface ErrorResponse {
+  /** The status's standard reason phrase, and nothing else. Not for display. */
   error: string;
+  /** What the client should say about it. See {@link ErrorCode}. */
+  code: ErrorCode;
 }

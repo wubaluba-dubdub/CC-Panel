@@ -64,7 +64,7 @@ describe('M1.5 — rate limiting without an address', () => {
 
       const limited = await ctx.app.inject({ method: 'GET', url: me });
       expect(limited.statusCode).toBe(429);
-      expect(limited.json()).toEqual({ error: 'Too Many Requests' });
+      expect(limited.json()).toEqual({ error: 'Too Many Requests', code: 'rate_limited' });
       // Half a token per second, so one token is two seconds away. Computed from the
       // refill rate rather than a constant, and never 0 — `Retry-After: 0` invites an
       // immediate retry that is guaranteed to fail again.
@@ -230,7 +230,7 @@ describe('M1.5 — rate limiting without an address', () => {
         payload: { username: 'admin', password: oversized },
       });
       expect(res.statusCode).toBe(413);
-      expect(res.json()).toEqual({ error: 'Payload Too Large' });
+      expect(res.json()).toEqual({ error: 'Payload Too Large', code: 'too_large' });
 
       // Under the limit the body reaches the schema, which is where the per-field
       // maxima in `utils/zod-schemas.ts` take over. Whatever it answers, it is not

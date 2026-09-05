@@ -99,7 +99,7 @@ export default async function authRoutes(
         recordFailure(req, AuditEvent.LoginFailure, FailureReason.BadCredentials);
         // Byte-identical for an unknown username and a wrong password. The
         // dummy-hash path in verifyCredentials makes the timing identical too.
-        throw new HttpError(401, 'invalid credentials');
+        throw new HttpError(401, 'invalid credentials', 'bad_credentials');
       }
 
       const { token, session } = runtime.sessions.create({
@@ -149,7 +149,7 @@ export default async function authRoutes(
           const spent = await runtime.recovery.consume(code);
           if (!spent) {
             recordFailure(req, AuditEvent.TotpFailure, FailureReason.BadRecoveryCode);
-            throw new HttpError(401, 'invalid credentials');
+            throw new HttpError(401, 'invalid credentials', 'bad_credentials');
           }
           runtime.audit.write({
             event: AuditEvent.RecoveryCodeUsed,
@@ -167,7 +167,7 @@ export default async function authRoutes(
                 ? FailureReason.ReplayedTotpCode
                 : FailureReason.BadTotpCode,
             );
-            throw new HttpError(401, 'invalid credentials');
+            throw new HttpError(401, 'invalid credentials', 'bad_credentials');
           }
         }
 
@@ -248,7 +248,7 @@ export default async function authRoutes(
         const result = runtime.totp.completeEnrollment(code);
         if (!result.ok) {
           recordFailure(req, AuditEvent.TotpFailure, FailureReason.BadTotpCode);
-          throw new HttpError(401, 'invalid credentials');
+          throw new HttpError(401, 'invalid credentials', 'bad_credentials');
         }
 
         // Shown exactly once. Only the argon2 hashes are kept.
@@ -293,7 +293,7 @@ export default async function authRoutes(
       const verified = await runtime.users.verifyCredentials(user.username, password);
       if (verified === null) {
         recordFailure(req, AuditEvent.LoginFailure, FailureReason.BadCredentials);
-        throw new HttpError(401, 'invalid credentials');
+        throw new HttpError(401, 'invalid credentials', 'bad_credentials');
       }
 
       const result = runtime.totp.verify(code);
@@ -305,7 +305,7 @@ export default async function authRoutes(
             ? FailureReason.ReplayedTotpCode
             : FailureReason.BadTotpCode,
         );
-        throw new HttpError(401, 'invalid credentials');
+        throw new HttpError(401, 'invalid credentials', 'bad_credentials');
       }
 
       const stepUpUntil = runtime.sessions.grantStepUp(session.id);

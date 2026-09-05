@@ -586,7 +586,7 @@ describe('M1.5 — the audit query API', () => {
         cookies: { [SESSION_COOKIE]: cookie },
       });
       expect(res.statusCode, query).toBe(400);
-      expect(res.json(), query).toEqual({ error: 'Bad Request' });
+      expect(res.json(), query).toEqual({ error: 'Bad Request', code: 'bad_request' });
     }
   });
 

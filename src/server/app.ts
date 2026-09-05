@@ -42,6 +42,7 @@ import type { Clock, Sleep } from './utils/clock.js';
 import { proxyBootWarning } from './utils/outbound-http.js';
 import { resolvePublicOrigin, type PublicOrigin } from './utils/public-origin.js';
 import { localeFromAcceptLanguage } from './utils/accept-language.js';
+import { isErrorCode, type ErrorCode, type ErrorResponse } from '../shared/types.js';
 
 /**
  * Global request body limit.
@@ -64,6 +65,39 @@ export const BODY_LIMIT_BYTES = 64 * 1024;
  * where a socket dribbles a byte a minute and holds a connection open for free.
  */
 export const REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * The default code for a status nobody annotated.
+ *
+ * Deliberately coarse. A code is only worth having where the client would otherwise have to
+ * guess, and the four that matter — `step_up_required`, `csrf_invalid`, `auth_in_progress`,
+ * `bad_credentials` — are set at their throw sites. Everything else maps from the status,
+ * which is what the client would have inferred anyway, so the mapping adds a translatable
+ * sentence without adding a disclosure.
+ *
+ * A 5xx is `server_error` and says nothing else: the reason is in the log, and the endpoint
+ * that produced it may be unauthenticated.
+ */
+export function errorCodeForStatus(status: number): ErrorCode {
+  switch (status) {
+    case 400:
+      return 'bad_request';
+    case 401:
+      return 'unauthenticated';
+    case 403:
+      return 'forbidden';
+    case 404:
+      return 'not_found';
+    case 409:
+      return 'conflict';
+    case 413:
+      return 'too_large';
+    case 429:
+      return 'rate_limited';
+    default:
+      return status >= 500 ? 'server_error' : 'bad_request';
+  }
+}
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -511,10 +545,26 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
 
     req.log.error({ err }, 'request failed');
 
+    // The reason phrase, plus a code from a closed set. The thrown `message` is still never
+    // sent: the code is the *only* thing a throw site can say to the browser, which is why it
+    // is a union and not a string. A throw that names no code takes the status's default —
+    // `errorCodeForStatus` — so an existing `throw new HttpError(409, …)` says `conflict`
+    // rather than nothing, and nobody has to remember to annotate every site.
+    //
+    // **`isErrorCode` is not a formality.** Fastify's own errors carry a `code`, so a body over
+    // `bodyLimit` arrives here with `FST_ERR_CTP_BODY_TOO_LARGE` on it — and forwarding that
+    // unchecked would put a library's identifier into a response body, which is the same shape
+    // as the two credential leaks that came out of error *messages*. Anything not in the set
+    // falls back to the status's code.
+    const declaredCode = (err as { code?: unknown }).code;
+    const body: ErrorResponse = {
+      error: STATUS_CODES[status] ?? 'Error',
+      code: isErrorCode(declaredCode) ? declaredCode : errorCodeForStatus(status),
+    };
     return reply
       .code(status)
       .header('Content-Type', 'application/json')
-      .send(JSON.stringify({ error: STATUS_CODES[status] ?? 'Error' }));
+      .send(JSON.stringify(body));
   });
 
   // ── Generic 404, and the SPA fallback ──────────────────────────────────────
@@ -533,7 +583,7 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   // scope's hooks — which would charge every unknown `/api/` path against the anonymous
   // bucket instead of the session one — and not a `/*` route, because a wildcard has to be
   // ordered against every real route rather than being what runs when none matched.
-  const generic404Body = JSON.stringify({ error: 'Not Found' });
+  const generic404Body = JSON.stringify({ error: 'Not Found', code: 'not_found' });
   app.setNotFoundHandler((req, reply) => {
     if (
       shellBody !== null &&

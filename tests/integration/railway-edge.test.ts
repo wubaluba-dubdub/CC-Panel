@@ -145,7 +145,7 @@ describe('with PANEL_TRUST_PROXY on — the deployed configuration', () => {
       edgeHeaders({ 'x-forwarded-host': `${RAILWAY_DOMAIN}, evil.example` }),
     );
     expect(res.statusCode).toBe(403);
-    expect(JSON.parse(res.body)).toEqual({ error: 'Forbidden' });
+    expect(JSON.parse(res.body)).toEqual({ error: 'Forbidden', code: 'forbidden' });
   });
 
   it('honours the forwarded host over a poisoned Host header', async () => {

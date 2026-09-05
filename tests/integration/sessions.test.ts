@@ -399,7 +399,7 @@ describe('M1.4 — sessions and step-up', () => {
         cookies: { [SESSION_COOKIE]: account.cookie },
       });
       expect(res.statusCode).toBe(404);
-      expect(res.body).toBe('{"error":"Not Found"}');
+      expect(res.body).toBe('{"error":"Not Found","code":"not_found"}');
     });
   });
 
@@ -493,7 +493,7 @@ describe('M1.4 — sessions and step-up', () => {
           payload,
         });
         expect(res.statusCode, path).toBe(403);
-        expect(res.body, path).toBe('{"error":"Forbidden"}');
+        expect(res.body, path).toBe('{"error":"Forbidden","code":"step_up_required"}');
       }
 
       const put = await ctx.inject({
@@ -528,7 +528,7 @@ describe('M1.4 — sessions and step-up', () => {
         payload: { newPassword: 'password123456' },
       });
       expect(known.statusCode).toBe(400);
-      expect(known.body).toBe('{"error":"Bad Request"}');
+      expect(known.body).toBe('{"error":"Bad Request","code":"weak_password"}');
     });
 
     it('regenerates recovery codes, invalidating the old set', async () => {

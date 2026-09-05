@@ -208,7 +208,7 @@ describe('M1.2 — Perimeter', () => {
       });
 
       // Generic body: Fastify's default handler would echo the thrown message.
-      expect(res.body).toBe('{"error":"Internal Server Error"}');
+      expect(res.body).toBe('{"error":"Internal Server Error","code":"server_error"}');
       expect(res.body).not.toContain('deliberate test failure');
     });
 

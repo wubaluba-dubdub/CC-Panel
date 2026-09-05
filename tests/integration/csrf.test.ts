@@ -136,7 +136,7 @@ describe('M1.5 — CSRF double-submit, over the wire with curl', () => {
     });
     expect(res.status).toBe(403);
     // Nothing but the reason phrase: the hook's own message never reaches a client.
-    expect(JSON.parse(res.body)).toEqual({ error: 'Forbidden' });
+    expect(JSON.parse(res.body)).toEqual({ error: 'Forbidden', code: 'csrf_invalid' });
   });
 
   it('rejects a mutating request whose header does not match the cookie', async () => {

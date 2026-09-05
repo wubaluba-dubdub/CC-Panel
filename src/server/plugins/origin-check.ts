@@ -327,7 +327,7 @@ export function requireValidOriginAndHost(
       // The reason goes to the log, never to the client: the response is the bare
       // reason phrase from `app.setErrorHandler`.
       req.log.warn({ reason: verdict.reason }, 'request rejected by origin/host check');
-      throw new HttpError(403, `request rejected: ${verdict.reason}`);
+      throw new HttpError(403, `request rejected: ${verdict.reason}`, 'forbidden');
     }
     if (observer !== undefined && isOriginAbsentOnStateChange(input)) {
       observer.onAdmittedWithoutOrigin(req);

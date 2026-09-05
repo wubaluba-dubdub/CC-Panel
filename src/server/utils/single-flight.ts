@@ -16,6 +16,16 @@ export class SingleFlightBusyError extends Error {
   /** Picked up by the app's error handler and turned into a 429. */
   readonly statusCode = 429;
 
+  /**
+   * Distinct from `rate_limited`, and the distinction is the point.
+   *
+   * A 429 from the token bucket means *slow down*; this one means *an attempt is already
+   * running*, which is neither a failure nor a rate limit and needs a different sentence on
+   * screen. The client would otherwise tell the operator to wait `Retry-After` seconds when
+   * the right advice is to wait for their own other tab.
+   */
+  readonly code = 'auth_in_progress' as const;
+
   constructor() {
     super('an authentication attempt is already in flight');
     this.name = 'SingleFlightBusyError';
