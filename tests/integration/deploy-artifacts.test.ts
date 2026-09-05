@@ -173,6 +173,26 @@ describe('Dockerfile', () => {
     expect(bases.map((b) => b[1])).toEqual(['builder', 'runtime']);
   });
 
+  it('copies what `vite build` needs into the builder, and builds both halves', () => {
+    // The failure this catches is an image that builds cleanly and serves the "interface has
+    // not been built" diagnostic: `vite build` needs `vite.config.ts` in the build context,
+    // and a `COPY` that lists the tsconfigs and forgets it exits non-zero — or worse, a
+    // future `--if-present` style change makes it exit zero.
+    const [builder] = dockerfile.split('FROM node:22-bookworm-slim AS runtime');
+    const builderCode = codeOnly(builder!);
+    expect(builderCode).toContain('vite.config.ts');
+    expect(builderCode).toContain('tsconfig.client.json');
+    expect(builderCode).toContain('npm run build');
+
+    // And `npm run build` is what runs both halves plus the asset copy, in that order.
+    const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
+    const build = pkg.scripts.build ?? '';
+    expect(build).toContain('vite build');
+    // `copy-assets` must run *after* `vite build`: `emptyOutDir` empties `dist/client`, and the
+    // font licences the copy puts there would be deleted by it.
+    expect(build.indexOf('vite build')).toBeLessThan(build.indexOf('copy-assets'));
+  });
+
   it('keeps the compiler in the builder and prunes dev dependencies', () => {
     const [builder, runtime] = dockerfile.split('FROM node:22-bookworm-slim AS runtime');
     const builderCode = codeOnly(builder!);

@@ -216,15 +216,64 @@ What it deliberately does not do:
 | no version, uptime or build id | asserted absent by `tests/integration/healthz.test.ts` |
 | no base path, no session | it is mounted outside the prefix precisely so a prober that has not been told the secret can reach it — and it is *not* reachable inside the prefix, which would put the secret into whatever configuration polls it |
 
-It carries one header nothing else in the panel does: `Cache-Control: no-store`. A
-response with no caching directive, no `ETag` and no `Last-Modified` is heuristically
-cacheable, and "the health endpoint said fine" is the last answer that should ever come
-out of a cache.
+It carries `Cache-Control: no-store`, which in M1.6 was the only caching directive anywhere
+in the panel. A response with no caching directive, no `ETag` and no `Last-Modified` is
+heuristically cacheable, and "the health endpoint said fine" is the last answer that should
+ever come out of a cache.
+
+**M2.1 added the other two, and they point in opposite directions.** The shell document and
+`bootstrap.js` are also `no-store`, for the same class of reason: both name the secret base
+path, and the shell additionally names the content-hashed assets it needs — so a cached copy
+that outlives a regenerated prefix or a redeploy is a page requesting URLs that no longer
+exist, which presents as a blank screen with 404s in the network panel and nothing in the
+console. Together they are about two kilobytes per load.
+
+The third is the panel's only *positive* directive: `/<basePath>/assets/*` is
+`public, max-age=31536000, immutable`. That is safe **because the filename contains a hash of
+the contents** — a changed file is a changed URL, so there is nothing for a stale cache to
+serve, and the one-year lifetime applies to a URL that will never have different bytes behind
+it. `etag`, `last-modified` and `accept-ranges` are switched off on that route: an immutable
+content-hashed file needs no validator (revalidation never happens), and their absence is what
+makes the response's header map assertable byte-for-byte in
+`tests/integration/perimeter.test.ts`. The assets are served by `@fastify/static`, registered
+under `assets/` **only** — not at the prefix root — so it cannot shadow the API, the shell, or
+the SPA fallback.
 
 It is exempt from `Host` validation and from the rate limiter, and both exemptions are
 the same argument: Docker's own `HEALTHCHECK` arrives as `localhost:8080` while the
 public host is something else, so a 403 there — or a 429 — is a container-kill
 primitive, three failed probes from stopping the container.
+
+## The client
+
+`docs/UI.md` is the authority for how the client is built: the design tokens, what each CSP
+directive forbids and what that costs, the base-path templating, the bidi rules and the LTR
+island list, the poll budget, the error-code enum, and the dependency table. The parts that
+are *security* decisions rather than construction decisions are here:
+
+- **No inline script, no inline style, no `style` attribute, and no runtime CSS-in-JS.** The
+  first three are `script-src 'self'` and `style-src 'self'` with no `unsafe-inline`; the
+  fourth follows, because a nonce would have to be per-response and the panel does no
+  server-side rendering. Enforced by `tests/integration/client-discipline.test.ts` (a scan
+  over `src/client` for a `style` prop, `style.cssText`, `setAttribute('style')`,
+  `dangerouslySetInnerHTML`, and the styled-components/emotion package names) and by
+  `tests/integration/build.test.ts`, which parses the **built** `index.html` for zero inline
+  scripts, zero inline styles, zero `style` attributes, and no `data:` URL in the emitted CSS.
+- **The base path is never in a file on disk.** `vite build` emits the sentinel
+  `__PANEL_BASE__` and the server substitutes the resolved prefix once at boot. Both
+  directions are asserted: the sentinel is still in the built file (and in the image, per
+  `scripts/verify-image.sh`), and it is gone from every served body. A prefix baked into a
+  layer is a per-installation secret anyone with the image can read.
+- **The client never spells a cookie name.** It reads `window.__CSRF_COOKIE__`, which
+  `bootstrap.js` fills from `plugins/cookies.ts` — the only file allowed to decide between
+  `panel_csrf` and `__Secure-panel_csrf`. A hard-coded name is a 403 on every mutation on one
+  of the two deployment shapes.
+- **No body is ever logged by the client.** The bodies include a password, a TOTP secret, ten
+  recovery codes and a revealed credential.
+- **Attacker-influenced text is rendered as text.** Audit metadata, a user-agent string, a
+  secret's name. `react/no-danger` is an eslint error and `dangerouslySetInnerHTML` is a
+  scan failure.
+- **A revealed secret leaves the DOM** when it is hidden, rather than being hidden in it.
 
 ## Manual Browser Checks
 
@@ -305,6 +354,120 @@ CSP, the header set, or the bootstrap path, and before any deployment.
     browser declined it and the next request will be a 401 for a reason nothing in the
     console explains. The suite cannot make this comparison — it can assert the header the
     server sent and the log line it wrote, and neither is what a browser decided to keep.
+
+### M2.1 — the client, which is where almost nothing is testable
+
+Everything in this milestone is invisible to `app.inject()`: it does not evaluate a CSP, does
+not execute a script, does not have a cookie jar, and does not lay anything out. The suite
+asserts the bytes the server sends; the following are the properties that only a browser
+decides. **Ordered by what would be most damaging to discover late.**
+
+12. **The page is not blank.** Open `https://<host>/<basePath>/`. You should see the sign-in
+    card. Three different failures look identical from the outside, and the console
+    distinguishes them:
+
+    - *Blank page, console says "Refused to execute inline script"* — a script got inlined
+      somewhere. Check the Network tab for `bootstrap.js`: it must be 200 with
+      `Cache-Control: no-store`, and it must appear **before** `assets/index-*.js`.
+    - *Blank page, a 404 in the Network tab for `/__PANEL_BASE__/assets/…`* — the sentinel
+      reached the browser. The server's substitution did not run; `dist/client/index.html`
+      is being served by something other than `loadShell`.
+    - *A page saying "The panel's interface has not been built"* — `vite build` did not run,
+      or `dist/client` did not reach the image. `scripts/verify-image.sh` catches this one.
+
+    If the page renders but `window.__BASE__` prints `undefined` in the console, the bundle
+    is running and the bootstrap is not: every request will 404 on a URL with no prefix.
+
+13. **A hard refresh of a deep link works.** Navigate to Security, then press Ctrl/Cmd-R.
+    You must get the same screen, not a 404 and not the overview. This is the SPA fallback,
+    and it is the check that the *absolute* asset URLs are right: with relative URLs this
+    request succeeds and then fetches `/<base>/security/assets/index-*.js`, which 404s — so
+    the failure is a blank page **only on refresh**, which is exactly the shape that survives
+    a demo and breaks in use.
+
+14. **Zero CSP violations, on every screen.** Console tab, then visit all five screens and
+    open the step-up prompt, the recovery-codes dialog and the base-path dialog. No message
+    containing "Content Security Policy". The one to look for specifically is a **style**
+    violation on the resource gauge: it is the only component whose geometry comes from data,
+    and it deliberately uses `setProperty('--gauge-fill', …)` rather than a `style` prop
+    because browsers have historically reported a violation for the CSSOM path while still
+    applying the style. If a violation appears there anyway, the mechanism is wrong and the
+    fallback is discrete classes — not `unsafe-inline`.
+
+15. **The gauge actually moves.** Watch the memory bar for a few seconds. A bar stuck at 0 %
+    with a non-zero figure beside it means the custom property is being set and not read, or
+    the CSP blocked it silently. A bar at 100 % when the figure says otherwise means the
+    fraction is being computed against the wrong denominator.
+
+16. **Persian is right-to-left, before first paint.** Switch the language to فارسی, then
+    **reload**. The layout must be mirrored on the *first* frame — no flash of a
+    left-to-right layout. `document.documentElement.dir` must be `rtl` and
+    `localStorage['panel.locale']` must be `fa`. A flash means `bootstrap.js` is no longer
+    doing this and React is; the fix is in the bootstrap, not in a component.
+
+17. **Nothing reorders inside a Persian sentence.** On the Persian overview, read the memory
+    line: `940 MB of 1 GB` must read left-to-right *as a unit* inside the Persian sentence,
+    with the number before the unit. If you see `MB 940` or a leading `/` at the far end of a
+    path, an interpolation is missing its `<bdi>` — which means it did not go through `t()`.
+    Check the audit screen's metadata column and the session list's client column too: both
+    carry attacker-influenced text.
+
+18. **The fonts loaded, and only the ones needed.** Network tab, filter to Font. An English
+    page must fetch `vazirmatn-latin-*` and **not** `vazirmatn-arabic-*`; a Persian page
+    fetches the Arabic one. Both must be 200 from the panel's own origin with
+    `Cache-Control: public, max-age=31536000, immutable`. A request to a CDN means a
+    `@font-face` was edited; `font-src 'self'` would block it, so the symptom is a fallback
+    font rather than an error.
+
+19. **The step-up prompt suspends and resumes a request.** Go to Secrets and press Reveal
+    without having stepped up. The prompt must appear, and on success the **reveal must
+    complete on its own** — that is `lib/api.ts` retrying the original request once. If you
+    have to press Reveal again, the retry is not happening and every step-up-gated action
+    costs two clicks forever. Press Escape on the prompt instead: the screen must return to
+    normal rather than spin, which is the promise being resolved rather than dropped.
+
+20. **A revealed secret leaves the DOM.** Reveal one, then use Inspect to find it in the
+    element tree. Wait for the countdown to reach zero: the block must be **gone from the
+    tree**, not merely invisible. A value in a collapsed element is still in the page and
+    still in any screenshot of the tab.
+
+21. **The recovery-codes dialog cannot be dismissed by accident.** Regenerate them and press
+    Escape. The dialog must stay open until the acknowledgement is ticked. These ten strings
+    exist nowhere else after it closes.
+
+22. **The base-path dialog shows the new prefix.** In a **disposable** install only — this
+    action costs you the current address. The confirmation must require typing the word, and
+    the result dialog must show the new prefix and refuse Escape. Then restart and open the
+    new address. If the dialog is empty, the route stopped returning `basePath` and the
+    button has become a lockout.
+
+23. **The slow login is announced, not silent.** Sign in with a wrong password three times,
+    then a fourth. The fourth takes several seconds and the screen must say so — with a
+    screen reader on, the wait must be announced politely rather than interrupting. A dead
+    screen for thirty seconds is indistinguishable from a broken panel, and this is the path
+    an operator hits when they are already worried.
+
+24. **Two tabs mid-login give the right message.** Start a login in two tabs at once and
+    submit both. One must say *an attempt is already in progress* rather than *too many
+    requests*: `auth_in_progress` and `rate_limited` are different 429s and the second sends
+    the operator to wait for a bucket that is not the problem.
+
+25. **The poll budget holds.** Network tab, filter to `metrics`: one request every two
+    seconds. Switch to another tab for a minute and come back — while hidden it must be one
+    every thirty seconds, and **zero** after the tab is closed. An operator who leaves the
+    panel open in a background tab for a week must not generate 30 requests a minute for a
+    week.
+
+26. **Reduced motion is honoured.** Set `prefers-reduced-motion: reduce` at the OS level and
+    reload. No transition may run: the only animated properties are `transform` and
+    `opacity`, and every rule using them is inside `@media (prefers-reduced-motion:
+    no-preference)`.
+
+27. **Keyboard only, once, through the whole panel.** Tab from a fresh load: the skip link
+    must be first and must be *visible* when focused. Reach and operate every action —
+    including inside a dialog, where Tab must not escape the modal — and confirm the focus
+    ring is visible on both the page and a raised surface. Then run **Lighthouse**
+    (Accessibility) on each screen. This is the check that catches what a mouse never does.
 
 ## Secrets
 

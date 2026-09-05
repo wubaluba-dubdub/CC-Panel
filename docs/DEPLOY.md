@@ -107,6 +107,28 @@ Nothing is deployed yet. Railway is not involved until the next step.
 
 ---
 
+## The build, which is two halves since M2.1
+
+`npm run build` is three commands and the order matters:
+
+```
+tsc -p tsconfig.build.json     the server        -> dist/server
+vite build                     the client        -> dist/client
+node scripts/copy-assets.mjs   the .sql files    -> dist/server/migrations
+                               the font licences -> dist/client
+```
+
+`copy-assets` runs **last** because `vite build` empties `dist/client`, and it would otherwise
+delete the licences it had just put there. `tsc` emits only what it compiles, which is why the
+migrations need copying at all — a `dist` without them boots, prints the base-path banner, and
+dies on the first query with `no such table: audit_log`.
+
+The image builds both halves in the builder stage and carries `dist/` forward.
+`scripts/verify-image.sh` asserts that `dist/client/index.html` exists, that it still contains
+the `__PANEL_BASE__` sentinel (a substituted copy on disk would be a per-installation secret in
+a layer), that the assets directory is non-empty, that both font licences shipped, and that no
+source map did.
+
 ## 4. Create the Railway service from the repository
 
 1. Railway dashboard → **New Project** → **Deploy from GitHub repo**.
@@ -356,8 +378,27 @@ curl -o /dev/null -w '%{http_code}\n' https://<your-domain>/not-the-base-path/
 
 ## 11. Log in the first time
 
-There is no UI yet (that is M2), so the first login is four API calls. Set two shell
-variables and paste the blocks in order.
+**Since M2.1 there is an interface**: open `https://<your-domain>/<your-base-path>/` in a
+browser and it walks you through the password, then two-factor enrolment, then the ten
+recovery codes. The secret and the `otpauth://` URI are shown in copyable blocks — the panel
+does not render a QR image, because the image would have to be built from the secret and a
+camera does nothing typing cannot.
+
+**If that page is blank**, the interface is the part that failed and the API is almost
+certainly fine. In order of likelihood:
+
+| What you see | What it means |
+| :--- | :--- |
+| a page saying *the panel's interface has not been built* | `vite build` did not run, or `dist/client` did not reach the image. `bash scripts/verify-image.sh` names it. |
+| blank, and a 404 for `/__PANEL_BASE__/assets/…` in the network panel | the base-path sentinel reached the browser — the shell was served without the boot-time substitution. |
+| blank, console says *Refused to execute inline script* | something inlined a script; the CSP has no `unsafe-inline` and never will. |
+| blank, and `window.__BASE__` is `undefined` in the console | `bootstrap.js` did not load. Check it returns 200 with `Cache-Control: no-store`. |
+
+The [Manual Browser Checks](./SECURITY.md#manual-browser-checks) in `docs/SECURITY.md` are the
+list to work through the first time, and after any change to the CSP or the header set.
+
+The API path below still works and is the one to use from a shell — including when the
+interface is the thing that is broken. Set two shell variables and paste the blocks in order.
 
 ```bash
 PANEL=https://<your-domain>/<your-base-path>
@@ -387,10 +428,10 @@ curl -sS -c "$JAR" -b "$JAR" -X POST "$PANEL/api/auth/totp/enroll" -H "x-csrf-to
 # {"secret":"JBSWY3DPEHPK3PXP...","otpauthUri":"otpauth://totp/...","algorithm":"sha1","digits":6,"periodSeconds":30}
 ```
 
-Add the `otpauth://` URI to your authenticator. There is no QR image in the response — the
-UI that renders one is M2 work — so either paste the URI into an app that accepts one, or
-enter the `secret` by hand with the `algorithm`, `digits` and `periodSeconds` the response
-states. Then confirm with a code from the app; this is what actually turns two-factor on:
+Add the `otpauth://` URI to your authenticator. There is no QR image in the response, and the
+interface does not render one either — it would have to be built from the secret, and a camera
+does nothing typing cannot. So either paste the URI into an app that accepts one, or enter the
+`secret` by hand with the `algorithm`, `digits` and `periodSeconds` the response states. Then confirm with a code from the app; this is what actually turns two-factor on:
 
 ```bash
 curl -sS -c "$JAR" -b "$JAR" -X POST "$PANEL/api/auth/totp/enroll/verify" \
@@ -755,7 +796,12 @@ which is ephemeral.
 | `FATAL: the public origin is http://… which is not https` | `PANEL_PUBLIC_URL` starts with `http://`. The panel refuses rather than silently shipping a session cookie without `Secure`. | Add the `s`. |
 | `FATAL: … is not writable by uid 10001` and the deployment stops | The container started as a non-root uid on a root-owned volume mount. | Set `RAILWAY_RUN_UID=0` — [step 7](#7-why-railway_run_uid0-is-not-a-security-regression). |
 | `FATAL: the panel is running as root … and refuses to serve` | Something overrode `ENTRYPOINT`, so the privilege drop never happened. | Restore `ENTRYPOINT ["/entrypoint.sh"]`. Do not set a `USER` in the Dockerfile — the entrypoint owns the drop. |
-| `no such table: audit_log` right after the base-path banner | The build did not ship `dist/server/migrations/`, so zero migrations ran. `tsc` emits only what it compiles. | `npm run build` must be `tsc … && node scripts/copy-assets.mjs`. `tests/integration/build.test.ts` asserts the emitted `.sql` files against the source directory. |
+| `no such table: audit_log` right after the base-path banner | The build did not ship `dist/server/migrations/`, so zero migrations ran. `tsc` emits only what it compiles. | `npm run build` must be `tsc … && vite build && node scripts/copy-assets.mjs`. `tests/integration/build.test.ts` asserts the emitted `.sql` files against the source directory. |
+| **A page saying "The panel's interface has not been built"** | `vite build` did not run, or `dist/client` never reached the runtime stage. The API, the CLI and `/healthz` are all fine — only the interface is missing, which is why the panel says so instead of failing to boot. | `bash scripts/verify-image.sh` names it. Check that the Dockerfile's builder stage copies `vite.config.ts` and that `RUN npm run build` includes `vite build`. |
+| **A blank page, and a 404 in the network panel for `/__PANEL_BASE__/assets/…`** | The base-path sentinel reached the browser: the shell was served without the boot-time substitution. | The shell must come from `loadShell()`, not from `@fastify/static`. `scripts/container-smoke.sh` asserts the sentinel is absent from the served body. |
+| **A blank page, console says "Refused to execute inline script"** | Something inlined a script. Under `script-src 'self'` with no `unsafe-inline` the browser refuses it and the page renders nothing, with one console line and no server-side symptom at all. | `tests/integration/build.test.ts` parses the built `index.html` for inline scripts. Check what changed in `vite.config.ts` or `index.html`. |
+| **A deep link works, and a hard refresh of it 404s** | The SPA fallback is not answering — or the assets are being referenced *relatively*, in which case the document loads and its own script 404s one directory down. | `wantsShell()` in `plugins/base-path.ts`; the asset URLs must be absolute and sentinel-prefixed. |
+| **The interface is unstyled, or the wrong font** | The stylesheet or a font 404'd. A relative `url()` in the CSS is correct; an absolute one containing the sentinel is not, because a stylesheet is served straight off disk and never templated. | Network tab, filter to CSS and Font. `tests/integration/build.test.ts` asserts every `url()` in the emitted CSS is relative. |
 | Healthcheck never passes; deployment marked failed | Either `/healthz` is answering `503` (the log line says `health check failed` and why) or the service is not reachable at all. | Read the deployment log. If `listenHost` is `127.0.0.1`, unset `PANEL_LISTEN_HOST`. |
 | Every request to the panel is a `403` | `Host` does not match the configured public origin. | Compare the `publicOrigin` in the boot log with the domain you are using. A custom domain added later needs `PANEL_PUBLIC_URL` updated. |
 | Login returns `200`, next request is `401`, browser console clean | The classic `PANEL_PUBLIC_URL` mismatch: the browser silently declined a `__Secure-` cookie because the scheme did not qualify. | [Step 6](#6-set-the-variables). Check `cookieProfile` and `sessionCookie` in the boot log. |

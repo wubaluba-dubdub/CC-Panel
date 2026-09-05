@@ -143,9 +143,14 @@ build failure, not a warning.
 ## Conventions
 ### Source Code
 - **Server** (`src/server/`): Fastify plugins, services, routes, DB, crypto, utils.
-- **Client** (`src/client/`): React + Vite SPA, components, pages, lib, styles.
+- **Client** (`src/client/`): React 19 + Vite SPA — `components/`, `pages/`, `lib/`, `i18n/`,
+  `styles/`, `fonts/`. Two tsconfigs: the server has `node` types and no DOM, the client has
+  the DOM and cannot reach `node:fs`. `npm run typecheck` runs both.
 - **Shared** (`src/shared/`): TypeScript types used by both server and client.
-- **Tests** (`tests/`): Unit and integration tests with Vitest + Supertest.
+- **Tests** (`tests/`): Unit and integration tests with Vitest. (Not Supertest — this line
+  used to say so and nothing ever imported it; the suite uses `app.inject()` and, where the
+  point is real wire behaviour, real `curl` against a real socket. The package was removed in
+  M2.1, and with it the tree's only advisory.)
 - **Scripts** (`scripts/`): Helper scripts (e.g., font downloads).
 
 ### Naming
@@ -162,9 +167,23 @@ build failure, not a warning.
 - Client: Display user-friendly error with explanation and next action.
 
 ### Styling
-- Tailwind CSS v4 with a custom theme (see `src/client/styles/globals.css`).
-- Dark theme first, respecting `prefers-color-scheme`.
-- Animations only on `transform` and `opacity`, respecting `prefers-reduced-motion`.
+- **Plain CSS with design tokens as custom properties** in `src/client/styles/globals.css`.
+  Not Tailwind, which this section used to say and `PLAN.md` §M2.1 still lists: the deciding
+  argument is that R3's logical-property rule is only real if a static scan can see a
+  violation, and a scan over CSS declarations is exact where a scan over `className` strings
+  has to encode Tailwind's whole utility vocabulary and fails *silently* when it misses one.
+  Recorded as decision 23 in `PLAN.md` §*Decisions taken in M2.1*.
+- Dark only, and `color-scheme: dark` says so. A light theme is not a token swap in a panel
+  whose one accent has to stay legible against a terminal, and it is not built.
+- **Logical properties only** — `margin-inline-start`, `text-align: start`,
+  `inset-inline-end` — enforced by `tests/integration/client-discipline.test.ts`.
+- Animations only on `transform` and `opacity`, every rule inside
+  `@media (prefers-reduced-motion: no-preference)`. Nothing the operator has to *read*
+  animates.
+- **No `style` attribute, no `style` prop, no runtime CSS-in-JS.** `style-src 'self'` blocks
+  the first two; the third would need a per-response nonce and the panel does no server-side
+  rendering. A data-dependent value goes through `element.style.setProperty('--x', v)` and is
+  read with `var()` — the resource gauge is the one component this decides. See `docs/UI.md`.
 
 ## Precedents (mistakes that cost a debugging session; do not repeat)
 
@@ -213,6 +232,9 @@ re-deriving the path list.
 See `docs/SECURITY.md` for a detailed mapping of each control to the file(s) that implement it.
 
 ## Phase 2 specifications
+- `docs/UI.md` — the client: tokens, CSP constraints, base-path templating, the bidi rules and
+  the LTR island list, the poll budget, the error-code enum, the dependency table. Read it
+  before adding a component, a dependency or a stylesheet.
 - `docs/PORTABILITY.md` — the portable export/import format (R1, R2). Read it before
   touching project identity or secret AAD: it is the reason projects carry a UUID.
 - `docs/FILES.md` — the project file browser (R4), including the one containment function
@@ -1131,11 +1153,84 @@ what the plan calls for.
   the first component written:** every project carries a UUID and secret AAD is keyed on it
   (not on the row id), workspace directories are named by UUID, and the client is built on
   CSS logical properties with a static scan enforcing it.
-- **M2.1 — application shell and design system: not started.** No React, no
-  Tailwind, no client code at all yet; `/${basePath}/` serves a placeholder page.
+- **M2.1 — application shell, design system, and direction: done.** The first milestone with
+  a user interface, in six commits so a blank page can be bisected. Part 0 corrected M1.8's
+  crossing machine (the thirty-minute window moved from the alert to the recovery) and folded
+  `Watchdog.status()` into `GET /api/metrics`. Part 1 is the build: Vite + React into
+  `dist/client`, the base path templated into `index.html` at boot from a `__PANEL_BASE__`
+  sentinel, `@fastify/static` under `assets/` only, and the SPA fallback inside the existing
+  root not-found handler. Part 2 is R3: `t()` returning a `ReactNode` so every interpolated
+  machine value is `<bdi>`-isolated, a Persian dictionary declared against the English one,
+  `bootstrap.js` setting `dir` before first paint, migration 011's `users.locale`,
+  self-hosted Vazirmatn and JetBrains Mono, and a static scan for logical properties. Part 3
+  is the closed error-code enum and `lib/api.ts` — one wrapper, the CSRF cookie read by the
+  name the server gave, a step-up retried exactly once — plus the login and enrolment flow
+  written against the progressive delay and the five-minute pre-session. Part 4 is the shell
+  and four screens including the resource widget. Part 5 is `docs/UI.md`, sixteen new manual
+  browser checks, and the image.
+  **Deferred with reasons:** the command palette (nothing to search until there are projects —
+  M2.2), a QR renderer (about 50 kB to save typing 32 characters once per install), and a
+  light theme (not built, and `color-scheme: dark` says so).
 - No terminal or Claude Code integration (Phase 3).
 
+## The client
+`docs/UI.md` is the authority: design tokens, what each CSP directive forbids and what it
+costs, the base-path templating, the bidi rules and the LTR island list, the poll budget, the
+error-code enum, the dependency table, and the accessibility properties a mouse never
+exercises. The decisions rather than the code:
+
+- **Three client dependencies, all of them React.** The panel had zero before M2.1 and this is
+  the floor for every one that follows, because every one lands inside the container that holds
+  `PANEL_MASTER_KEY`. `react`/`react-dom` are in **`dependencies`** and not `devDependencies`:
+  the bundle ships to the browser, and `npm audit --omit=dev` is a build gate here, so the
+  audit has to be able to see the code the operator actually runs. Declined with reasons: a
+  router (120 lines instead), any CSS-in-JS (unusable under this CSP), Tailwind, a QR renderer,
+  a date library (`Intl` gives a Jalali calendar), an icon set.
+- **The base path is a build-time problem with a runtime answer.** `vite build` emits
+  `__PANEL_BASE__`; the server substitutes the real prefix into `index.html` once at boot and
+  caches it, which is safe because regenerating the prefix already answers
+  `restartRequired: true`. `base: './'` was rejected — it works at `/<base>/` and breaks on a
+  refresh of `/<base>/x` — and `<base href>` is unavailable under `base-uri 'none'`. **Both
+  directions are asserted**: the sentinel is still in the file on disk (and in the image), and
+  it is gone from every served body. CSS is the exception and is emitted *relative*, because a
+  stylesheet is served straight off disk and never templated.
+- **There is no Vite dev server.** It injects inline styles and inline module scripts and needs
+  a WebSocket for HMR — three violations of the shipped policy — so the thing the operator
+  tests would not be the thing that ships. `npm run dev` builds the client and serves it from
+  Fastify under the identical CSP; a rebuild is about 1.2 s.
+- **`t()` returns a node, not a string**, which is what makes bidi isolation unavoidable rather
+  than remembered: every parameter is wrapped in `<bdi>` by `t()` itself, and there is no
+  string to concatenate a machine value into. `ts()` is the attribute form and isolates with
+  U+2068/U+2069, the controls `<bdi>` is defined in terms of. English is the source of truth
+  and `const fa: Dict` makes a missing Persian key a compile error.
+- **Direction is set by `bootstrap.js`, before first paint** — a blocking classic script in
+  `<head>`, while the bundle is a module and therefore deferred. The locale is a guess from
+  `Accept-Language` with **no database read** on that unauthenticated route, overridden by the
+  stored choice which the client caches in `localStorage` after `GET /api/auth/me`.
+- **Latin digits for every technical value in both languages, and a decimal byte basis.**
+  `Intl.NumberFormat('fa-IR')` yields `۸۰۸۰` for a port; and Railway quotes the plan in GB, so
+  1 GB is 1 000 000 000 and not 0.93 GiB. The Jalali *calendar* is kept, because a date is read
+  rather than pasted.
+- **The error body carries a `code` from a closed set**, and the set is closed **at runtime**
+  as well as in the type. That is not a formality: Fastify's own errors carry a `code`, so a
+  body over `bodyLimit` arrives at the handler with `FST_ERR_CTP_BODY_TOO_LARGE` on it, and
+  forwarding it unchecked would have put a library identifier into a response body. Every
+  authentication rejection is `bad_credentials` — unknown username, wrong password, wrong code,
+  *replayed* code, spent recovery code — because the fixed dummy hash exists so those are
+  indistinguishable.
+- **The poll budget is 2 s visible, 30 s hidden, nothing when closed**, as a `setTimeout` chain
+  so a slow response cannot queue a second request behind the first. The hidden cadence sits
+  above the sampler's own and below its idle timeout, so a hidden tab keeps
+  `cpu.percentOfQuota` a number. M2.7 inherits this budget; do not exceed it.
+- **The widget renders four not-knowings as words**: a null CPU rate is *measuring* and never
+  0 %, a null memory limit is a sentence and never a bar, `meta.source === 'os'` says the
+  figures describe the host, and a disarmed watchdog rule names its reason code.
+
 ## Next Steps (Phase 2)
+M2.1 is done, so the next one is **M2.2 — projects with portable identity** (migration **012**,
+carrying R8's provenance and review columns with it). The command palette is recorded there
+too: it is the first milestone where it has anything to search.
+
 See `PLAN.md` §*M2 — Phase 2* for the milestone map and the blocking decisions,
 §*Decisions taken after M2.0* for the twelve answers each milestone has to respect, and
 §*Decisions taken in M1.8* for six more. In order: the application shell with direction built

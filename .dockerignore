@@ -24,7 +24,15 @@ data
 .gitattributes
 
 # Build output — the image builds its own, and a host-built dist may be stale or
-# compiled by a different TypeScript version.
+# compiled by a different TypeScript version. That includes `dist/client`: the builder stage
+# runs `vite build` itself, and a host-built bundle could have been produced by a different
+# Vite, or against a different `index.html`.
+#
+# What must NOT be excluded, and is not: `src/client/**` (the sources Vite compiles),
+# `src/client/fonts/*.woff2` (committed on purpose — the image build takes no network
+# dependency, and there is no Python in it to subset a font with), the two `OFL-*.txt`
+# licences beside them, and `vite.config.ts`. The `*.md` rule below would have caught a
+# licence written as Markdown, which is one reason they are `.txt`.
 dist
 build
 node_modules

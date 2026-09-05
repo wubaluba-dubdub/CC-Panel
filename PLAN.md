@@ -1818,6 +1818,43 @@ retrofitted:
 8. End-to-end smoke: hard refresh on deep route, CSP-clean console, reduced motion.
 9. **Commit:** `feat(m2.1): application shell and design system`
 
+##### Built in M2.1 — and the seven places it departs from the list above
+
+Delivered as six commits (Part 0 through Part 5) rather than one, so that a blank page can be
+bisected — the first milestone in this project whose mistakes are invisible to the test suite.
+`docs/UI.md` is the authority for the result; these are the departures.
+
+1. **Plain CSS, not a Tailwind theme** (item 1). Decision 23 above has the argument: the
+   logical-property scan is exact over CSS declarations and unsound over `className` strings.
+2. **No command palette** (item 3). It has nothing to search until there are projects — the
+   only things it could offer are the five links already on screen, and a palette that lists
+   five links teaches the operator not to open it. Recorded for M2.2.
+3. **No SetupWizard or Projects page** (item 4). There are no projects yet, and the "setup
+   wizard" is the enrolment flow inside the sign-in screen, which is where a fresh install
+   actually meets it. The four screens built are Sessions, Security, Secrets and Audit, plus
+   the Overview that carries the resource widget.
+4. **The router is hand-written** (item 5), not a dependency. Five routes; the two features
+   React Router would supply are a `basename` and a catch-all.
+5. **No light theme** (item 6). `color-scheme: dark` and one accent. A light theme is not a
+   token swap in a panel whose accent has to stay legible beside a terminal, and inventing one
+   before Phase 3's terminal exists would be inventing it twice.
+6. **No Inter** (§*Fonts*). Vazirmatn's own Latin companion is designed against its Arabic
+   metrics, and every technical value in this panel is Latin sitting inside a Persian sentence.
+   Shipping both would mean one font that never renders a glyph.
+7. **No QR renderer.** The `otpauth://` URI and the secret are shown in copyable blocks, and
+   the screen says why: the image would have to be built from the secret, and a camera does
+   nothing typing cannot. `qrcode` was a runtime dependency nothing imported and is removed.
+
+Two things it added that the list did not ask for, both because the alternative was worse:
+
+- **A diagnostic shell.** When there is no usable client bundle the prefix root serves a page
+  that says so and names the command, rather than a blank page or a 500. The API, the CLI and
+  `/healthz` all work without a client, and a panel that refused to boot because its front-end
+  was missing would take away the one interface that could have said so.
+- **A `users.locale` column and `PATCH /api/settings/locale`** (migration 011), which §R3
+  specified and the item list did not mention. Null is not `'en'`; the route needs a full
+  session and no step-up, and is the one write in the panel with no audit row.
+
 ##### R3: Persian and English, decided before the first component
 
 **Persian is right-to-left, which is a layout problem and not a string problem.** The

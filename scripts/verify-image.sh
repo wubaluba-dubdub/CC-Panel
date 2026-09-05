@@ -133,6 +133,61 @@ else
   fail "/app/dist/server/index.js is missing"
 fi
 
+# ── The client bundle, new in M2.1 ────────────────────────────────────────────
+#
+# The failure this catches is the worst kind this milestone can produce: an image that
+# builds cleanly, starts cleanly, answers /healthz with 200, and serves the operator a
+# page saying the interface was never built. Nothing in the server's own tests can see
+# it, because they run against a fixture client directory on purpose.
+if in_image "test -f /app/dist/client/index.html"; then
+  pass "the client shell is at the path resolveClientDir() looks in"
+else
+  fail "/app/dist/client/index.html is missing — vite build did not run, or dist/client was not copied"
+fi
+
+# The sentinel must still be *in the file on disk*. Its absence means either that the
+# substitution was baked in at build time — a per-installation secret in a layer anyone
+# with the image can read — or that the file was produced by something other than this
+# build, in which case its asset URLs are wrong for every prefix.
+if in_image "grep -q __PANEL_BASE__ /app/dist/client/index.html"; then
+  pass "the base-path sentinel is still in the shell on disk (substituted per boot, never baked)"
+else
+  fail "dist/client/index.html has no sentinel — the prefix may have been baked into the image"
+fi
+
+if in_image "test -d /app/dist/client/assets && test -n \"\$(ls -A /app/dist/client/assets)\""; then
+  pass "the assets directory is non-empty"
+else
+  fail "/app/dist/client/assets is missing or empty — the page will load and render nothing"
+fi
+
+# Exactly one JS and one CSS asset are expected today (one entry, no code splitting), but
+# the assertion is "at least one of each": pinning the count would fail the day a font or
+# an image is added, which is not a defect.
+for kind in js css; do
+  if in_image "ls /app/dist/client/assets/*.$kind >/dev/null 2>&1"; then
+    pass "at least one .$kind asset was emitted"
+  else
+    fail "no .$kind asset in /app/dist/client/assets"
+  fi
+done
+
+# The OFL requires the licence to travel with the font software. `copy-assets` puts it
+# there, after `vite build`, because emptyOutDir would otherwise delete it.
+if in_image "test -f /app/dist/client/OFL-Vazirmatn.txt && test -f /app/dist/client/OFL-JetBrainsMono.txt"; then
+  pass "the font licences shipped beside the fonts"
+else
+  fail "a font licence is missing from dist/client — the OFL requires it to be distributed"
+fi
+
+# No source map: it is a second copy of the client source in an image that also holds
+# PANEL_MASTER_KEY, and nothing debugs this in production.
+if in_image "ls /app/dist/client/assets/*.map >/dev/null 2>&1"; then
+  fail "a source map shipped in the image"
+else
+  pass "no source map in the client output"
+fi
+
 if in_image "test -f /app/node_modules/better-sqlite3/build/Release/better_sqlite3.node"; then
   pass "the better-sqlite3 native binary was carried forward by the prune"
 else
