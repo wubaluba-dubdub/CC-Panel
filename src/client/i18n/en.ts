@@ -52,6 +52,10 @@ export const en = {
   'table.expand': 'Show detail',
   'table.collapse': 'Hide detail',
   'table.more': '{count} more',
+  // The exact instant, in a `title` on every timestamp. Both halves are machine values: the
+  // local time with its UTC offset, and the same instant in UTC — which is what a Railway log
+  // line is in, and therefore what makes a value on this screen usable as evidence.
+  'time.exact': 'Exactly {local} — {utc} UTC',
   'common.english': 'English',
   'common.persian': 'فارسی',
 

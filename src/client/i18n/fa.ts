@@ -48,6 +48,7 @@ const fa: Dict = {
   'table.expand': 'نمایش جزئیات',
   'table.collapse': 'پنهان‌کردن جزئیات',
   'table.more': '{count} مورد دیگر',
+  'time.exact': 'دقیقاً {local} — {utc} به وقت UTC',
   'common.english': 'English',
   'common.persian': 'فارسی',
 

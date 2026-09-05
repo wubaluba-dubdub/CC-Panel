@@ -2,9 +2,9 @@ import { useCallback, useEffect, useState } from 'react';
 import { Badge, Button, Card, CopyButton, Notice } from '../components/ui.js';
 import { DataTable, type DataRow } from '../components/Table.js';
 import { Mono, MonoBlock } from '../components/Ltr.js';
+import { Time } from '../components/Time.js';
 import { useLocale } from '../i18n/index.js';
 import { api } from '../lib/api.js';
-import { formatTechnicalDate } from '../lib/format.js';
 import { META_INLINE_PAIRS, metaPairs, rawMeta, type MetaPair } from '../lib/meta.js';
 import { AUDIT_TABLE, type AuditColumnKey } from '../lib/table.js';
 import type { AuditEntryView, AuditPageResponse, AuditVerifyResponse } from '../../shared/types.js';
@@ -36,7 +36,7 @@ import type { AuditEntryView, AuditPageResponse, AuditVerifyResponse } from '../
  * intact. The server sends that as a `hint` rather than as prose.
  */
 export function Audit(): React.JSX.Element {
-  const { t, locale } = useLocale();
+  const { t } = useLocale();
   const [entries, setEntries] = useState<AuditEntryView[]>([]);
   const [cursor, setCursor] = useState<number | null>(null);
   const [end, setEnd] = useState(false);
@@ -90,7 +90,9 @@ export function Audit(): React.JSX.Element {
     return {
       id: entry.id,
       cells: {
-        'audit.when': <Mono className="nowrap">{formatTechnicalDate(entry.ts, locale)}</Mono>,
+        // The one place seconds are shown: the order of two rows inside one minute is
+        // information here, and nowhere else in the panel is it.
+        'audit.when': <Time iso={entry.ts} precision="second" />,
         // The event name is a code from `AuditEvent`, shown as-is: translating a hundred event
         // names would be a hundred strings that have to stay in step with the server's enum, and
         // the operator greps for these.

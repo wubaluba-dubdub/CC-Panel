@@ -1,21 +1,42 @@
 import type { Locale } from '../../shared/types.js';
 
 /**
- * Every number, byte count and date the operator sees, in one file.
+ * Every number, byte count and instant the operator sees, in one file.
  *
- * ── Two formatters, and the distinction is load-bearing ─────────────────────
+ * ── Two number formatters, and the distinction is load-bearing ───────────────
  *
  * | | Locale used | For |
  * | :--- | :--- | :--- |
- * | {@link formatNumber}, {@link formatDate} | `fa-IR` / `en-GB` | prose quantities and dates |
- * | {@link formatTechnical}, {@link formatTechnicalDate} | `fa-IR-u-ca-persian-nu-latn` | anything inside an LTR island |
+ * | {@link formatNumber} | `fa-IR` / `en-GB` | a quantity inside a sentence |
+ * | {@link formatTechnical}, {@link formatBytes}, {@link formatPercent}, {@link formatInstant} | `fa-IR-u-ca-persian-nu-latn` | anything inside an LTR island |
  *
  * **Latin digits for every technical value in both languages.** `fa` defaults to `arabext`
  * numbering, so `Intl.NumberFormat('fa-IR').format(8080)` yields `۸۰۸۰`: a port number that
  * does not match the terminal, a byte count that will not `grep`, a commit id that is not the
  * commit id. `-nu-latn` is not cosmetic — it is what keeps a number the same number on both
  * sides of a clipboard. The Jalali *calendar* is kept (`-ca-persian`), because a date is read
- * rather than pasted, and an Iranian operator reading a Gregorian date has to convert it.
+ * rather than pasted.
+ *
+ * ── One instant formatter, and it is the only `Intl.DateTimeFormat` in the client ──
+ *
+ * `tests/integration/client-style.test.ts` asserts that. Three decisions in it:
+ *
+ * 1. **A month token, never a numeric month.** `dateStyle: 'short'` renders 5 September 2026 as
+ *    `05/09/2026`, which is 5 May to a US reader — and the screen this was reported from showed
+ *    `05/09/2026` and `05/10/2026` together, where the ambiguity is worse rather than better,
+ *    because either reading is internally consistent. No rendered date may be readable as two
+ *    different days.
+ * 2. **Two precisions and no others.** Minutes everywhere, seconds in the audit log, where the
+ *    order of two rows inside one minute is information. A hard expiry thirty days away does not
+ *    carry a meaningful second, and showing one invites the reader to trust it.
+ * 3. **The exact instant is always one hover away**, in a `title` — the local time with its UTC
+ *    offset and the same instant in UTC, so any value on this screen can be lined up with a
+ *    Railway log line, which is in UTC. See {@link instantParts}.
+ *
+ * The formatters are **memoised per locale and precision**. Constructing an
+ * `Intl.DateTimeFormat` is the expensive part of formatting one, and the audit log renders a
+ * hundred rows; `tests/unit/format.test.ts` asserts the construction count rather than trusting
+ * the comment.
  */
 
 const PROSE_LOCALE: Record<Locale, string> = { en: 'en-GB', fa: 'fa-IR' };
@@ -73,26 +94,97 @@ export function formatPercent(fraction: number | null, locale: Locale): string |
   }).format(fraction);
 }
 
-/** An ISO-8601 instant as a date and time, in the operator's calendar. */
-export function formatDate(iso: string | null, locale: Locale): string | null {
-  if (iso === null) return null;
-  const ms = Date.parse(iso);
-  if (Number.isNaN(ms)) return null;
-  return new Intl.DateTimeFormat(PROSE_LOCALE[locale], {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(new Date(ms));
+/** Minutes everywhere; seconds only in the audit log. */
+export type InstantPrecision = 'minute' | 'second';
+
+const INSTANT_OPTIONS: Record<InstantPrecision, Intl.DateTimeFormatOptions> = {
+  // `month: 'short'` is the whole point: a name cannot be read as another month, and a
+  // day-before-month locale and a month-before-day one then agree about the day.
+  minute: {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  },
+  second: {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  },
+};
+
+const FORMATTERS = new Map<string, Intl.DateTimeFormat>();
+
+let constructions = 0;
+
+/**
+ * How many `Intl.DateTimeFormat` objects this module has built.
+ *
+ * Exported for the suite, because "memoised" is a claim about behaviour that a comment cannot
+ * keep true: there are four possible formatters (two locales, two precisions) and a hundred-row
+ * audit page must not build a hundred of them.
+ */
+export function dateTimeFormatterConstructions(): number {
+  return constructions;
 }
 
-/** The same instant for an LTR island: Jalali where it applies, Latin digits always. */
-export function formatTechnicalDate(iso: string | null, locale: Locale): string | null {
-  if (iso === null) return null;
+function formatterFor(locale: Locale, precision: InstantPrecision): Intl.DateTimeFormat {
+  const cacheKey = `${locale}:${precision}`;
+  const cached = FORMATTERS.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const made = new Intl.DateTimeFormat(TECHNICAL_LOCALE[locale], INSTANT_OPTIONS[precision]);
+  constructions += 1;
+  FORMATTERS.set(cacheKey, made);
+  return made;
+}
+
+/**
+ * An ISO-8601 instant, in the operator's calendar and always with a month name.
+ *
+ * Null for a missing or unparseable value rather than a fabricated date: the caller renders the
+ * em dash, because "no value" and "the epoch" must not look the same.
+ */
+export function formatInstant(
+  iso: string | null | undefined,
+  locale: Locale,
+  precision: InstantPrecision = 'minute',
+): string | null {
+  if (iso === null || iso === undefined) return null;
   const ms = Date.parse(iso);
   if (Number.isNaN(ms)) return null;
-  return new Intl.DateTimeFormat(TECHNICAL_LOCALE[locale], {
-    dateStyle: 'short',
-    timeStyle: 'medium',
-  }).format(new Date(ms));
+  return formatterFor(locale, precision).format(new Date(ms));
+}
+
+function pad(value: number): string {
+  return String(Math.floor(Math.abs(value))).padStart(2, '0');
+}
+
+/**
+ * The same instant twice: local with its UTC offset, and UTC.
+ *
+ * This is what makes a timestamp on the screen usable as evidence. The panel's log lines are in
+ * UTC (Railway's are too), the operator's screen is in their own zone, and a value that cannot be
+ * converted between the two is a value they cannot correlate. Built by hand rather than with a
+ * formatter, because the point is a machine-readable form and not a localised one.
+ */
+export function instantParts(iso: string | null | undefined): { local: string; utc: string } | null {
+  if (iso === null || iso === undefined) return null;
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return null;
+  const date = new Date(ms);
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes < 0 ? '-' : '+';
+  const offset = `${sign}${pad(offsetMinutes / 60)}:${pad(offsetMinutes % 60)}`;
+  const local =
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+    `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}${offset}`;
+  return { local, utc: date.toISOString() };
 }
 
 /**

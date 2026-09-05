@@ -2,9 +2,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { Badge, Button, Card, CopyButton, Field, Notice } from '../components/ui.js';
 import { DataTable, KeyValueTable, type DataRow } from '../components/Table.js';
 import { Mono, MonoBlock } from '../components/Ltr.js';
+import { Time } from '../components/Time.js';
 import { useLocale } from '../i18n/index.js';
 import { api, ApiError } from '../lib/api.js';
-import { formatDuration, formatTechnicalDate } from '../lib/format.js';
+import { formatDuration } from '../lib/format.js';
 import { SECRETS_TABLE, TELEGRAM_TABLE, type SecretColumnKey } from '../lib/table.js';
 import type {
   NotificationQueuedResponse,
@@ -37,7 +38,7 @@ import type {
 const REVEAL_MS = 20_000;
 
 export function Secrets(): React.JSX.Element {
-  const { t, locale } = useLocale();
+  const { t } = useLocale();
   const [secrets, setSecrets] = useState<SecretMetadataResponse['secrets'] | null>(null);
   const [telegram, setTelegram] = useState<NotificationStatusResponse | null>(null);
   const [error, setError] = useState<React.ReactNode | null>(null);
@@ -135,9 +136,7 @@ export function Secrets(): React.JSX.Element {
     cells: {
       'secrets.scope': <Mono>{secret.scope}</Mono>,
       'secrets.name': <Mono>{secret.name}</Mono>,
-      'secrets.updated': (
-        <Mono className="nowrap">{formatTechnicalDate(secret.updatedAt, locale)}</Mono>
-      ),
+      'secrets.updated': <Time iso={secret.updatedAt} />,
       'secrets.reveal': (
         <Button
           cell
@@ -283,11 +282,8 @@ function TelegramCard({
           {
             key: 'lastSuccess',
             label: t('telegram.lastSuccess'),
-            value: (
-              <Mono className="nowrap">
-                {formatTechnicalDate(status.lastSuccessAt, locale) ?? t('common.never')}
-              </Mono>
-            ),
+            value:
+              status.lastSuccessAt === null ? t('common.never') : <Time iso={status.lastSuccessAt} />,
           },
           // A category and a time, never Telegram's own text — which echoes what was sent. The
           // category is a code from the transport's closed set.
@@ -299,10 +295,7 @@ function TelegramCard({
                   label: t('telegram.lastFailure'),
                   value: (
                     <>
-                      <Mono>{status.lastFailure.category}</Mono>{' '}
-                      <Mono className="nowrap">
-                        {formatTechnicalDate(status.lastFailure.at, locale)}
-                      </Mono>
+                      <Mono>{status.lastFailure.category}</Mono> <Time iso={status.lastFailure.at} />
                     </>
                   ),
                 },

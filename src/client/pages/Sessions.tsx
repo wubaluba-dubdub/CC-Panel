@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Badge, Button, Card, Notice } from '../components/ui.js';
 import { DataTable, type DataRow } from '../components/Table.js';
-import { Mono, MonoBlock } from '../components/Ltr.js';
+import { MonoBlock } from '../components/Ltr.js';
+import { Time } from '../components/Time.js';
 import { useLocale } from '../i18n/index.js';
 import { api } from '../lib/api.js';
-import { formatTechnicalDate } from '../lib/format.js';
 import { SESSIONS_TABLE, type SessionColumnKey } from '../lib/table.js';
 import { browserLabel, summariseClient } from '../lib/user-agent.js';
 import type { RevokedResponse, SessionListResponse, SessionSummary } from '../../shared/types.js';
@@ -35,7 +35,7 @@ import type { RevokedResponse, SessionListResponse, SessionSummary } from '../..
  * button makes.
  */
 export function Sessions({ onSignOut }: { onSignOut: () => void }): React.JSX.Element {
-  const { t, locale } = useLocale();
+  const { t } = useLocale();
   const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
   const [error, setError] = useState<React.ReactNode | null>(null);
   const [notice, setNotice] = useState<React.ReactNode | null>(null);
@@ -94,21 +94,17 @@ export function Sessions({ onSignOut }: { onSignOut: () => void }): React.JSX.El
             {session.current ? <Badge kind="ok">{t('sessions.current')}</Badge> : null}
           </>
         ),
-        'sessions.created': (
-          <Mono className="nowrap">{formatTechnicalDate(session.createdAt, locale)}</Mono>
-        ),
-        'sessions.lastSeen': (
-          <Mono className="nowrap">{formatTechnicalDate(session.lastSeenAt, locale)}</Mono>
-        ),
+        'sessions.created': <Time iso={session.createdAt} />,
+        'sessions.lastSeen': <Time iso={session.lastSeenAt} />,
+        // The hard expiry is a second line under the idle one, labelled — and to the minute, like
+        // everything else here. A hard expiry thirty days away does not carry a meaningful second.
         'sessions.expires': (
           <>
-            <Mono className="nowrap">{formatTechnicalDate(session.expiresAt, locale)}</Mono>
+            <Time iso={session.expiresAt} />
             {session.absoluteExpiresAt === null ? null : (
               <>
                 <span className="sub">{t('sessions.absolute')}</span>
-                <Mono className="nowrap">
-                  {formatTechnicalDate(session.absoluteExpiresAt, locale)}
-                </Mono>
+                <Time iso={session.absoluteExpiresAt} />
               </>
             )}
           </>

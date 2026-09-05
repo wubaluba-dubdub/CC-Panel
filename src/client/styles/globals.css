@@ -465,7 +465,9 @@ bdi {
 
 .field label {
   font-size: var(--text-sm);
-  color: var(--ink-tertiary);
+  /* Secondary and not tertiary: a label names the value the operator is about to type, so it is
+   * supporting prose rather than text about the interface. The hint under it is tertiary. */
+  color: var(--ink-secondary);
 }
 
 .field input,
@@ -712,6 +714,13 @@ col.col-action {
  * reported defects, and the column budget is what makes this safe rather than clipping. */
 .nowrap {
   white-space: nowrap;
+}
+
+/* A footnote under a table is about the table, and needs the rhythm's own gap between them —
+ * `sessions.noIpNote` sat directly against the last row's divider. */
+.scroll-x + .hint {
+  display: block;
+  margin-block-start: var(--s3);
 }
 
 /* A second line inside a cell: the label of a value that is subordinate to the one above it. */

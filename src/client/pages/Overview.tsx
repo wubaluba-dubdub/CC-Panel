@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { Badge, Card, Notice } from '../components/ui.js';
 import { Gauge } from '../components/Gauge.js';
 import { Mono } from '../components/Ltr.js';
+import { Time } from '../components/Time.js';
 import { useLocale } from '../i18n/index.js';
 import { api, ApiError } from '../lib/api.js';
-import { formatBytes, formatDuration, formatPercent, formatTechnicalDate } from '../lib/format.js';
+import { formatBytes, formatDuration, formatPercent } from '../lib/format.js';
 import type { MetricsResponse, WatchdogRuleStatus } from '../../shared/types.js';
 
 /**
@@ -107,7 +108,9 @@ export function Overview(): React.JSX.Element {
   return (
     <>
       <h1>{t('nav.overview')}</h1>
-      <p className="lede">{t('resources.sampledAt', { time: formatTechnicalDate(meta.sampledAt, locale) ?? '—' })}</p>
+      <p className="lede">
+        {t('resources.sampledAt', { time: <Time iso={meta.sampledAt} precision="second" /> })}
+      </p>
 
       {error === null ? null : <Notice kind="warn">{error}</Notice>}
 
@@ -208,9 +211,7 @@ export function Overview(): React.JSX.Element {
             : watchdog.previousRun.cleanShutdown === true
               ? t('resources.cleanRestart')
               : t('resources.uncleanRestart', {
-                  time: (
-                    <Mono>{formatTechnicalDate(watchdog.previousRun.detail?.lastSeenAt ?? null, locale) ?? '—'}</Mono>
-                  ),
+                  time: <Time iso={watchdog.previousRun.detail?.lastSeenAt ?? null} />,
                   used: <Mono>{formatBytes(watchdog.previousRun.detail?.usedBytes ?? null, locale) ?? '—'}</Mono>,
                 })}
         </p>
@@ -220,7 +221,7 @@ export function Overview(): React.JSX.Element {
             figure in the CPU card above is the sampler's second. */}
         <p className="hint">
           {t('resources.sampledAt', {
-            time: <Mono>{formatTechnicalDate(watchdog.sampledAt, locale) ?? '—'}</Mono>,
+            time: <Time iso={watchdog.sampledAt} precision="second" />,
           })}{' '}
           <Mono>
             {watchdog.cpuSampleWindowMs === null
@@ -265,7 +266,7 @@ function Rule({ rule }: { rule: WatchdogRuleStatus }): React.JSX.Element {
       {rule.state === 'above' ? (
         <p className="hint">
           {t('resources.above', {
-            time: <Mono>{formatTechnicalDate(rule.alertedAt, locale) ?? '—'}</Mono>,
+            time: <Time iso={rule.alertedAt} />,
           })}
         </p>
       ) : null}
@@ -275,7 +276,7 @@ function Rule({ rule }: { rule: WatchdogRuleStatus }): React.JSX.Element {
       {rule.clearingSince === null ? null : (
         <p className="hint">
           {t('resources.clearing', {
-            time: <Mono>{formatTechnicalDate(rule.clearingSince, locale) ?? '—'}</Mono>,
+            time: <Time iso={rule.clearingSince} />,
             window: <Mono>{formatDuration(30 * 60_000, locale)}</Mono>,
           })}
         </p>

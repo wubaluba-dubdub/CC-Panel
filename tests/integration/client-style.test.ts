@@ -302,3 +302,43 @@ describe('M2.1.1 — one table primitive, and one place that renders a table', (
     expect(offenders).toEqual([]);
   });
 });
+
+describe('M2.1.1 — one instant formatter', () => {
+  it('constructs an Intl.DateTimeFormat in exactly one file', () => {
+    // Every timestamp in the panel goes through `<Time>` and therefore through `formatInstant`.
+    // A second construction site is how a second date format appears on a second screen — which
+    // is what happened: the reported ambiguous `05/09/2026` came from `dateStyle: 'short'`.
+    const offenders: string[] = [];
+    for (const file of clientFiles(/\.tsx?$/)) {
+      const rel = relativeToClient(file);
+      const code = readFileSync(file, 'utf-8')
+        .split('\n')
+        .map((line) =>
+          line
+            .replace(/\/\*.*?\*\//g, '')
+            .replace(/\/\/.*$/, '')
+            .replace(/^\s*\*.*$/, ''),
+        )
+        .join('\n');
+      if (/new Intl\.DateTimeFormat/.test(code) && rel !== 'lib/format.ts') {
+        offenders.push(`${rel} constructs an Intl.DateTimeFormat — use formatInstant`);
+      }
+    }
+    expect(offenders).toEqual([]);
+    expect(readFileSync(clientFiles(/^format\.ts$/)[0]!, 'utf-8')).toContain('new Intl.DateTimeFormat');
+  });
+
+  it('renders every timestamp through the one component', () => {
+    // `<Time>` is what makes the `nowrap`, the mono face, the LTR isolation and the exact-instant
+    // title unavoidable rather than remembered.
+    const offenders: string[] = [];
+    for (const file of clientFiles(/\.tsx$/)) {
+      const rel = relativeToClient(file);
+      if (rel === 'components/Time.tsx') continue;
+      const code = readFileSync(file, 'utf-8');
+      if (/\bformatInstant\(/.test(code)) offenders.push(`${rel} formats an instant itself`);
+      if (/<time\b/.test(code)) offenders.push(`${rel} renders a <time> element`);
+    }
+    expect(offenders).toEqual([]);
+  });
+});
