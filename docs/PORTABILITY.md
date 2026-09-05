@@ -9,7 +9,9 @@ migrate.
 
 Related: [`SECURITY.md`](./SECURITY.md) for the crypto this reuses,
 [`DEPLOY.md`](./DEPLOY.md) §*Backup and restore* for the single-instance snapshot this is
-**not**.
+**not**, and [`IMPORT.md`](./IMPORT.md) (R8), which is a *different* import — an arbitrary
+project rather than a panel export — and which shares [§7](#7-import-is-untrusted-input) and
+[§8](#8-when-an-import-fails-halfway) unchanged.
 
 ---
 
@@ -459,6 +461,13 @@ disagree with it.
 
 ## 7. Import is untrusted input
 
+**Read with [`IMPORT.md`](./IMPORT.md) §3.** R8 adds a second kind of import — an arbitrary
+project as a ZIP, or a git clone — which reuses everything in this section unchanged and gives
+back the one structural advantage [§5.5](#55-why-a-bespoke-container-and-not-tar-or-zip) bought.
+The containment function, the entry-path list, the budgets, the body-limit scoping, the
+verify-then-apply ordering and the staging swap are all shared, and reuse is mandatory: a second
+containment implementation is not acceptable.
+
 **This is the largest new attack surface in the project.** There is one user, so the threat
 is not a stranger with an account — it is the operator being persuaded to import somebody
 else's file, from a forum post, a "here is my panel config" message, or a repository. Every
@@ -476,7 +485,7 @@ Rejected, with the whole import refused rather than the entry skipped:
 | backslashes anywhere | a `\` is a legal filename byte on Linux and a separator to a Windows reader; the two disagree about where the entry lands |
 | NUL or C0/C1 control characters | truncation at the NUL in any C-level consumer, and terminal escape sequences in a filename the panel later prints |
 | a leading or trailing space or dot in any component | names that resolve differently across filesystems |
-| any entry type that is not a regular file | there is none — [§5.5](#55-why-a-bespoke-container-and-not-tar-or-zip). This row exists so that a future move to `tar` restores it. |
+| any entry type that is not a regular file | there is none — [§5.5](#55-why-a-bespoke-container-and-not-tar-or-zip). This row was a placeholder for a future move to `tar`; **R8 made it real**, because a ZIP or tarball of somebody's project can express every type this container cannot. See [`IMPORT.md`](./IMPORT.md) §3, which recovers most of §5.5's advantage a different way rather than implementing six rejections. |
 | a path longer than 4096 bytes, or a component longer than 255 **bytes** | the kernel's own limits. Bytes, not characters: a 200-character Persian name is 400 bytes. |
 
 Then, for every entry: **resolve the destination and assert containment before writing a

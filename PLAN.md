@@ -191,12 +191,12 @@ implementation for `@fastify/send` v4. Nothing in `src/` imports the package yet
 — it is a Phase 2 dependency for serving the built Vite bundle — so there was no
 call site to migrate.
 
-## Phase 2–5 requirements (R1–R7)
+## Phase 2–5 requirements (R1–R8)
 
-**Recorded 2026-09-03, from the operator, after M1.6. Authoritative for Phases 2–5.**
-Stated in the operator's own terms first, before anything is designed against them, and
-tagged R1–R7 so that any later line of code can be traced back to the requirement that
-caused it. Designs answering them carry the tag.
+**R1–R7 recorded 2026-09-03, R8 on 2026-09-05, from the operator, after M1.6.
+Authoritative for Phases 2–5.** Stated in the operator's own terms first, before anything is
+designed against them, and tagged R1–R8 so that any later line of code can be traced back to
+the requirement that caused it. Designs answering them carry the tag.
 
 | | The requirement, as stated | Designed in |
 | :--- | :--- | :--- |
@@ -207,6 +207,7 @@ caused it. Designs answering them carry the tag.
 | **R5** | Per-project Claude Code `settings.json`, set separately, dedicatedly, and by hand. | M2.4 below |
 | **R6** | Telegram token and the rest of the Telegram settings configurable from the UI, with a "test the bot" action. | M1.7 §*Interface* → M2.5 |
 | **R7** | `api_key` and `api_base_url` configurable per project from the UI, in addition to `settings.json`. Plus a global section for `api_key`, `api_base_url` and a hand-edited `settings.json`, whose values are the default for every project that has not been given its own. | M2.4 below |
+| **R8** | Upload an unfinished project — built with Claude Code or with any other tool — and have the panel take it over. *"If the project was built with Claude Code, the panel should detect that and use that project's Claude Code configuration as the panel's configuration for it."* Both arrival paths are wanted: a ZIP upload **and** a clone from a git URL. An uploaded project's git history is kept, with hook execution neutralised. | [`docs/IMPORT.md`](docs/IMPORT.md) → M2.8 |
 
 ### Earlier requirements stand unchanged
 
@@ -251,6 +252,25 @@ second, competing design for anything already specified.
   larger, and the standing rule extends to it verbatim: **no module outside the settings
   generator and `internal-hooks.ts` may name `.claude`, `settings.json`, or a Claude Code
   payload field**, still enforceable by the same static scan.
+- **R8 × decision 3, and it is the one overlap that *removes* an advantage.**
+  [`docs/PORTABILITY.md`](docs/PORTABILITY.md) §5.5's argument for a bespoke export container
+  was that it cannot express a symlink, a hardlink, a device node, a fifo, a setuid bit or an
+  absolute path — so six rejections became structurally impossible rather than merely
+  implemented. A ZIP or tarball of somebody else's project can express all of them, so **R8
+  gives that surface back**, and §7.1's entry-type row stops being a placeholder for a future
+  move to `tar`. [`docs/IMPORT.md`](docs/IMPORT.md) §3 recovers most of the advantage a
+  different way (ZIP only, external attributes never read, every entry written as a regular
+  file with a fixed mode) and names what is left over. The containment function
+  ([`docs/FILES.md`](docs/FILES.md) §2) is reused and **a second one is not acceptable**.
+- **R8 × R5/R7's settings model.** M2.4 was designed around sources the panel owns. R8
+  introduces one it does not — a workspace file that *outranks* the panel's own — and
+  [`docs/IMPORT.md`](docs/IMPORT.md) §11 lists the four changes M2.4 must make for it,
+  including a correction: M2.4's claim that *"the operator cannot break the turn-complete
+  notification by hand"* is false, because `hooks.Stop` in a workspace `.claude/settings.json`
+  outranks the user-level file the panel generates.
+- **R8 × M2.2's table.** The provenance and review columns must be in migration `011` from the
+  start ([`docs/IMPORT.md`](docs/IMPORT.md) §10). A column added later is an `ALTER` against
+  live operator data; the per-item approval **table** is not, and lands with R8.
 - **R3 × everything server-side.** The server gains no locale. `GET /api/audit`,
   `GET /api/system/resources` and every error body stay machine-readable; the client owns
   every human string. The one exception is M1.7, which has no client — see M2.1 §*The
@@ -1620,6 +1640,7 @@ this section used to hold is now M2.1's content, unchanged in scope.
 | **M2.5** | Telegram configuration UI | R6 | **M1.7**, M2.1 | no |
 | **M2.6** | Portable export and import | R1, R2 | M2.2, M2.4, M1.7 (audit events → rules) | no |
 | **M2.7** | The resource widget over the endpoint already designed | earlier requirement | M2.1, `resources.service.ts` | no |
+| **M2.8** | Importing an unfinished project: ZIP upload and git clone | R8 | M2.2, M2.3, M2.4, M2.6, `git` in the image | no — but **two of its decisions block M2.2 and M2.4** |
 
 Two ordering facts worth naming rather than discovering:
 
@@ -1627,6 +1648,11 @@ Two ordering facts worth naming rather than discovering:
   "test the bot" button with nothing behind it is worse than no button.
 - **M2.6 is last on purpose.** An export can only carry what exists, so building it before
   M2.4 would mean writing the document format twice.
+- **M2.8 comes after M2.6, not beside it.** M2.6 builds the staging-and-swap pipeline and M2.8
+  adds a second arrival path to it. Building both at once is how
+  [`docs/IMPORT.md`](docs/IMPORT.md) §2's *one scanner, one classifier, one promoter* rule gets
+  negotiated away under schedule pressure — and the path that ends up missing a check is
+  always the one used less often, which is the path an unusual project arrives by.
 - **Migration numbers are assigned when a milestone is *built*, not when it is designed.**
   M1.7's design claims `009_notifications.sql` and M2.2 needs a migration too; whichever
   lands first takes 009. Re-read the other's design for its number before writing the file.
@@ -1659,9 +1685,28 @@ Three more that I think are blocking, and this is the judgement the milestone is
    both are asserted byte-for-byte by `base-path.test.ts` and `secret-leak.test.ts` — doing
    it in the same pass is free, and doing it later is a second pass over those tests.
 
+And two that R8 added on 2026-09-05, both blocking a milestone rather than M2.1:
+
+6. **The `projects` provenance and review columns, in migration `011`, with M2.2.**
+   [`docs/IMPORT.md`](docs/IMPORT.md) §10. `origin`, `origin_ref`, `origin_at`,
+   `source_install_id`, `review_state`, `reviewed_at`, `artefacts_json`. The one that is easy
+   to argue away is `review_state`, and it is the one that matters: whether anybody has looked
+   at what an imported project will do is not UI state, it is false by default for everything
+   imported, and it is read by the projects list, the spawn confirmation and the export dialog.
+   A `NOT NULL` column added later has to invent a value for every existing row, which is how a
+   provenance field ends up meaning "created here, probably".
+7. **Four settings-model changes, with M2.4.** [`docs/IMPORT.md`](docs/IMPORT.md) §11:
+   `.claude/settings.local.json` is in the precedence chain and not in M2.4's model;
+   `.mcp.json` is a separate root file and not in it either; per-key provenance needs
+   `workspace` and `workspace_local` as **sources** rather than as a "shadowed by" modifier;
+   and `hooks.Stop` cannot be panel-owned through the user-level file, so the panel's
+   non-negotiable keys want `claude --settings`. Retrofitting the provenance enum is a change to
+   every row of every settings screen.
+
 **Not blocking, explicitly:** the export format, the containment function, the credential
-test, the Telegram UI, every retention sweep. All are additive behind their own routes, and
-none of them constrains a component's shape.
+test, the Telegram UI, every retention sweep, and every part of R8 that is not in the two items
+above. All are additive behind their own routes, and none of them constrains a component's
+shape.
 
 #### M2.1 — application shell, design system, and direction
 
@@ -1808,6 +1853,17 @@ Also here, because it is cheap now: `slug` (unique after NFC normalisation and c
 (`isoFrom`, not `datetime('now')` — see the note under M2.4 §*storage*), and the per-project
 hook token from M1.7.
 
+**And R8's provenance and review columns, which are not optional here.**
+[`docs/IMPORT.md`](docs/IMPORT.md) §10 specifies them: `origin`, `origin_ref`, `origin_at`,
+`source_install_id`, `review_state`, `reviewed_at`, `artefacts_json`. They are in *this*
+migration because a column added to `projects` later is an `ALTER` against a live volume with
+the operator's projects in it — and a `NOT NULL` provenance column added then has to invent a
+value for every existing row. R8's *per-item* approval table is the other side of that line and
+lands with R8: adding a table later is free.
+
+The migration is **`011`**. M1.7 took `009` and M1.8 took `010`, by the rule that a number is
+claimed by the commit that lands.
+
 **Commit:** `feat(m2.2): projects`
 
 #### M2.3 — the file browser
@@ -1858,9 +1914,29 @@ file rather than in a tooltip.
 Merge rules, because "merge" is not a specification: shallow at the top level with project
 winning, except `env` (merged key by key, project wins per key) and
 `permissions.allow`/`deny`/`ask` (concatenated, de-duplicated, order preserved). `hooks.Stop`
-is panel-owned and is written last, overwriting whatever either document said — the operator
-cannot break the turn-complete notification by hand, and the UI explains why that key is not
-theirs.
+is panel-owned and is written last, overwriting whatever either document said, and the UI
+explains why that key is not theirs.
+
+> **Corrected on 2026-09-05 by R8.** This paragraph used to end *"the operator cannot break the
+> turn-complete notification by hand"*, and that is **false**. "Written last" is about the order
+> in which the panel merges its own two documents into the generated file — and the generated
+> file is the *user-level* file, the lowest level of the chain, while a workspace
+> `.claude/settings.json` is above it and `.claude/settings.local.json` above that. So a project
+> carrying its own `hooks.Stop` silently replaces the panel's: the feature looks configured, the
+> queue stays empty, and M2.5's dead-channel banner correctly reports a healthy channel with
+> nothing in it. The fix is to pass the panel's non-negotiable keys with `claude --settings`,
+> which is level 2 and outranks both workspace files, plus a named warning either way.
+> [`docs/IMPORT.md`](docs/IMPORT.md) §11.4 has the argument, the two rejected alternatives, and
+> the one thing that must be verified before the generator is written.
+
+**Three more things R8 requires of this model**, all of them cheaper now than after the settings
+screens exist ([`docs/IMPORT.md`](docs/IMPORT.md) §11): `.claude/settings.local.json` is in the
+precedence chain and is not mentioned anywhere above; `.mcp.json` is a separate file at the
+project root and is not part of `settings.json`, so the effective-merge view has a hole exactly
+where the executable class lives; and per-key provenance needs `workspace` and `workspace_local`
+as **sources** rather than a *shadowed by* modifier, because a key that exists only in a
+workspace file has no panel-side provenance at all and rendering it as "not set" is precisely the
+failure this view exists to catch.
 
 Invalid JSON is refused **at save time** on the source document, which is where 4.7's failure
 mode is actually prevented. Unknown top-level keys are a warning, not a refusal. Once Phase 3
@@ -2008,6 +2084,17 @@ key that points at the wrong gateway.
 
 Specified in [`docs/PORTABILITY.md`](docs/PORTABILITY.md).
 **Commit:** `feat(m2.6): portable export and import`
+
+#### M2.8 — importing an unfinished project (R8)
+
+Specified in [`docs/IMPORT.md`](docs/IMPORT.md). Two arrival paths — a ZIP upload and a git
+clone — and **one** pipeline from staging onward, enforced by a static scan rather than by
+review. The feature's honest name is *surface, review, neutralise*: with a per-project
+`CLAUDE_CONFIG_DIR`, a workspace `.claude/settings.json` already outranks everything the panel
+writes, so an uploaded project's settings do not need to be adopted in order to take effect —
+they already will, and today they would be neither visible nor governed.
+
+**Commit:** `feat(m2.8): importing an unfinished project`
 
 #### M2.7 — the resource widget
 

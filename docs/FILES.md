@@ -4,7 +4,10 @@
 browse its files, download any file, edit any file in the panel, upload new files, plus
 create, rename and delete — **all confined to one project's workspace.**
 
-Related: [`PORTABILITY.md`](./PORTABILITY.md) §7.1, which shares §2's containment function;
+Related: [`PORTABILITY.md`](./PORTABILITY.md) §7.1 and [`IMPORT.md`](./IMPORT.md) §3, both of
+which share §2's containment function — **there is one implementation and one adversarial test
+table, and a second one is not acceptable**. R8's import is the caller that needs it most: it
+walks a tree of somebody else's paths rather than one path from a request.
 [`SECURITY.md`](./SECURITY.md) for the response headers this relies on.
 
 ---
@@ -73,7 +76,7 @@ raised:
 | `~`, `~/.ssh/id_ed25519` | `~` is not expanded by `resolve()`, so this must fail as a *missing file named `~`*, never as a home-directory read |
 | `a\x00b`, `a\nb`, `a\x1b[2Jb` | NUL truncation in a C consumer; a newline in an audit row; an escape sequence in a name the panel prints |
 | `dir\..\..\panel.db` | `\` is a legal Linux filename byte and a separator to a Windows client |
-| a symlink inside the workspace pointing at `/data/panel.db` | the database, the account, the audit log |
+| a symlink inside the workspace pointing at `/data/panel.db` | the database, the account, the audit log. R8 is how one gets there: a ZIP or a clone can create it, which is why [`IMPORT.md`](./IMPORT.md) §3.2 and §4.3 stop either from making a symlink at all |
 | a symlink inside the workspace pointing at `/etc/passwd` | the host |
 | a symlink inside the workspace pointing at `../claude-home/settings.json` | the plaintext API key, one directory up |
 | a **symlinked directory** whose target is outside | every path *under* it is textually contained and physically is not |

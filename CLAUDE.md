@@ -1059,6 +1059,14 @@ what the plan calls for.
   M2.5 configuration UI.
   `PLAN.md` §*Built in M1.7* — one under the notification design, one under the resource
   design — lists every place the code departs from what was specified.
+- **R8 — importing an unfinished project: designed, no code.** `docs/IMPORT.md`, written in
+  M1.8, built in M2.8. Two arrival paths (ZIP upload, git clone) with genuinely different
+  threat profiles and **one** pipeline from staging onward, enforced by a static scan. Two of
+  its decisions land earlier than M2.8 and are the reason it was designed now: migration 011's
+  provenance and review columns on `projects`, and four changes to M2.4's settings model — one
+  of which corrects M2.4's claim that the operator cannot break the turn-complete notification
+  by hand. They can, and so can an uploaded project, because a workspace
+  `.claude/settings.json` outranks the user-level file the panel generates.
 - **M1.8 — the resource watchdog: done (no UI).** The always-on 30 s watcher, the memory
   and disk crossing rules with derived clear thresholds and a 30-minute cooldown, the
   `oom_kill` counter, and unclean-restart detection through a run marker in `/data/run`;
@@ -1097,14 +1105,20 @@ what the plan calls for.
 - No terminal or Claude Code integration (Phase 3).
 
 ## Next Steps (Phase 2)
-See `PLAN.md` §*M2 — Phase 2* for the milestone map and the blocking decisions, and
-§*Decisions taken after M2.0* for the twelve answers each milestone has to respect. In
-order: the application shell with direction built in (M2.1), projects with portable
-identity (M2.2), the file browser (M2.3), settings documents and provider credentials
-(M2.4), the Telegram configuration UI — whose transport now exists (M2.5) — portable export
-and import (M2.6), and the resource widget (M2.7), which has its endpoint and its poll
-budget already. Phase 3 remains the terminal, the pty, the Claude Code integration and the
-inbound hook endpoint M1.7 deliberately left out.
+See `PLAN.md` §*M2 — Phase 2* for the milestone map and the blocking decisions,
+§*Decisions taken after M2.0* for the twelve answers each milestone has to respect, and
+§*Decisions taken in M1.8* for six more. In order: the application shell with direction built
+in (M2.1), projects with portable identity (M2.2), the file browser (M2.3), settings documents
+and provider credentials (M2.4), the Telegram configuration UI — whose transport now exists
+(M2.5) — portable export and import (M2.6), the resource widget (M2.7), which has its
+endpoint, its poll budget and now `Watchdog.status()` already, and importing an unfinished
+project (M2.8, R8 — `docs/IMPORT.md`). Phase 3 remains the terminal, the pty, the Claude Code
+integration and the inbound hook endpoint M1.7 deliberately left out.
+
+**Two of R8's decisions are not M2.8's to make.** Migration 011's provenance and review
+columns on `projects` land with M2.2, and four changes to the settings model land with M2.4 —
+`docs/IMPORT.md` §10 and §11. Both are cheap now and either an `ALTER` against live operator
+data or a change to every settings screen later.
 
 **Two things M1.7 leaves for Phase 2 to pick up rather than rediscover.** The client's
 metrics poll budget is written down (`PLAN.md`, end of §*Built in M1.7* under the resource
