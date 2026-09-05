@@ -409,6 +409,75 @@ Numbered on from the M1.8 list below, which they continue rather than replace.
     about 400 lines. Design tokens are custom properties in `globals.css`; the item is
     corrected in place.
 
+### Decisions taken in M2.1.1 (2026-09-06)
+
+Numbered on from the M2.1 list above. M2.1.1 is a repair milestone: the operator deployed M2.1,
+photographed the sessions list and the audit log, and reported twelve visual defects. Eleven were
+one root cause and its consequences; the twelfth was a request. No route, no migration, no audit
+event, no dependency, and nothing under `src/server` changed.
+
+24. **A container owns its edges, and that is a primitive rather than a fix per screen
+    (M2.1.1).** A card is a clipping context and anything that can be wider than it goes in a
+    scroll region inside it. Both tables had been laid out by `table-layout: auto`, so their width
+    was the sum of their widest cells — a raw `User-Agent` string and a JSON blob — and the card
+    neither clipped nor scrolled: the last column's header, every row's divider and about 350
+    pixels of audit metadata were drawn across the card's border and its rounded corner and out
+    onto the page. The consequence that reaches M2.2: **anything that must escape a card cannot be
+    a positioned descendant of one**, so the command palette must be a `<dialog>` opened with
+    `showModal()`, which the browser puts in the top layer.
+25. **Two measures, not one (M2.1.1).** `.main` may grow to 132ch and every direct child of the
+    routed region is clamped back to 76ch, so a card holding a data table opts out and everything
+    else is laid out exactly as it was. 76 characters is a *reading* measure; four timestamp
+    columns and a client column are not reading, and clamped to it the sessions table scrolled
+    horizontally on a 1920px display for a reason that had nothing to do with the display.
+26. **One table primitive, and the definition is data (M2.1.1).** `components/Table.tsx` is the
+    only file that renders a `<table>`. `table-layout: fixed` needs a *complete* colgroup — a
+    partial one divides the remaining width equally between the columns left out, which is worse
+    than an automatic layout — so the colgroup, the header row and each row's cells all come from
+    one array in `lib/table.ts`, with the cells as a `Record` keyed on the column keys. A missing
+    cell is therefore a compile error. Each column carries a character budget asserted against
+    **both** dictionaries, which is the only way a Persian label that would wrap gets caught by
+    somebody who does not read Persian.
+27. **Unbounded attacker-influenced text is summarised, and the raw form is one click away
+    (M2.1.1).** A `User-Agent` header becomes two closed-enumeration members plus a major version
+    of at most four digits, capped at 256 characters before a pattern runs over it; audit metadata
+    becomes capped key/value pairs with untranslated keys, because they are grep keys. No
+    substring of either reaches the screen through the summary, which is a stronger property than
+    "React escapes it". **No user-agent parsing dependency**: its release cadence would be set by
+    other people's browser releases, inside the container that holds `PANEL_MASTER_KEY`, for three
+    substring checks each.
+28. **One instant formatter, a month token, and two precisions (M2.1.1).** `dateStyle: 'short'`
+    rendered 5 September 2026 as `05/09/2026`, which is 5 May to a US reader — and the reported
+    screen showed `05/09/2026` and `05/10/2026` together, where the ambiguity is worse rather than
+    better because either reading is internally consistent. Minutes everywhere, seconds only in
+    the audit log, and the exact instant with its UTC offset in a `title` on every timestamp, so a
+    value on screen can be lined up with a Railway log line. `lib/format.ts` holds the client's
+    only `Intl.DateTimeFormat` and a scan keeps it that way.
+29. **`font-variant-numeric: tabular-nums` is not used, because it would not have worked
+    (M2.1.1).** The measurement rather than the assumption: `vazirmatn-latin-400.woff2` — the face
+    the UI text is set in — ships `kern, liga, lnum, pnum, zero` and **no `tnum`**, so the
+    declaration would have been a silent no-op on exactly the polled values it was there to
+    protect. Every number and every timestamp is in the mono face instead, where tabular is a
+    property of the face.
+30. **Motion is a closed system, and a state is not an animation (M2.1.1).** The operator asked
+    for soft animation. Four durations and one curve in the token file; a closed allowlist of six
+    animatable properties plus `display` and `overlay` with `allow-discrete`; nothing that
+    triggers layout, because this panel polls every two seconds and a layout-animating property is
+    a reflow per frame while data is arriving. Every transition, animation and `@keyframes` rule is
+    inside `@media (prefers-reduced-motion: no-preference)` and every *state* is outside it, so
+    reduced motion removes the travel and never the information. **`--gauge-fill` is registered
+    with `@property`**: unregistered, it has no type and interpolates discretely, so the
+    transition applies, does nothing, and looks exactly like an animation nobody added. And **no
+    polled value may appear in a React key** — the routed region is keyed by the route, because a
+    key that changed on a poll would replay the enter animation every two seconds.
+31. **Deferred with reasons, in `docs/UI.md` §6 (M2.1.1):** relative time (a label that does not
+    tick is worse than an absolute one, and a ticking label is a second timer to get wrong on a
+    panel that already polls); a stacked card layout per row on a narrow viewport (turning a table
+    into cards means `display: block` on table elements, which discards the row and column
+    semantics that make these screens readable with a screen reader — the correct fix is different
+    markup per breakpoint, which is its own decision); and view transitions (a second rendering
+    path to reason about on a panel whose perimeter is exact).
+
 ### Decisions taken in M1.8 (2026-09-05)
 
 Numbered on from the list above so the whole set stays checkable. 13–15 are built here;
@@ -1854,6 +1923,23 @@ Two things it added that the list did not ask for, both because the alternative 
 - **A `users.locale` column and `PATCH /api/settings/locale`** (migration 011), which §R3
   specified and the item list did not mention. Null is not `'en'`; the route needs a full
   session and no step-up, and is the one write in the panel with no audit row.
+
+##### M2.1.1 — the visual repair, and what it means for every screen after it
+
+M2.1 deployed and the operator photographed the sessions list and the audit log. Twelve defects;
+eleven of them were one root cause and its consequences, and the twelfth was a request for some
+motion. §*Decisions taken in M2.1.1* has the eight decisions; `docs/UI.md` §5, §6 and §7 are the
+authority for the result. Four commits, nothing under `src/server`, no route, no migration, no
+audit event, no dependency.
+
+**What every later screen inherits, and what breaks if it does not use it:** a card that holds
+anything wider than itself opts into `card-wide` and puts it in a `<ScrollRegion>` (otherwise the
+content is drawn across the card's border); every table is `<DataTable>` with a definition in
+`lib/table.ts` (otherwise it has no colgroup, and `table-layout: fixed` divides its width
+equally); every timestamp is `<Time>` (otherwise the date is ambiguous and the value has no exact
+instant); every overlay is a `<dialog>` opened with `showModal()` (otherwise the card that
+contains it clips it — **this is the one M2.2's command palette must not get wrong**); and no
+polled value appears in a React key (otherwise the screen remounts every two seconds).
 
 ##### R3: Persian and English, decided before the first component
 

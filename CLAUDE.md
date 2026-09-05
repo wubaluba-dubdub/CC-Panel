@@ -167,23 +167,53 @@ build failure, not a warning.
 - Client: Display user-friendly error with explanation and next action.
 
 ### Styling
-- **Plain CSS with design tokens as custom properties** in `src/client/styles/globals.css`.
-  Not Tailwind, which this section used to say and `PLAN.md` §M2.1 still lists: the deciding
-  argument is that R3's logical-property rule is only real if a static scan can see a
-  violation, and a scan over CSS declarations is exact where a scan over `className` strings
-  has to encode Tailwind's whole utility vocabulary and fails *silently* when it misses one.
-  Recorded as decision 23 in `PLAN.md` §*Decisions taken in M2.1*.
+`docs/UI.md` is the authority and its **§7 is the gate**: every rule below, beside the file that
+fails when it is broken. The rules themselves:
+
+- **Plain CSS with design tokens as custom properties.** Not Tailwind, which this section used
+  to say and `PLAN.md` §M2.1 still lists: the deciding argument is that R3's logical-property
+  rule is only real if a static scan can see a violation, and a scan over CSS declarations is
+  exact where a scan over `className` strings has to encode Tailwind's whole utility vocabulary
+  and fails *silently* when it misses one. Recorded as decision 23 in `PLAN.md` §*Decisions
+  taken in M2.1*.
+- **`src/client/styles/tokens.css` is the only file that may hold a literal value** — a colour,
+  a spacing step, a radius, a duration, an easing curve, a raw `px` length — **or define a
+  custom property.** `tests/integration/client-style.test.ts` scans every other `.css`, `.ts`
+  and `.tsx` file. The one exception it permits is a `px` inside an `@media` condition, which
+  is evaluated before custom properties are substituted. The three ink tones are named for the
+  role they play (`--ink-primary` / `-secondary` / `-tertiary`), not for how dim they are; §1 of
+  `docs/UI.md` says which is for what.
 - Dark only, and `color-scheme: dark` says so. A light theme is not a token swap in a panel
   whose one accent has to stay legible against a terminal, and it is not built.
 - **Logical properties only** — `margin-inline-start`, `text-align: start`,
-  `inset-inline-end` — enforced by `tests/integration/client-discipline.test.ts`.
-- Animations only on `transform` and `opacity`, every rule inside
-  `@media (prefers-reduced-motion: no-preference)`. Nothing the operator has to *read*
-  animates.
+  `inset-inline-end` — enforced by `tests/integration/client-discipline.test.ts`. Since M2.1.1
+  the scan also covers the physical *axis* names (`width`, `height`, `overflow-x`), which are a
+  different case: an axis is symmetric under a direction change, so they get an allowlist with a
+  reason rather than a ban. It has exactly two entries.
+- **A container owns its edges.** A card clips (`overflow: clip`, with `hidden` before it as the
+  fallback) and anything that can be wider than it sits in a `<ScrollRegion>` inside it. The
+  consequence: **anything that must escape a card cannot be a positioned descendant of one**, so
+  every overlay is a real `<dialog>` opened with `showModal()`, which the browser puts in the top
+  layer. M2.2's command palette is the next thing this decides.
+- **One table primitive.** `components/Table.tsx` is the only file that renders a `<table>`;
+  every table is `table-layout: fixed` with a complete colgroup, and the colgroup, the header row
+  and each row's cells all come from one array in `lib/table.ts` — a missing cell is a compile
+  error. Each column has a character budget asserted against **both** dictionaries.
+- **Motion is a closed system.** Six animatable properties (`opacity`, `transform`,
+  `--gauge-fill`, `background-color`, `border-color`, `color`) plus `display` and `overlay` with
+  `allow-discrete`; nothing that triggers layout, because this panel polls every two seconds.
+  Every transition, animation and `@keyframes` rule is inside
+  `@media (prefers-reduced-motion: no-preference)`; a *state* is outside it, so reduced motion
+  removes the travel and never the information. The focus ring animates at no duration under any
+  preference. **No polled value may appear in a React key** — the routed region is keyed by the
+  route, and a key that changed on a poll would replay the enter animation every two seconds.
 - **No `style` attribute, no `style` prop, no runtime CSS-in-JS.** `style-src 'self'` blocks
   the first two; the third would need a per-response nonce and the panel does no server-side
   rendering. A data-dependent value goes through `element.style.setProperty('--x', v)` and is
-  read with `var()` — the resource gauge is the one component this decides. See `docs/UI.md`.
+  read with `var()` — the resource gauge is the one component this decides, and its
+  `--gauge-fill` is **registered with `@property`**, without which the value has no type and
+  interpolates discretely: the transition applies, does nothing, and looks exactly like an
+  animation nobody added.
 
 ## Precedents (mistakes that cost a debugging session; do not repeat)
 
@@ -1171,13 +1201,28 @@ what the plan calls for.
   **Deferred with reasons:** the command palette (nothing to search until there are projects —
   M2.2), a QR renderer (about 50 kB to save typing 32 characters once per install), and a
   light theme (not built, and `color-scheme: dark` says so).
+- **M2.1.1 — the visual repair: done (client only; `src/server` and `src/shared` untouched).**
+  M2.1 deployed and the operator photographed two screens. Twelve defects, of which one was the
+  root cause of most: a table laid out by `table-layout: auto` was wider than its card, and
+  nothing clipped and nothing scrolled — so the last column's header, every row's divider and
+  about 350 pixels of audit JSON were drawn across the card's border and out onto the page.
+  Four commits. Part 0 is containment (`overflow: clip` on the card, a `<ScrollRegion>` inside
+  it), the two measures, `styles/tokens.css` as the only file that may hold a literal value, the
+  ink tones renamed for their role, and the overlay-must-be-top-layer rule. Part 1 is one table
+  primitive with a complete colgroup, character budgets asserted against both dictionaries, the
+  user-agent summariser and the metadata pairs. Part 2 is one instant formatter with a month
+  token and two precisions. Part 3 is motion: four durations, a closed allowlist of animatable
+  properties, `@property --gauge-fill`, and everything inside the reduced-motion guard.
+  **Deferred with reasons:** relative time, a stacked table layout for a narrow viewport, and
+  view transitions — all three in `docs/UI.md` §6 with their arguments.
 - No terminal or Claude Code integration (Phase 3).
 
 ## The client
 `docs/UI.md` is the authority: design tokens, what each CSP directive forbids and what it
-costs, the base-path templating, the bidi rules and the LTR island list, the poll budget, the
-error-code enum, the dependency table, and the accessibility properties a mouse never
-exercises. The decisions rather than the code:
+costs, the base-path templating, the bidi rules and the LTR island list, the primitives, the
+motion rules, the poll budget, the error-code enum, the dependency table, and the accessibility
+properties a mouse never exercises. **Its §7 is the gate**, and names the scan that enforces each
+rule. The decisions rather than the code:
 
 - **Three client dependencies, all of them React.** The panel had zero before M2.1 and this is
   the floor for every one that follows, because every one lands inside the container that holds
@@ -1211,6 +1256,21 @@ exercises. The decisions rather than the code:
   `Intl.NumberFormat('fa-IR')` yields `۸۰۸۰` for a port; and Railway quotes the plan in GB, so
   1 GB is 1 000 000 000 and not 0.93 GiB. The Jalali *calendar* is kept, because a date is read
   rather than pasted.
+- **One instant formatter, two precisions, and a month token in both calendars** (M2.1.1).
+  `lib/format.ts` holds the client's only `Intl.DateTimeFormat` and a scan says so; every
+  timestamp is a `<Time>`, which is monospaced, never wraps, and carries the exact instant with
+  its UTC offset in a `title` so a value on screen can be lined up with a log line. Seconds
+  appear only in the audit log. `dateStyle: 'short'` is what rendered 5 September as `05/09/2026`
+  — 5 May to a US reader, and both readings internally consistent.
+- **Every digit is in the mono face, and that is measured rather than assumed** (M2.1.1).
+  Vazirmatn's Latin subset ships `kern, liga, lnum, pnum, zero` and **no `tnum`**, so
+  `font-variant-numeric: tabular-nums` on the UI face would have been a silent no-op on exactly
+  the polled values it was there to protect. A monospaced face is tabular by construction.
+- **Unbounded attacker-influenced text is summarised, not rendered** (M2.1.1). A `User-Agent`
+  header becomes two closed-enumeration members plus a major version of at most four digits, with
+  the input capped at 256 characters *before* a pattern runs over it — so no substring of it
+  reaches the page through that path. Audit metadata becomes capped key/value pairs whose keys stay
+  untranslated, because they are grep keys. Both raw forms are one expander away.
 - **The error body carries a `code` from a closed set**, and the set is closed **at runtime**
   as well as in the type. That is not a formality: Fastify's own errors carry a `code`, so a
   body over `bodyLimit` arrives at the handler with `FST_ERR_CTP_BODY_TOO_LARGE` on it, and
@@ -1227,8 +1287,14 @@ exercises. The decisions rather than the code:
   figures describe the host, and a disarmed watchdog rule names its reason code.
 
 ## Next Steps (Phase 2)
-M2.1 is done, so the next one is **M2.2 — projects with portable identity** (migration **012**,
-carrying R8's provenance and review columns with it). The command palette is recorded there
+M2.1 is done and M2.1.1 has repaired what the operator found in it, so the next one is
+**M2.2 — projects with portable identity** (migration **012**, carrying R8's provenance and
+review columns with it). **M2.2's four screens must be built on M2.1.1's primitives**: a card
+that holds a table opts into `card-wide` and puts the table in a `<ScrollRegion>`; every table is
+`<DataTable>` with a definition in `lib/table.ts`, a character budget per column and a caption;
+every timestamp is `<Time>`; the command palette is a `<dialog>` opened with `showModal()`,
+because a card clips and a positioned descendant of one cannot escape it; and no polled value may
+appear in a React key. The command palette is recorded there
 too: it is the first milestone where it has anything to search.
 
 See `PLAN.md` §*M2 — Phase 2* for the milestone map and the blocking decisions,

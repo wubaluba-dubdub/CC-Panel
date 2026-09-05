@@ -248,8 +248,9 @@ primitive, three failed probes from stopping the container.
 
 `docs/UI.md` is the authority for how the client is built: the design tokens, what each CSP
 directive forbids and what that costs, the base-path templating, the bidi rules and the LTR
-island list, the poll budget, the error-code enum, and the dependency table. The parts that
-are *security* decisions rather than construction decisions are here:
+island list, the primitives, the motion rules, the poll budget, the error-code enum, and the
+dependency table — and its §7 is the gate, which names the scan that enforces each rule. The
+parts that are *security* decisions rather than construction decisions are here:
 
 - **No inline script, no inline style, no `style` attribute, and no runtime CSS-in-JS.** The
   first three are `script-src 'self'` and `style-src 'self'` with no `unsafe-inline`; the
@@ -273,6 +274,14 @@ are *security* decisions rather than construction decisions are here:
 - **Attacker-influenced text is rendered as text.** Audit metadata, a user-agent string, a
   secret's name. `react/no-danger` is an eslint error and `dangerouslySetInnerHTML` is a
   scan failure.
+- **Attacker-influenced text is also *bounded*** (M2.1.1). The two unbounded values the panel
+  displays are now summarised rather than rendered: a `User-Agent` header is reduced to two
+  members of closed enumerations plus a major version of at most four digits, with the input
+  capped at 256 characters before a pattern runs over it — so no substring of the header reaches
+  the page through that path at all — and every audit metadata value is capped by code point.
+  The raw forms are still reachable, in a block that wraps inside a card that clips. Rendering
+  as text stops a `<script>` tag; bounding it stops a 4 KB header from being the tallest object
+  on the screen, and stops it from pushing a table out of its container.
 - **A revealed secret leaves the DOM** when it is hidden, rather than being hidden in it.
 
 ## Manual Browser Checks
@@ -468,6 +477,111 @@ decides. **Ordered by what would be most damaging to discover late.**
     including inside a dialog, where Tab must not escape the modal — and confirm the focus
     ring is visible on both the page and a raised surface. Then run **Lighthouse**
     (Accessibility) on each screen. This is the check that catches what a mouse never does.
+
+### M2.1.1 — the repair, and every check of it is a layout check
+
+M2.1 shipped and the operator photographed two screens. What they found was invisible to the
+suite for a reason no test can fix: a table's width is decided by a browser laying out its
+content, and `app.inject()` lays nothing out. The repairs below are asserted where they can be —
+by scan, by budget and by type — and everything that remains is here.
+
+**Two screens were photographed and both were English.** Every layout item below therefore
+carries a **right-to-left mirror**: switch to فارسی and repeat it. That is not a formality — the
+fixes are written in logical properties precisely so direction is a setting, and the check is
+what proves it was.
+
+When one of these fails it is almost always one of three causes, and the item says which to
+suspect first:
+
+- **(a) the rule was bypassed** — an element that does not go through the primitive: a table not
+  rendered by `components/Table.tsx`, a card without `card-wide`, a timestamp not rendered by
+  `<Time>`;
+- **(b) the engine does not support the feature** — `overflow: clip`, `@property`,
+  `@starting-style`, `transition-behavior: allow-discrete`, `:has()`-free though this panel uses
+  none. Each has a stated degradation; the check is whether the degradation is what you get;
+- **(c) the data was not what the code assumed** — an empty metadata object, a null user agent, a
+  `memory.limitBytes` of null.
+
+Ordered, again, by what would be most damaging to discover late.
+
+28. **The recovery-codes dialog can be completed, and is not clipped.** Regenerate the codes.
+    The dialog must appear over everything, fully — ten codes, the copy button, the
+    acknowledgement checkbox and the close button all reachable — and Escape must not dismiss
+    it. Then do the same in فارسی. **This is first because it is the only irreversible one:**
+    those ten strings exist nowhere else after the dialog closes, and a card now *clips*, so a
+    dialog that had been a positioned descendant of one would be cut off with no scrollbar to say
+    so. A dialog whose bottom is missing points at **(a)** — an overlay that is not a `<dialog>`
+    opened with `showModal()`. The same applies to the base-path dialog, on a disposable install
+    only.
+29. **Nothing crosses a card's border, on any screen, in either direction.** Visit all five
+    screens in English, then all five in فارسی, and look at every card's edge and its four
+    rounded corners. Nothing — no table, no divider, no header, no button — may be drawn on or
+    past the border. This is the defect the milestone exists for: on the reported screen the
+    REVOKE header and the row's bottom border were drawn across the card's right border and its
+    corner. A crossing points at **(a)**; a crossing *only* in one direction points at a physical
+    property that escaped the scan and should be reported.
+30. **A long value scrolls inside its card, not out of it.** On Sessions and on the audit log,
+    narrow the window until the table no longer fits. The table must scroll **inside** the card,
+    with the card's border intact and a thin scrollbar in the panel's own colours; the page must
+    not gain a horizontal scrollbar. Then repeat in فارسی, where the same box scrolls the other
+    way. A page-level horizontal scrollbar points at **(b)** — `overflow: clip` not parsed, so the
+    `hidden` fallback should have taken effect; if neither did, report it.
+31. **No pill wraps and no timestamp breaks, in both languages.** On Sessions, the "This device"
+    pill must be one line inside its own border, and every timestamp must be one line. Then
+    فارسی, where both strings are longer or shorter and the column budget is asserted against
+    both. A wrapped pill points at **(a)** — a badge outside the `.badge` class — because the
+    budget itself is a test.
+32. **No date on screen can be read as another day.** Every timestamp must carry a month *name*:
+    `5 Sept 2026, 23:24` in English, `14 شهریور 1405، 23:24` in Persian, and seconds **only** in
+    the audit log. Hover one: the tooltip must give the exact instant with its UTC offset and the
+    same instant in UTC. A numeric month like `05/09/2026` points at **(a)** — a timestamp not
+    rendered through `<Time>`.
+33. **The tab order gained no dead stop.** Tab from a fresh load through Sessions and the audit
+    log. Every stop must do something: no stop that lands on the scroll region and then moves on
+    with nothing focused, and no doubled stop before a row's controls. This is the one decision in
+    the milestone that was **reasoned from the specification rather than verified** — the scroll
+    region deliberately carries no `tabindex`, because Chrome 127+ focuses a scroller only when it
+    has no focusable descendant and every row here has one. If Firefox or Safari turns out to leave
+    an overflowing table unreachable by keyboard alone, that is worth knowing and the fix is a
+    `tabindex` on the region.
+34. **The client summary is right for your own browser, and the raw string is complete.** On
+    Sessions, your own row must read *Chrome 152 on Windows* (whatever it actually is). Open the
+    row's expander: the raw `User-Agent` must be there, in full, unmodified, and selectable. A
+    wrong browser or a missing version points at **(a)**; *Unknown on Unknown* for a real browser
+    points at **(c)** and is worth reporting with the string, since the summariser is a closed set
+    of substring checks and adding one is three lines.
+35. **The metadata pairs are readable, and the raw JSON copies exactly.** On the audit log, a row
+    with metadata must show up to three `key value` pairs and, if there are more, a count. Open
+    the expander, press Copy, and paste: the result must be compact JSON identical to what the row
+    holds — `{"sessionId":1,"viaEnrollment":true}` — because that is the string you would compare
+    against a backup. Then فارسی: the keys stay in English, deliberately, because they are grep
+    keys. Something missing points at **(c)**.
+36. **The event filter opens, and works from the keyboard.** On the audit log, the filter must be
+    sized to its content rather than filling the row, must carry the panel's own border, radius
+    and focus ring, and must open with a click *and* with the keyboard, and choose an option with
+    the arrow keys. In فارسی the chevron must be on the *left*. Note that the popup itself is drawn
+    by the operating system and is not styled — that is expected, not a defect. A chevron on the
+    wrong side points at a physical property and should be reported.
+37. **The gauge eases, and its label does not change width.** Watch the memory bar for ten
+    seconds. It must glide between values rather than jumping, and the percentage beside it must
+    not shuffle sideways as its digits change. A bar that jumps points at **(b)** — `@property`
+    unsupported, so the custom property interpolates discretely. A label that shuffles points at
+    **(a)**: it is not in the mono face, and the UI face has no `tnum` to fall back on.
+38. **The screen animation runs on a navigation and never on a poll tick.** Click between
+    Overview and Sessions: the screen must fade up about four pixels, once. Then sit on Overview
+    for a minute: the figures must change in place with **nothing** fading or moving. A screen
+    that re-animates every two seconds is the worst outcome this milestone could produce, and it
+    means something polled reached a React key — points at **(a)**.
+39. **Reduced motion stops all of it, and removes no information.** Set
+    `prefers-reduced-motion: reduce` at the OS level and reload. Nothing may animate — no screen
+    fade, no gauge glide, no dialog scale, no skeleton pulse — **and** everything must still be
+    legible: hovering a button must still change its colour, the expander's chevron must still
+    point up when open, and the skeleton must still be visible while a table loads. Motion
+    removed is correct; a state removed with it is a bug.
+40. **Lighthouse accessibility still passes its floor, on every screen, in both directions.**
+    Run it on all five screens in English and in فارسی. The tables, the captions, the region
+    landmarks, the expander's `aria-expanded` and the `<time>` elements are all new since M2.1,
+    and a table is the single easiest thing in HTML to make unreadable to a screen reader.
 
 ## Secrets
 
