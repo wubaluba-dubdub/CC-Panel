@@ -363,7 +363,7 @@ describe('the public origin has one resolver', () => {
       const rel = relative(SERVER_ROOT, file).split('\\').join('/');
       if (rel === 'utils/public-origin.ts') continue;
       const text = readFileSync(file, 'utf-8');
-      for (const [index, line] of text.split('\n').entries()) {
+      for (const line of text.split('\n')) {
         const code = line.replace(/\/\/.*$/, '').replace(/^\s*\*.*$/, '');
         if (/resolvePublicOrigin\s*\(/.test(code)) callers.push(rel);
       }

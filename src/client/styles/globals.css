@@ -1,0 +1,173 @@
+/*
+ * The design system, as custom properties.
+ *
+ * Plain CSS, and that is a decision rather than an omission — PLAN.md §M2.1 item 1 says
+ * "Tailwind v4 theme" and PLAN.md §*Decisions taken in M2.1* item 23 records why it is not
+ * one. The short version: R3's logical-property rule is only real if a static scan can see
+ * a violation, and a scan over CSS declarations is exact where a scan over `className`
+ * strings would have to encode Tailwind's whole utility vocabulary and fail *silently*
+ * when it missed one.
+ *
+ * ── Two rules this file follows without exception ───────────────────────────
+ *
+ * 1. **Logical properties only.** `margin-inline-start`, not `margin-left`;
+ *    `text-align: start`, not `left`; `inset-inline-end`, not `right`. Persian is
+ *    right-to-left, and direction has to be a *setting* rather than a rewrite.
+ *    `tests/integration/client-discipline.test.ts` scans for the physical forms.
+ * 2. **No data-dependent value ever reaches a `style` attribute or `style.cssText`**, both
+ *    of which `style-src 'self'` blocks. A value that varies with data is set with
+ *    `element.style.setProperty('--x', v)` — the CSSOM path MDN documents as *not* covered
+ *    by `style-src-attr` — and read here through `var()`. The resource gauge is the
+ *    component this decides; see `--gauge-fill` below.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* ── Surfaces ────────────────────────────────────────────────────────────
+   * Three steps and no more. A dark interface with six greys reads as noise, and
+   * every extra one is a decision at every component.
+   */
+  --bg: #0a0a0b;
+  --surface: #131316;
+  --surface-raised: #1b1b1f;
+  --hairline: #26262b;
+  --hairline-strong: #34343b;
+
+  /* ── Ink ─────────────────────────────────────────────────────────────────── */
+  --text: #e8e8ea;
+  --text-muted: #9a9aa2;
+  --text-faint: #6b6b73;
+
+  /* ── One accent, plus the three states that must never be the accent ─────
+   * Status colours are not brand colours. A red that is also the accent makes every
+   * button look like a warning.
+   */
+  --accent: #6e8bff;
+  --accent-ink: #0a0a0b;
+  --accent-dim: #2b3a7a;
+  --danger: #ff6b6b;
+  --warn: #ffb95c;
+  --ok: #57d9a3;
+
+  /* ── The 8px grid ────────────────────────────────────────────────────────── */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 16px;
+  --s4: 24px;
+  --s5: 32px;
+  --s6: 48px;
+  --s7: 64px;
+
+  --radius: 8px;
+  --radius-sm: 4px;
+  --radius-lg: 12px;
+
+  /* ── Type ────────────────────────────────────────────────────────────────
+   * Vazirmatn first in both stacks: it covers Persian and has a Latin companion, so a
+   * mixed line does not change font mid-sentence. The system fallbacks matter more than
+   * usual here — `scripts/fonts.mjs` is not run at build time, so a tree without the
+   * woff2 files renders in the fallback rather than failing.
+   */
+  --font-ui: Vazirmatn, Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-lg: 17px;
+  --text-xl: 22px;
+  --text-2xl: 28px;
+
+  /* ── Motion ──────────────────────────────────────────────────────────────
+   * Every transition is on `transform` and `opacity` only, and every one is inside
+   * `@media (prefers-reduced-motion: no-preference)`. Nothing that the operator has to
+   * *read* animates.
+   */
+  --t-fast: 150ms;
+  --t-slow: 220ms;
+  --ease: cubic-bezier(0.2, 0, 0.2, 1);
+
+  /* Set from script with `setProperty`, never from a `style` attribute. */
+  --gauge-fill: 0%;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
+  line-height: 1.5;
+  /* Persian needs a little more leading than Latin at the same size; one value for both
+   * is a compromise, and this is the side to err on. */
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  min-height: 100vh;
+}
+
+/* ── Focus, which is not optional ─────────────────────────────────────────
+ * `:focus-visible` rather than `:focus`, so a mouse click does not draw a ring and a Tab
+ * always does. Two-colour outline so it is visible on both the page and a raised surface.
+ */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+a {
+  color: var(--accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+/* ── The left-to-right islands ────────────────────────────────────────────
+ * Applied by the `<Ltr>` and `<Mono>` components. A terminal, a file path, a hash or a
+ * byte count that flips direction does not read as a layout setting — it reads as data
+ * corruption, which is a support conversation that starts in the wrong place.
+ */
+.ltr {
+  direction: ltr;
+  unicode-bidi: isolate;
+  text-align: start;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+  font-size: 0.95em;
+}
+
+/* `<bdi>` is `unicode-bidi: isolate` plus `dir=auto` by definition; this is belt and
+ * braces for a browser that has forgotten the default. */
+bdi {
+  unicode-bidi: isolate;
+}
+
+.boot {
+  padding: var(--s5);
+  max-width: 60ch;
+  margin-inline: auto;
+}
+
+.boot h1 {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  margin-block: 0 var(--s3);
+}
+
+.boot p {
+  color: var(--text-muted);
+  margin-block: 0 var(--s2);
+}

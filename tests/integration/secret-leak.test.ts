@@ -57,6 +57,13 @@ const BASE_PATH_BODY_EXEMPT = new Set([
   `/${BASE}/`,
 ]);
 
+// Deliberately **not** exempt: `/${BASE}/does-not-exist` is swept without an
+// `Accept: text/html`, so the SPA fallback declines it and it is the generic 404. If the
+// fallback ever stopped reading `Accept`, that URL would start answering with the shell —
+// which carries the prefix in three attributes — and the sweep would fail. That is the
+// check, so the exemption stays off.
+
+
 /**
  * The full route table of the server under test — the application's routes plus
  * the `__throw` route this test registers. Spelled out so that adding a route
@@ -73,6 +80,15 @@ const EXPECTED_ROUTE_TREE =
   `└── /${BASE} (GET, HEAD)\n` +
   '    └── / (GET, HEAD)\n' +
   '        ├── bootstrap.js (GET, HEAD)\n' +
+  // `@fastify/static`, mounted at `assets/` and nowhere else. `commonPrefix: false`
+  // renders the intermediate static segment away, so this line reads as a wildcard at the
+  // prefix root and is not one: the route is `/<base>/assets/*`, and the assertion below
+  // proves it by asking for a file directly under the prefix and getting the generic 404.
+  //
+  // `wildcard: false` is the alternative and it is worse here: it globs the directory at
+  // boot and registers one route *per file*, which would put every content-hashed filename
+  // into this literal and change it on every build.
+  '        ├── * (HEAD, GET)\n' +
   '        ├── api/auth/login (POST)\n' +
   '        │   └── /totp (POST)\n' +
   '        ├── api/auth/logout (POST)\n' +
@@ -203,6 +219,14 @@ describe('M1.3 — sentinel leak sweep', () => {
 
     await ctx.app.ready();
     expect(ctx.app.printRoutes({ commonPrefix: false })).toBe(EXPECTED_ROUTE_TREE);
+
+    // What the `*` line above is and is not. The static mount serves `assets/` only; a
+    // request for a file directly under the prefix is the generic 404, not a 200 and not a
+    // directory listing.
+    for (const url of [`/${BASE}/index.html`, `/${BASE}/assets/`, `/${BASE}/assets`]) {
+      const res = await ctx.app.inject({ method: 'GET', url });
+      expect(res.statusCode, url).not.toBe(200);
+    }
 
     const capture = captureOutput();
     const responses: { url: string; body: string; headers: string }[] = [];

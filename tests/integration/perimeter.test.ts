@@ -1,5 +1,10 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { createTestServer, type TestContext } from '../helpers/test-server.js';
+import {
+  createTestServer,
+  FIXTURE_ASSET_CSS,
+  FIXTURE_ASSET_JS,
+  type TestContext,
+} from '../helpers/test-server.js';
 
 /**
  * Headers whose value legitimately varies per response. They are asserted
@@ -69,7 +74,7 @@ describe('M1.2 — Perimeter', () => {
   });
 
   describe('Complete header map (byte-for-byte)', () => {
-    it('sends exactly the expected headers on the placeholder page', async () => {
+    it('sends exactly the expected headers on the shell page', async () => {
       ctx = await createTestServer({ PANEL_BASE_PATH: 'x' });
 
       const res = await ctx.app.inject({ method: 'GET', url: '/x/' });
@@ -77,12 +82,66 @@ describe('M1.2 — Perimeter', () => {
       expect(res.statusCode).toBe(200);
       expect(stableHeaders(res.headers)).toEqual({
         'content-type': 'text/html; charset=utf-8',
+        // **Changed in M2.1.** The document now carries the base path in three attributes
+        // and the content-hashed names of the assets it needs, so a cached copy after a
+        // regenerated prefix or a redeploy asks for URLs that no longer exist — a blank
+        // page with 404s in the network panel and nothing in the console. It is ~2 KB and
+        // uncacheable; the assets it names are cached for a year, which is where the win is.
+        'cache-control': 'no-store',
         ...SECURITY_HEADERS,
       });
 
       // The excluded headers are still checked, just not for an exact value.
       expect(res.headers['date']).toMatch(/GMT$/);
       expect(Number(res.headers['content-length'])).toBe(Buffer.byteLength(res.body));
+    });
+
+    it('sends exactly the expected headers on a deep link, which is the same document', async () => {
+      // The sixth shape, new in M2.1: a client route that no server route matches, answered
+      // with the shell so that a hard refresh of `/<base>/security` works. Identical to the
+      // shell above, which is the point — if these two ever diverge, one of them is being
+      // served by something other than the fallback.
+      ctx = await createTestServer({ PANEL_BASE_PATH: 'x' });
+
+      const res = await ctx.app.inject({
+        method: 'GET',
+        url: '/x/security/sessions',
+        headers: { accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(stableHeaders(res.headers)).toEqual({
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+        ...SECURITY_HEADERS,
+      });
+    });
+
+    it('sends exactly the expected headers on a hashed asset', async () => {
+      // The seventh shape, new in M2.1, and the only response in the panel with a *positive*
+      // caching directive. `etag`, `last-modified` and `accept-ranges` are switched off in
+      // `plugins/base-path.ts`: a content-hashed immutable file needs no validator, and
+      // their absence is what makes this map assertable byte-for-byte rather than
+      // approximately.
+      ctx = await createTestServer({ PANEL_BASE_PATH: 'x' });
+
+      const js = await ctx.app.inject({ method: 'GET', url: `/x/assets/${FIXTURE_ASSET_JS}` });
+      expect(js.statusCode).toBe(200);
+      expect(stableHeaders(js.headers)).toEqual({
+        'content-type': 'application/javascript; charset=utf-8',
+        'cache-control': 'public, max-age=31536000, immutable',
+        ...SECURITY_HEADERS,
+      });
+
+      // The stylesheet takes the same path, and `style-src 'self'` is what makes serving it
+      // as a file rather than injecting it the only option.
+      const css = await ctx.app.inject({ method: 'GET', url: `/x/assets/${FIXTURE_ASSET_CSS}` });
+      expect(css.statusCode).toBe(200);
+      expect(stableHeaders(css.headers)).toEqual({
+        'content-type': 'text/css; charset=utf-8',
+        'cache-control': 'public, max-age=31536000, immutable',
+        ...SECURITY_HEADERS,
+      });
     });
 
     it('sends exactly the expected headers on the bootstrap script', async () => {
@@ -161,6 +220,7 @@ describe('M1.2 — Perimeter', () => {
       expect(res.statusCode).toBe(200);
       expect(stableHeaders(res.headers)).toEqual({
         'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
         ...SECURITY_HEADERS,
         'strict-transport-security': HSTS,
       });
@@ -190,7 +250,13 @@ describe('M1.2 — Perimeter', () => {
     it('never sends X-XSS-Protection', async () => {
       ctx = await createTestServer({ PANEL_BASE_PATH: 'x' });
 
-      for (const url of ['/x/', '/x/bootstrap.js', '/healthz', '/nope']) {
+      for (const url of [
+        '/x/',
+        '/x/bootstrap.js',
+        `/x/assets/${FIXTURE_ASSET_JS}`,
+        '/healthz',
+        '/nope',
+      ]) {
         const res = await ctx.app.inject({ method: 'GET', url });
         expect(res.headers['x-xss-protection']).toBeUndefined();
       }

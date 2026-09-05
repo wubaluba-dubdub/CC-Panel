@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Panel</title>
+    <!--
+      bootstrap.js must stay first and stay blocking.
+
+      It is a classic script, not a module, and carries no `defer` or `async`: modules are
+      always deferred, so a blocking classic script here is guaranteed to run before the
+      bundle. It sets `window.__BASE__`, `window.__LOCALE__` and the CSRF cookie's name,
+      and it sets `documentElement.lang` and `dir` — which is what makes "no left-to-right
+      flash before first paint" a structural property rather than a race with React.
+
+      It cannot be an inline script: the CSP is `script-src 'self'` with no
+      `unsafe-inline`, and a CSP hash is not usable because the body embeds the
+      per-install base path. See docs/SECURITY.md.
+
+      The `src` is written with the sentinel so it is rewritten with everything else.
+    -->
+    <script src="/__PANEL_BASE__/bootstrap.js"></script>
+  </head>
+  <body>
+    <!--
+      No inline style and no `style` attribute anywhere in this file, ever:
+      `style-src 'self'` with no `unsafe-inline` blocks both, and the block is silent
+      except in the console. tests/integration/build.test.ts asserts their absence on the
+      *built* output rather than on this source, so a future Vite that starts injecting
+      one is caught.
+    -->
+    <div id="root"></div>
+    <script type="module" src="/main.tsx"></script>
+  </body>
+</html>

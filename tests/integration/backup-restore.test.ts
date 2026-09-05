@@ -3,7 +3,6 @@ import Database from 'better-sqlite3';
 import { copyFileSync, existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { getDb } from '../../src/server/db.js';
 import { initCrypto } from '../../src/server/crypto.js';
 import { backupDatabase } from '../../src/server/cli/backup.js';
 import { restoreDatabase } from '../../src/server/cli/restore.js';

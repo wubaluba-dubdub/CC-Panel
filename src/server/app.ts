@@ -8,7 +8,12 @@ import type { Env } from './env.js';
 import { initDb, closeDb } from './db.js';
 import { initCrypto, resetCrypto } from './crypto.js';
 import securityHeadersPlugin from './plugins/security-headers.js';
-import basePathPlugin, { createBasePathGate } from './plugins/base-path.js';
+import basePathPlugin, {
+  createBasePathGate,
+  loadShell,
+  resolveClientDir,
+  wantsShell,
+} from './plugins/base-path.js';
 import {
   createOriginAbsenceAuditor,
   createOriginPolicy,
@@ -143,6 +148,13 @@ export interface ServerConfig {
    * construction, and a single shared option would be the first place that stopped being
    * true.
    */
+  /**
+   * Where the built client is. Test seam: the suite points this at a fixture directory
+   * containing a two-line `index.html` with the sentinel in it, so no test depends on
+   * `dist/` — which `tests/integration/build.test.ts` deletes and rebuilds while the rest
+   * of the suite is running.
+   */
+  client?: { dir?: string };
   watchdog?: {
     cgroupRoot?: string;
     cadenceMs?: number;
@@ -462,6 +474,21 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
     },
   });
 
+  // ── The client shell ───────────────────────────────────────────────────────
+  //
+  // Read once, here, because the not-found handler below needs it and that handler has to
+  // be installed before any `register()` call — a child encapsulation context inherits the
+  // handler its parent had at the moment the child was created, which is the precedent that
+  // cost a debugging session in M1.2 and is recorded in CLAUDE.md.
+  //
+  // `shellBody` is null only when there is no usable bundle, and in that case the fallback
+  // is deliberately *not* wired: answering an unknown deep link with a diagnostic page
+  // would turn every mistyped URL into "the panel is not built". The prefix root still
+  // serves the diagnostic, which is where the operator will be looking.
+  const clientDir = resolveClientDir(config.client?.dir);
+  const shell = loadShell(clientDir, basePath);
+  const shellBody = shell.html;
+
   // ── Generic error responses ────────────────────────────────────────────────
   //
   // Registered *before* any `register()` call, and that ordering is load-bearing:
@@ -489,10 +516,39 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
       .send(JSON.stringify({ error: STATUS_CODES[status] ?? 'Error' }));
   });
 
-  // ── Generic 404 for anything outside the base path ─────────────────────────
-  // Must be byte-identical for all paths: same status, body, headers, timing.
+  // ── Generic 404, and the SPA fallback ──────────────────────────────────────
+  //
+  // One handler, two answers, and the split is `wantsShell()` in `plugins/base-path.ts`
+  // where the four conditions it has to satisfy at once are written out.
+  //
+  // The 404 half must stay byte-identical for every path outside the prefix — same status,
+  // same body, same headers, same timing — because that is what keeps the base path from
+  // being discoverable. It is unchanged: the sink URL the gate rewrites to
+  // (`/__panel_not_found`) does not start with the prefix, so it cannot take the shell
+  // branch, and every wrong prefix was already collapsed onto it before routing.
+  //
+  // The shell half is what makes a hard refresh of `/<base>/security` work. It is here and
+  // not in a scoped `setNotFoundHandler` under the prefix, because a scoped one runs that
+  // scope's hooks — which would charge every unknown `/api/` path against the anonymous
+  // bucket instead of the session one — and not a `/*` route, because a wildcard has to be
+  // ordered against every real route rather than being what runs when none matched.
   const generic404Body = JSON.stringify({ error: 'Not Found' });
-  app.setNotFoundHandler((_req, reply) => {
+  app.setNotFoundHandler((req, reply) => {
+    if (
+      shellBody !== null &&
+      wantsShell({
+        method: req.method,
+        url: req.url,
+        accept: typeof req.headers.accept === 'string' ? req.headers.accept : undefined,
+        basePath,
+      })
+    ) {
+      return reply
+        .code(200)
+        .type('text/html; charset=utf-8')
+        .header('Cache-Control', 'no-store')
+        .send(shellBody);
+    }
     return reply
       .code(404)
       .header('Content-Type', 'application/json')
@@ -554,7 +610,12 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   });
 
   // ── Base path scoped routes ────────────────────────────────────────────────
-  await app.register(basePathPlugin, { basePath, rateLimit: limiter.anonymousOnly() });
+  await app.register(basePathPlugin, {
+    basePath,
+    clientDir,
+    csrfCookieName: runtime.cookies.csrfName,
+    rateLimit: limiter.anonymousOnly(),
+  });
   await app.register(apiRoutes, {
     runtime,
     limiter,

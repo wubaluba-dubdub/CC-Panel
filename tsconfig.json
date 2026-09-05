@@ -16,6 +16,11 @@
     "rootDir": ".",
     "types": ["node"]
   },
+  // Server and tests. The client is checked by tsconfig.client.json, which has the DOM
+  // and no `node` types — see the comment at the top of that file for why the split is
+  // not cosmetic. `src/client/**` is excluded here rather than merely not included,
+  // because `src/**/*.ts` would otherwise pull in the client's `.ts` files (not its
+  // `.tsx`) and check them without a DOM.
   "include": ["src/**/*.ts", "tests/**/*.ts"],
-  "exclude": ["node_modules", "dist"]
+  "exclude": ["node_modules", "dist", "src/client"]
 }

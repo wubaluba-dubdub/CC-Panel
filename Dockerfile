@@ -35,16 +35,17 @@ ENV npm_config_nodedir=/usr/local
 COPY package.json package-lock.json ./
 RUN npm ci
 
-COPY tsconfig.json tsconfig.build.json ./
+COPY tsconfig.json tsconfig.build.json tsconfig.client.json vite.config.ts ./
 COPY src ./src
 # The build's second half. `tsc` emits only what it compiles, so the .sql migrations
 # have to be copied into dist by hand — see scripts/copy-assets.mjs for the boot
 # failure that taught us this.
 COPY scripts ./scripts
 
-# Server only. `vite build` was in this script for a milestone before any client
-# existed and failed with "Could not resolve entry module"; there is still no client
-# to bundle, and tests/integration/build.test.ts is what stops it coming back early.
+# Both halves since M2.1: `tsc` for the server, `copy-assets` for the .sql migrations, and
+# `vite build` for the client into dist/client — which `resolveClientDir()` finds as a
+# sibling of dist/server. A runtime stage without it serves the "not built" diagnostic on a
+# deployment that built cleanly, which is what scripts/verify-image.sh exists to catch.
 RUN npm run build
 
 # Drop dev dependencies from the tree that gets copied forward. `npm prune` keeps the

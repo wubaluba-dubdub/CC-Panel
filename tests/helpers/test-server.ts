@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildServer } from '../../src/server/app.js';
@@ -51,6 +51,49 @@ export function createLogCapture(): LogCapture {
  * environment" or "no `PANEL_BASE_PATH`, so generate one".
  */
 export type EnvOverrides = { [K in keyof Env]?: Env[K] | undefined };
+
+/**
+ * The stand-in for `dist/client`, created once per process.
+ *
+ * Two assets with fixed names, because a content hash is exactly what a test cannot assert
+ * against: `tests/integration/perimeter.test.ts` reads one of these back and checks the
+ * complete header map byte-for-byte, which needs a filename it can write down.
+ *
+ * The `index.html` carries the sentinel in the three places the real one does — the
+ * bootstrap `src`, the module `src` and the stylesheet `href` — so the substitution is
+ * exercised on the same shape rather than on a simplified one.
+ */
+let fixtureDir: string | null = null;
+
+export const FIXTURE_ASSET_JS = 'app-fixture.js';
+export const FIXTURE_ASSET_CSS = 'style-fixture.css';
+
+export function clientFixtureDir(): string {
+  if (fixtureDir !== null) return fixtureDir;
+  const dir = mkdtempSync(join(tmpdir(), 'panel-client-fixture-'));
+  mkdirSync(join(dir, 'assets'), { recursive: true });
+  writeFileSync(
+    join(dir, 'index.html'),
+    [
+      '<!doctype html>',
+      '<html>',
+      '<head>',
+      '<meta charset="UTF-8">',
+      '<script src="/__PANEL_BASE__/bootstrap.js"></script>',
+      `<script type="module" crossorigin src="/__PANEL_BASE__/assets/${FIXTURE_ASSET_JS}"></script>`,
+      `<link rel="stylesheet" crossorigin href="/__PANEL_BASE__/assets/${FIXTURE_ASSET_CSS}">`,
+      '</head>',
+      '<body><div id="root"></div></body>',
+      '</html>',
+      '',
+    ].join('\n'),
+  );
+  writeFileSync(join(dir, 'assets', FIXTURE_ASSET_JS), 'export const fixture = 1;\n');
+  writeFileSync(join(dir, 'assets', FIXTURE_ASSET_CSS), ':root { --fixture: 1; }\n');
+  fixtureDir = dir;
+  process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
 
 export function makeTestEnv(overrides: EnvOverrides = {}): Env {
   const dataDir = mkdtempSync(join(tmpdir(), 'panel-test-'));
@@ -132,6 +175,18 @@ export interface CreateTestServerOptions {
     startTimer?: StartTimer;
     autoStart?: boolean;
   };
+  /**
+   * Where the "built" client is.
+   *
+   * Defaults to {@link clientFixtureDir}, a two-file fixture in a temp directory. **No test
+   * depends on `dist/`**, and that is not tidiness: `tests/integration/build.test.ts`
+   * deletes `dist` and rebuilds it while the rest of the suite is running, so a server that
+   * read the real output would fail intermittently, in a different file, for a reason
+   * nothing in its own assertions could explain.
+   *
+   * Pass `''` to simulate a tree with no client bundle at all.
+   */
+  clientDir?: string;
   /** Reuse an existing data directory, to simulate a restart against the same volume. */
   dataDir?: string;
   /** Skip removing the data directory on cleanup, so a restart can reuse it. */
@@ -161,6 +216,7 @@ export async function createTestServer(
     ...(opts.metrics ? { metrics: opts.metrics } : {}),
     ...(opts.notify ? { notify: opts.notify } : {}),
     ...(opts.watchdog ? { watchdog: opts.watchdog } : {}),
+    client: { dir: opts.clientDir ?? clientFixtureDir() },
   });
 
   // Routes must be added before the first inject(), which triggers ready().

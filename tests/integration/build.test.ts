@@ -64,6 +64,9 @@ describe('Part 1 — the build runs, and emits what the image runs', () => {
     }
     expect(output).toContain('tsc -p tsconfig.build.json');
     expect(output).toContain('copy-assets');
+    // The client half, new in M2.1. `vite build` was in this script for a milestone before
+    // any client existed and failed with "Could not resolve entry module"; now there is one.
+    expect(output).toContain('vite build');
 
     // The exact path `CMD` names, read from the Dockerfile rather than repeated
     // here, so the two cannot drift apart again.
@@ -109,15 +112,106 @@ describe('Part 1 — the build runs, and emits what the image runs', () => {
     }
   });
 
-  it('has no client build step left in the script until there is a client', () => {
-    // The fix chosen was server-only, not a placeholder `index.html`. When M2.1
-    // adds the real client entry point, `vite build` comes back and this
-    // expectation is the one to update.
+  it('builds both halves, and the client entry point is where Vite is pointed', () => {
+    // M1.5 deleted `vite.config.ts` because `vite build` was in this script a milestone
+    // before any client existed. M2.1 brings both back, and this is the assertion that has
+    // to move with them.
     const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8')) as {
       scripts: Record<string, string>;
     };
-    expect(pkg.scripts.build).toBe('tsc -p tsconfig.build.json && node scripts/copy-assets.mjs');
-    expect(existsSync(join(ROOT, 'vite.config.ts'))).toBe(false);
+    expect(pkg.scripts.build).toBe(
+      'tsc -p tsconfig.build.json && node scripts/copy-assets.mjs && vite build',
+    );
+    expect(existsSync(join(ROOT, 'vite.config.ts'))).toBe(true);
+    // Still not at the repository root: Vite's `root` is `src/client`, so an `index.html`
+    // here would be a second entry point nothing builds.
     expect(existsSync(join(ROOT, 'index.html'))).toBe(false);
+    expect(existsSync(join(ROOT, 'src', 'client', 'index.html'))).toBe(true);
+    // `npm run typecheck` covers both halves. One config cannot: the server has `node` types
+    // and no DOM, the client has the DOM and must not be able to reach `node:fs`.
+    expect(pkg.scripts.typecheck).toBe('tsc --noEmit && tsc --noEmit -p tsconfig.client.json');
+  });
+});
+
+/**
+ * The client output, asserted on the **built file** rather than on the source.
+ *
+ * This is the part of the milestone the rest of the suite cannot reach. Every check here is
+ * a CSP consequence, and every one of them fails in a browser as a silent console message
+ * and a page that is blank or unstyled — which is exactly what `app.inject()` cannot see.
+ *
+ * They are written *generically* on purpose. "Zero inline `<script>`" catches every future
+ * change in Vite's output; enumerating today's known injections would pass the day a new one
+ * appears. `tests/integration/build.test.ts` runs the real build above, so this describes
+ * what a deployment would actually carry.
+ */
+describe('Part 1 — the client build satisfies the shipped CSP', () => {
+  const CLIENT = join(DIST, 'client');
+
+  function indexHtml(): string {
+    return readFileSync(join(CLIENT, 'index.html'), 'utf-8');
+  }
+
+  it('emits the shell and its assets where the server looks for them', () => {
+    // The server resolves `dist/client` as a sibling of `dist/server` — see
+    // `resolveClientDir`. If that ever stops being true, the panel serves the
+    // "not built" diagnostic on a deployment that built cleanly.
+    expect(existsSync(join(CLIENT, 'index.html'))).toBe(true);
+    const assets = readdirSync(join(CLIENT, 'assets'));
+    expect(assets.some((f) => f.endsWith('.js')), 'no JS asset was emitted').toBe(true);
+    expect(assets.some((f) => f.endsWith('.css')), 'no CSS asset was emitted').toBe(true);
+    // Content-hashed, which is what makes the year-long immutable cache directive safe.
+    for (const file of assets) {
+      expect(file, `${file} is not content-hashed`).toMatch(/-[A-Za-z0-9_-]{8,}\.[a-z]+$/);
+    }
+  });
+
+  it('leaves the sentinel in the file on disk and in every asset reference', () => {
+    // Both halves matter. A base path baked into a file on disk is a secret in the image;
+    // a sentinel that reaches the browser is a page whose script tag 404s. This asserts the
+    // first half — `tests/integration/base-path.test.ts` asserts the second on the *served*
+    // body, which is the only place the substitution can be observed.
+    const html = indexHtml();
+    expect(html).toContain('__PANEL_BASE__');
+
+    const refs = [...html.matchAll(/\b(?:src|href)="([^"]*)"/g)].map((m) => m[1]!);
+    expect(refs.length).toBeGreaterThan(1);
+    for (const ref of refs) {
+      expect(ref, `${ref} is not prefixed with the sentinel`).toMatch(/^\/__PANEL_BASE__\//);
+    }
+  });
+
+  it('has no inline script, no inline style, and no style attribute', () => {
+    const html = indexHtml();
+
+    // `script-src 'self'` with no `unsafe-inline`. A blocked inline script is a page that
+    // renders nothing, with one line in a console the test suite does not have.
+    expect(html).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>/i);
+    // `style-src 'self'` with no `unsafe-inline`. Both of these are blocked, and the failure
+    // is an unstyled page rather than an error.
+    expect(html).not.toMatch(/<style\b/i);
+    expect(html).not.toMatch(/\sstyle="/i);
+  });
+
+  it('inlines nothing as a data: URL, because font-src has no data:', () => {
+    // `assetsInlineLimit: 0`. `img-src` would tolerate an inlined image and `font-src` would
+    // not, and one rule is better than two — so nothing is inlined at all.
+    const css = readdirSync(join(CLIENT, 'assets'))
+      .filter((f) => f.endsWith('.css'))
+      .map((f) => readFileSync(join(CLIENT, 'assets', f), 'utf-8'))
+      .join('\n');
+    expect(css.length).toBeGreaterThan(0);
+    expect(css, 'a data: URL in the emitted CSS').not.toContain('data:');
+    expect(indexHtml(), 'a data: URL in the shell').not.toContain('data:');
+  });
+
+  it('emits no source map, and no reference to one', () => {
+    // A source map is a second copy of the client source in the image, and nothing debugs
+    // this in production. The comment is what a browser follows, so its absence is the check.
+    const files = readdirSync(join(CLIENT, 'assets'));
+    expect(files.filter((f) => f.endsWith('.map'))).toEqual([]);
+    for (const file of files) {
+      expect(readFileSync(join(CLIENT, 'assets', file), 'utf-8')).not.toContain('sourceMappingURL');
+    }
   });
 });

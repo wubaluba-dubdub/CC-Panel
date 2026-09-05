@@ -1,5 +1,6 @@
 {
-  // The shipped build: server only, and only until M2.1 introduces a real client.
+  // The shipped build: the server half. `vite build` is the other half (vite.config.ts),
+  // and `npm run build` runs both.
   //
   // Separate from tsconfig.json for two reasons. The base config includes
   // `tests/**` and sets `rootDir: "."`, so `tsc` emitted `dist/src/server/…` and
@@ -13,5 +14,7 @@
     "outDir": "dist"
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "tests"]
+  // `src/client` is Vite's, not tsc's. Left in, it would emit `dist/client/*.js` beside
+  // the real Vite output and the server would serve whichever it found first.
+  "exclude": ["node_modules", "dist", "tests", "src/client"]
 }

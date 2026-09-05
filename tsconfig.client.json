@@ -1,0 +1,35 @@
+{
+  // The client build's type-check. `npm run typecheck` runs this *and* tsconfig.json, and
+  // neither includes the other's files.
+  //
+  // Two separate configs rather than one with two `include`s, because the two halves need
+  // different `lib` and different `types`: the server has `node` and no DOM, the client has
+  // the DOM and must not be able to reach `node:fs`. A single config would let a client file
+  // import a server file — which is how `node:fs` ends up in a browser bundle — and would
+  // let a server file reference `window`.
+  //
+  // `noEmit`: `vite build` produces the client output. This config only ever checks.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": [],
+    "jsx": "react-jsx",
+    "strict": true,
+    "noImplicitAny": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "forceConsistentCasingInFileNames": true,
+    "verbatimModuleSyntax": false,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true
+  },
+  // `src/shared` is in both configs on purpose: it is the API contract, and a response shape
+  // the client cannot see is a shape the client will drift from.
+  "include": ["src/client/**/*.ts", "src/client/**/*.tsx", "src/shared/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}
