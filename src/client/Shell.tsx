@@ -35,6 +35,10 @@ export function Shell({
   const { t } = useLocale();
   const { route, path, navigate } = useRouter();
 
+  // Called from two places: the button below, and the current session's row on the sessions
+  // screen — where "revoke this session" is a sign-out and must go through the endpoint that
+  // clears the cookie rather than through `DELETE /api/sessions/:id`, which would leave the tab
+  // holding a dead cookie until its next request 401s.
   const signOut = async (): Promise<void> => {
     try {
       await api.post('/api/auth/logout');
@@ -83,7 +87,13 @@ export function Shell({
             while the operator was reading it. `docs/UI.md` §*Motion* states the rule and
             `tests/integration/client-style.test.ts` asserts this line. */}
         <div className="screen" key={route.name}>
-          <Screen route={route} refresh={refresh} navigate={navigate} me={me} />
+          <Screen
+            route={route}
+            refresh={refresh}
+            navigate={navigate}
+            me={me}
+            onSignOut={() => void signOut()}
+          />
         </div>
       </main>
     </div>
@@ -127,18 +137,20 @@ function Screen({
   route,
   refresh,
   me,
+  onSignOut,
 }: {
   route: Route;
   refresh: () => Promise<void>;
   navigate: (path: string) => void;
   me: MeResponse;
+  onSignOut: () => void;
 }): React.JSX.Element {
   const { t } = useLocale();
   switch (route.name) {
     case 'overview':
       return <Overview />;
     case 'sessions':
-      return <Sessions />;
+      return <Sessions onSignOut={onSignOut} />;
     case 'security':
       return <Security me={me} refresh={refresh} />;
     case 'secrets':

@@ -82,6 +82,7 @@ export function Button({
   disabled = false,
   type = 'button',
   busy = false,
+  cell = false,
 }: {
   children: ReactNode;
   onClick?: () => void;
@@ -89,9 +90,16 @@ export function Button({
   disabled?: boolean;
   type?: 'button' | 'submit';
   busy?: boolean;
+  /** Smaller, for a button inside a table cell, so a row of them does not set the row height. */
+  cell?: boolean;
 }): ReactNode {
-  const className =
-    kind === 'primary' ? 'btn btn-primary' : kind === 'danger' ? 'btn btn-danger' : 'btn';
+  const className = [
+    'btn',
+    kind === 'primary' ? 'btn-primary' : kind === 'danger' ? 'btn-danger' : null,
+    cell ? 'btn-cell' : null,
+  ]
+    .filter((one) => one !== null)
+    .join(' ');
   return (
     <button
       type={type}

@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Badge, Button, Card, Notice, ScrollRegion } from '../components/ui.js';
-import { Mono } from '../components/Ltr.js';
+import { Badge, Button, Card, Notice } from '../components/ui.js';
+import { DataTable, type DataRow } from '../components/Table.js';
+import { Mono, MonoBlock } from '../components/Ltr.js';
 import { useLocale } from '../i18n/index.js';
 import { api } from '../lib/api.js';
 import { formatTechnicalDate } from '../lib/format.js';
+import { SESSIONS_TABLE, type SessionColumnKey } from '../lib/table.js';
+import { browserLabel, summariseClient } from '../lib/user-agent.js';
 import type { RevokedResponse, SessionListResponse, SessionSummary } from '../../shared/types.js';
 
 /**
@@ -15,11 +18,24 @@ import type { RevokedResponse, SessionListResponse, SessionSummary } from '../..
  * that the panel itself refuses to act on. A column of blanks would be worse: it invites somebody
  * to "fix" it later, which is how per-IP logic comes back.
  *
- * The client string *is* shown, in a left-to-right island. It is attacker-supplied and rendered as
- * text, never as markup.
+ * ── The client column is a summary, and the raw string is one click away ─────
+ *
+ * `User-Agent` is a request header, so it is attacker-influenced and unbounded: rendering it raw
+ * made it the tallest object on the screen, six monospaced lines of which *Chrome 152 on Windows*
+ * was the useful part. `lib/user-agent.ts` reduces it to three facts from a closed set — so no
+ * substring of the header reaches the page through that path at all — and the exact bytes are in
+ * the row's detail, where the question "is that session mine?" can be answered.
+ *
+ * ── The current session's action is a sign-out, not a revoke ─────────────────
+ *
+ * The action column used to be empty for the row the operator is looking at, which reads as a
+ * broken feature rather than a deliberate refusal. Revoking your own session and signing out are
+ * the same intention, and the sign-out endpoint is the one that also clears the cookie and writes
+ * the audit row for it — so the cell offers exactly that, wired to the call the shell's own
+ * button makes.
  */
-export function Sessions(): React.JSX.Element {
-  const { t, ts, locale } = useLocale();
+export function Sessions({ onSignOut }: { onSignOut: () => void }): React.JSX.Element {
+  const { t, locale } = useLocale();
   const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
   const [error, setError] = useState<React.ReactNode | null>(null);
   const [notice, setNotice] = useState<React.ReactNode | null>(null);
@@ -66,6 +82,62 @@ export function Sessions(): React.JSX.Element {
     }
   };
 
+  const rows: DataRow<SessionColumnKey>[] = (sessions ?? []).map((session) => {
+    const client = summariseClient(session.userAgent);
+    const browser = browserLabel(client);
+    return {
+      id: session.id,
+      cells: {
+        'sessions.level': (
+          <>
+            {session.authLevel === 'full' ? t('sessions.levelFull') : t('sessions.levelPre')}{' '}
+            {session.current ? <Badge kind="ok">{t('sessions.current')}</Badge> : null}
+          </>
+        ),
+        'sessions.created': (
+          <Mono className="nowrap">{formatTechnicalDate(session.createdAt, locale)}</Mono>
+        ),
+        'sessions.lastSeen': (
+          <Mono className="nowrap">{formatTechnicalDate(session.lastSeenAt, locale)}</Mono>
+        ),
+        'sessions.expires': (
+          <>
+            <Mono className="nowrap">{formatTechnicalDate(session.expiresAt, locale)}</Mono>
+            {session.absoluteExpiresAt === null ? null : (
+              <>
+                <span className="sub">{t('sessions.absolute')}</span>
+                <Mono className="nowrap">
+                  {formatTechnicalDate(session.absoluteExpiresAt, locale)}
+                </Mono>
+              </>
+            )}
+          </>
+        ),
+        // Three facts from a closed set, in a sentence whose only translated part is the
+        // connecting word. A browser is called Chrome in Persian too.
+        'sessions.userAgent': t('sessions.clientSummary', {
+          browser: browser ?? t('common.unknown'),
+          platform: client.platform === 'Unknown' ? t('common.unknown') : client.platform,
+        }),
+        'sessions.revoke': session.current ? (
+          <Button cell onClick={onSignOut} disabled={busy}>
+            {t('app.signOut')}
+          </Button>
+        ) : (
+          <Button cell kind="danger" onClick={() => void revoke(session.id)} disabled={busy}>
+            {t('sessions.revoke')}
+          </Button>
+        ),
+      },
+      detail: (
+        <>
+          <p className="hint">{t('sessions.clientRaw')}</p>
+          <MonoBlock>{session.userAgent ?? t('common.unknown')}</MonoBlock>
+        </>
+      ),
+    };
+  });
+
   return (
     <>
       <h1>{t('sessions.title')}</h1>
@@ -75,63 +147,12 @@ export function Sessions(): React.JSX.Element {
       {notice === null ? null : <Notice kind="ok">{notice}</Notice>}
 
       <Card wide>
-        <ScrollRegion label={ts('sessions.title')}>
-          <table className="table">
-          <thead>
-            <tr>
-              <th scope="col">{t('sessions.level')}</th>
-              <th scope="col">{t('sessions.created')}</th>
-              <th scope="col">{t('sessions.lastSeen')}</th>
-              <th scope="col">{t('sessions.expires')}</th>
-              <th scope="col">{t('sessions.userAgent')}</th>
-              <th scope="col">
-                <span className="hint">{t('sessions.revoke')}</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {(sessions ?? []).map((session) => (
-              <tr key={session.id}>
-                <td>
-                  {session.authLevel === 'full' ? t('sessions.levelFull') : t('sessions.levelPre')}{' '}
-                  {session.current ? <Badge kind="ok">{t('sessions.current')}</Badge> : null}
-                </td>
-                <td>
-                  <Mono>{formatTechnicalDate(session.createdAt, locale)}</Mono>
-                </td>
-                <td>
-                  <Mono>{formatTechnicalDate(session.lastSeenAt, locale)}</Mono>
-                </td>
-                <td>
-                  <Mono>{formatTechnicalDate(session.expiresAt, locale)}</Mono>
-                  {session.absoluteExpiresAt === null ? null : (
-                    <>
-                      <br />
-                      <span className="hint">
-                        {t('sessions.absolute')}:{' '}
-                        <Mono>{formatTechnicalDate(session.absoluteExpiresAt, locale)}</Mono>
-                      </span>
-                    </>
-                  )}
-                </td>
-                <td>
-                  {/* Attacker-supplied, rendered as text. An LTR island because a user-agent
-                      string is Latin in both languages and reorders otherwise. */}
-                  <Mono>{session.userAgent ?? '—'}</Mono>
-                </td>
-                <td>
-                  {session.current ? null : (
-                    <Button kind="danger" onClick={() => void revoke(session.id)} disabled={busy}>
-                      {t('sessions.revoke')}
-                    </Button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-          </table>
-        </ScrollRegion>
-        {sessions === null ? <p className="hint">{t('common.loading')}</p> : null}
+        <DataTable
+          spec={SESSIONS_TABLE}
+          rows={rows}
+          loading={sessions === null}
+          empty={t('common.none')}
+        />
         <p className="hint">{t('sessions.noIpNote')}</p>
       </Card>
 

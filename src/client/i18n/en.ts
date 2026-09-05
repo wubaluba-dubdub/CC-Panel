@@ -47,6 +47,11 @@ export const en = {
   'common.notSet': 'Not set',
   'common.characters': '{count} characters',
   'common.language': 'Language',
+  // ── The table primitive ──────────────────────────────────────────────────
+  // The expander's two states are words for a screen reader; the chevron is the sighted half.
+  'table.expand': 'Show detail',
+  'table.collapse': 'Hide detail',
+  'table.more': '{count} more',
   'common.english': 'English',
   'common.persian': 'فارسی',
 
@@ -111,6 +116,10 @@ export const en = {
   'sessions.levelPre': 'Password only',
   'sessions.levelFull': 'Both factors',
   'sessions.userAgent': 'Client',
+  // The connecting word is translated and the two names are not: a browser is called Chrome in
+  // Persian too, and both values come from a closed set — see `lib/user-agent.ts`.
+  'sessions.clientSummary': '{browser} on {platform}',
+  'sessions.clientRaw': 'The client string, exactly as received',
   'sessions.revoke': 'Revoke',
   'sessions.revokeOthers': 'Revoke all other sessions',
   'sessions.revoked': '{count} sessions revoked',
@@ -198,6 +207,7 @@ export const en = {
   'audit.outcome': 'Outcome',
   'audit.client': 'Client',
   'audit.meta': 'Detail',
+  'audit.metaRaw': 'The metadata, exactly as stored',
   'audit.filter': 'Event',
   'audit.filterAll': 'All events',
   'audit.more': 'Load older',

@@ -381,6 +381,12 @@ bdi {
  */
 .scroll-x {
   overflow-x: auto;
+  /* The height at which a table starts scrolling inside its card instead of making the page
+   * longer than the screen. It is also what gives the sticky header something to stick to: a
+   * region that never scrolls vertically has no scrollport of its own, and `position: sticky`
+   * on its header would be a no-op. Below this height nothing changes — the sessions list has
+   * five rows and looks exactly as it did. */
+  max-block-size: var(--table-max-block);
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
@@ -577,16 +583,91 @@ bdi {
   max-inline-size: var(--measure-auth);
 }
 
-/* ── Tables ───────────────────────────────────────────────────────────────
- * `text-align: start` on every cell, so the whole table mirrors with the document instead of
- * needing a right-aligned variant. Every table lives inside a `.scroll-x` region inside a
- * card, so a value wider than the column scrolls rather than escaping — see §*Containment*.
+/* ── The data table ───────────────────────────────────────────────────────
+ * `table-layout: fixed` with a complete `<colgroup>`, both rendered from one array in
+ * `lib/table.ts` — see `components/Table.tsx` for what that buys. Everything here is a
+ * consequence of two decisions:
+ *
+ * **The column widths are real.** With a fixed layout, a table narrower than the sum of its
+ * declared column widths has them scaled down to fit — so the character budgets would hold only
+ * when there happened to be room. `min-inline-size` on each table is that sum, and the scroll
+ * region takes the difference. `tests/unit/client-tables.test.ts` asserts every number below
+ * against the table definitions it came from, so a changed budget fails until the rule is
+ * changed with it.
+ *
+ * **`width` on a `<col>`, not `inline-size`.** The one physical property in the file, and it is
+ * in the scan's allowlist with this reason: a column's used width is what the fixed layout
+ * algorithm reads (CSS 2.1 §17.5.2.1 names that property), the axis is symmetric under a
+ * direction change, and a column that silently failed to take its width would divide the table
+ * into equal parts — the exact defect the fixed layout was adopted to fix.
+ *
+ * `border-collapse: separate` with no spacing, rather than `collapse`: a collapsed border
+ * belongs to the table rather than to the cell, and a sticky header's collapsed bottom border
+ * scrolls away from it in more than one engine.
  */
 .table {
   inline-size: 100%;
-  border-collapse: collapse;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: var(--text-sm);
 }
+
+.table-sessions {
+  min-inline-size: 132ch;
+}
+
+.table-audit {
+  min-inline-size: 100ch;
+}
+
+.table-secrets {
+  min-inline-size: 88ch;
+}
+
+.table-kv {
+  min-inline-size: 47ch;
+}
+
+col.col-expander {
+  width: 4ch;
+}
+
+col.col-level {
+  width: 16ch;
+}
+
+col.col-stamp {
+  width: 24ch;
+}
+
+col.col-instant {
+  width: 27ch;
+}
+
+col.col-event {
+  width: 32ch;
+}
+
+col.col-outcome {
+  width: 12ch;
+}
+
+col.col-scope {
+  width: 24ch;
+}
+
+col.col-label {
+  width: 22ch;
+}
+
+col.col-action {
+  width: 15ch;
+}
+
+/* `col-flex` declares no width on purpose: in a fixed layout the columns that declare none share
+ * what is left over. A percentage would resolve against a table width that is itself computed
+ * from the other columns. */
 
 .table th,
 .table td {
@@ -594,14 +675,113 @@ bdi {
   padding: var(--s2);
   border-block-end: var(--border-w) solid var(--hairline);
   vertical-align: top;
+  /* Unbounded data — a secret's name, a metadata value — breaks rather than pushing the column
+   * wider than the budget. A timestamp is `nowrap` and fits by budget, so it never breaks. */
+  overflow-wrap: anywhere;
 }
 
-.table th {
+.table thead th {
+  /* Sticky against the scroll region, which is the scrollport once the region has a maximum
+   * height. Painted with the card's own surface so rows scroll *under* it, and raised so they
+   * cannot paint over it. */
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  background: var(--surface);
   color: var(--ink-tertiary);
   font-weight: 500;
   font-size: var(--text-xs);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.table-kv th[scope='row'] {
+  color: var(--ink-tertiary);
+  font-weight: 500;
+}
+
+/* The last row's divider would be a line drawn against the card's own padding. Dividers separate
+ * rows; they do not underline the table. */
+.table tbody tr:last-child > th,
+.table tbody tr:last-child > td {
+  border-block-end: 0;
+}
+
+/* A timestamp never wraps. "05/09/2026," on one line and "23:24:18" on the next was one of the
+ * reported defects, and the column budget is what makes this safe rather than clipping. */
+.nowrap {
+  white-space: nowrap;
+}
+
+/* A second line inside a cell: the label of a value that is subordinate to the one above it. */
+.sub {
+  display: block;
+  color: var(--ink-tertiary);
+  font-size: var(--text-xs);
+}
+
+/* ── The row expander ─────────────────────────────────────────────────────
+ * A real button, because it is one. The chevron points down when closed and up when open, which
+ * is the one orientation that needs no mirroring: a horizontal disclosure arrow has to flip with
+ * the document's direction and a rotation is a physical transform.
+ */
+.expander {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: var(--s1);
+  margin: 0;
+  color: var(--ink-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--radius-sm);
+}
+
+.chevron {
+  inline-size: 0;
+  block-size: 0;
+  border-inline: var(--chevron) solid transparent;
+  border-block-start: var(--chevron) solid currentColor;
+}
+
+/* The open state, outside §*Motion* on purpose: the rotation is where the chevron *is*, not how
+ * it got there, so it has to hold when the operator has asked for no motion. */
+.expander[aria-expanded='true'] .chevron {
+  transform: rotate(180deg);
+}
+
+/* The detail row. Spans every column, is mounted only while open, and is set on the raised
+ * surface so it reads as belonging to the row above it. */
+.detail-row > td {
+  background: var(--surface-raised);
+}
+
+/* Key and value, one pair per line. The key is an untranslated code — a grep key — so it is
+ * monospaced and dim, and the value carries the weight. */
+.pairs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  margin-block: 0;
+}
+
+.pair-key {
+  color: var(--ink-tertiary);
+}
+
+/* ── The skeleton ─────────────────────────────────────────────────────────
+ * A block at the midpoint opacity, which pulses in §*Motion* and stays exactly here under
+ * reduced motion. No travelling gradient: that animates `background-position`, which is not on
+ * the animatable-property allowlist, and for a reason — it invalidates a paint region per frame.
+ */
+.skeleton {
+  display: block;
+  block-size: var(--text-base);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  opacity: var(--skeleton-mid);
 }
 
 /* ── The dialog ───────────────────────────────────────────────────────────

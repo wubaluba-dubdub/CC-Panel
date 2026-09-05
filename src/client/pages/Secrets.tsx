@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Badge, Button, Card, CopyButton, Field, Notice, ScrollRegion } from '../components/ui.js';
+import { Badge, Button, Card, CopyButton, Field, Notice } from '../components/ui.js';
+import { DataTable, KeyValueTable, type DataRow } from '../components/Table.js';
 import { Mono, MonoBlock } from '../components/Ltr.js';
 import { useLocale } from '../i18n/index.js';
 import { api, ApiError } from '../lib/api.js';
 import { formatDuration, formatTechnicalDate } from '../lib/format.js';
+import { SECRETS_TABLE, TELEGRAM_TABLE, type SecretColumnKey } from '../lib/table.js';
 import type {
   NotificationQueuedResponse,
   NotificationStatusResponse,
@@ -35,7 +37,7 @@ import type {
 const REVEAL_MS = 20_000;
 
 export function Secrets(): React.JSX.Element {
-  const { t, ts, locale } = useLocale();
+  const { t, locale } = useLocale();
   const [secrets, setSecrets] = useState<SecretMetadataResponse['secrets'] | null>(null);
   const [telegram, setTelegram] = useState<NotificationStatusResponse | null>(null);
   const [error, setError] = useState<React.ReactNode | null>(null);
@@ -128,6 +130,26 @@ export function Secrets(): React.JSX.Element {
     }
   };
 
+  const rows: DataRow<SecretColumnKey>[] = (secrets ?? []).map((secret) => ({
+    id: `${secret.scope}/${secret.name}`,
+    cells: {
+      'secrets.scope': <Mono>{secret.scope}</Mono>,
+      'secrets.name': <Mono>{secret.name}</Mono>,
+      'secrets.updated': (
+        <Mono className="nowrap">{formatTechnicalDate(secret.updatedAt, locale)}</Mono>
+      ),
+      'secrets.reveal': (
+        <Button
+          cell
+          onClick={() => void reveal(secret.scope, secret.name)}
+          disabled={busy || revealed !== null}
+        >
+          {t('secrets.reveal')}
+        </Button>
+      ),
+    },
+  }));
+
   return (
     <>
       <h1>{t('secrets.title')}</h1>
@@ -137,49 +159,12 @@ export function Secrets(): React.JSX.Element {
       {notice === null ? null : <Notice kind="ok">{notice}</Notice>}
 
       <Card wide>
-        {secrets === null ? (
-          <p className="hint">{t('common.loading')}</p>
-        ) : secrets.length === 0 ? (
-          <p>{t('secrets.empty')}</p>
-        ) : (
-          <ScrollRegion label={ts('secrets.title')}>
-            <table className="table">
-            <thead>
-              <tr>
-                <th scope="col">{t('secrets.scope')}</th>
-                <th scope="col">{t('secrets.name')}</th>
-                <th scope="col">{t('secrets.updated')}</th>
-                <th scope="col">
-                  <span className="hint">{t('secrets.reveal')}</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {secrets.map((secret) => (
-                <tr key={`${secret.scope}/${secret.name}`}>
-                  <td>
-                    <Mono>{secret.scope}</Mono>
-                  </td>
-                  <td>
-                    <Mono>{secret.name}</Mono>
-                  </td>
-                  <td>
-                    <Mono>{formatTechnicalDate(secret.updatedAt, locale)}</Mono>
-                  </td>
-                  <td>
-                    <Button
-                      onClick={() => void reveal(secret.scope, secret.name)}
-                      disabled={busy || revealed !== null}
-                    >
-                      {t('secrets.reveal')}
-                    </Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-            </table>
-          </ScrollRegion>
-        )}
+        <DataTable
+          spec={SECRETS_TABLE}
+          rows={rows}
+          loading={secrets === null}
+          empty={t('secrets.empty')}
+        />
         <p className="hint">{t('secrets.revealWarning')}</p>
       </Card>
 
@@ -268,54 +253,62 @@ function TelegramCard({
       <p className="row">
         <Badge kind={health.kind}>{t('telegram.title')}</Badge> {health.text}
       </p>
-      <table className="table">
-        <tbody>
-          <tr>
-            <th scope="row">{t('telegram.botToken')}</th>
-            <td>
-              {status.botToken.set
-                ? t('common.characters', { count: <Mono>{status.botToken.length ?? 0}</Mono> })
-                : t('common.notSet')}
-            </td>
-          </tr>
-          <tr>
-            <th scope="row">{t('telegram.chatId')}</th>
-            <td>
-              {status.chatId.set
-                ? t('common.characters', { count: <Mono>{status.chatId.length ?? 0}</Mono> })
-                : t('common.notSet')}
-            </td>
-          </tr>
-          <tr>
-            <th scope="row">{t('telegram.queue')}</th>
-            <td>
-              {t('telegram.queueCounts', {
-                pending: <Mono>{status.queue.pending}</Mono>,
-                sending: <Mono>{status.queue.sending}</Mono>,
-                sent: <Mono>{status.queue.sent}</Mono>,
-                abandoned: <Mono>{status.queue.abandoned}</Mono>,
-              })}
-            </td>
-          </tr>
-          <tr>
-            <th scope="row">{t('telegram.lastSuccess')}</th>
-            <td>
-              <Mono>{formatTechnicalDate(status.lastSuccessAt, locale) ?? t('common.never')}</Mono>
-            </td>
-          </tr>
-          {status.lastFailure === null ? null : (
-            <tr>
-              <th scope="row">{t('telegram.lastFailure')}</th>
-              <td>
-                {/* A category and a time, never Telegram's own text — which echoes what was
-                    sent. The category is a code from the transport's closed set. */}
-                <Mono>{status.lastFailure.category}</Mono>{' '}
-                <Mono>{formatTechnicalDate(status.lastFailure.at, locale)}</Mono>
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+      <KeyValueTable
+        spec={TELEGRAM_TABLE}
+        rows={[
+          {
+            key: 'botToken',
+            label: t('telegram.botToken'),
+            value: status.botToken.set
+              ? t('common.characters', { count: <Mono>{status.botToken.length ?? 0}</Mono> })
+              : t('common.notSet'),
+          },
+          {
+            key: 'chatId',
+            label: t('telegram.chatId'),
+            value: status.chatId.set
+              ? t('common.characters', { count: <Mono>{status.chatId.length ?? 0}</Mono> })
+              : t('common.notSet'),
+          },
+          {
+            key: 'queue',
+            label: t('telegram.queue'),
+            value: t('telegram.queueCounts', {
+              pending: <Mono>{status.queue.pending}</Mono>,
+              sending: <Mono>{status.queue.sending}</Mono>,
+              sent: <Mono>{status.queue.sent}</Mono>,
+              abandoned: <Mono>{status.queue.abandoned}</Mono>,
+            }),
+          },
+          {
+            key: 'lastSuccess',
+            label: t('telegram.lastSuccess'),
+            value: (
+              <Mono className="nowrap">
+                {formatTechnicalDate(status.lastSuccessAt, locale) ?? t('common.never')}
+              </Mono>
+            ),
+          },
+          // A category and a time, never Telegram's own text — which echoes what was sent. The
+          // category is a code from the transport's closed set.
+          ...(status.lastFailure === null
+            ? []
+            : [
+                {
+                  key: 'lastFailure',
+                  label: t('telegram.lastFailure'),
+                  value: (
+                    <>
+                      <Mono>{status.lastFailure.category}</Mono>{' '}
+                      <Mono className="nowrap">
+                        {formatTechnicalDate(status.lastFailure.at, locale)}
+                      </Mono>
+                    </>
+                  ),
+                },
+              ]),
+        ]}
+      />
       {status.dropped.count === 0 ? null : (
         <Notice kind="warn">{t('telegram.dropped', { count: status.dropped.count })}</Notice>
       )}

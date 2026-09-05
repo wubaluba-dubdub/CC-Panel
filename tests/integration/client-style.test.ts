@@ -233,3 +233,72 @@ describe('M2.1.1 — every overlay is in the top layer', () => {
     expect(readFileSync(clientFiles(/^ui\.tsx$/)[0]!, 'utf-8')).toContain('.showModal()');
   });
 });
+
+describe('M2.1.1 — one table primitive, and one place that renders a table', () => {
+  const PRIMITIVE = 'components/Table.tsx';
+
+  it('renders every <table>, <colgroup> and <caption> in the primitive and nowhere else', () => {
+    const offenders: string[] = [];
+    for (const file of clientFiles(/\.tsx?$/)) {
+      const rel = relativeToClient(file);
+      if (rel === PRIMITIVE) continue;
+      // Comments are stripped first: prose *about* the rule is the point of the rule, and both
+      // `lib/table.ts` and `components/ui.tsx` explain this one in theirs.
+      const code = readFileSync(file, 'utf-8')
+        .split('\n')
+        .map((line) =>
+          line
+            .replace(/\/\*.*?\*\//g, '')
+            .replace(/\/\/.*$/, '')
+            .replace(/^\s*\*.*$/, ''),
+        )
+        .join('\n');
+      for (const tag of ['<table', '<colgroup', '<caption', '<thead']) {
+        if (code.includes(tag)) offenders.push(`${rel} renders ${tag} — use <DataTable> or <KeyValueTable>`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('builds the colgroup and the header row from the same array', () => {
+    // This is what makes "the colgroup declares exactly as many columns as the header row has
+    // cells" true by construction rather than by inspection. The third mapping — a row's cells —
+    // is a `Record` keyed on the same column keys, so a missing cell is a compile error.
+    const source = readFileSync(clientFiles(/^Table\.tsx$/)[0]!, 'utf-8');
+    expect(source).toContain('spec.columns.map((column) => (\n            <col');
+    expect(source).toContain('spec.columns.map((column) => (\n              <th scope="col"');
+    expect(source).toContain('spec.columns.map((column) => (\n          <td');
+    // The caption is the accessible name and is not drawn.
+    expect(source).toContain('<caption className="visually-hidden">');
+    // A detail row spans every column, so it cannot be mistaken for a row of cells.
+    expect(source).toContain('colSpan={span}');
+  });
+
+  it('gives the scroll region a name and deliberately no tab stop', () => {
+    const source = readFileSync(clientFiles(/^ui\.tsx$/)[0]!, 'utf-8');
+    expect(source).toContain('<div className="scroll-x" role="region" aria-label={label}>');
+    // Reasoned in the component's own comment: Chrome 127+ already focuses a scroller that has no
+    // focusable descendant, every row here has one, and an explicit stop would be dead in the
+    // common case where the table is not overflowing at all.
+    const region = source.slice(source.indexOf('export function ScrollRegion'));
+    expect(region.includes('tabIndex'), 'the scroll region took a tab stop').toBe(false);
+  });
+
+  it('keys the routed region by the route and by nothing else', () => {
+    // A key carrying a polled value would remount the screen every two seconds and replay the
+    // enter animation while the operator was reading it.
+    const shell = readFileSync(clientFiles(/^Shell\.tsx$/)[0]!, 'utf-8');
+    expect(shell).toContain('<div className="screen" key={route.name}>');
+    const offenders: string[] = [];
+    for (const file of clientFiles(/\.tsx$/)) {
+      const rel = relativeToClient(file);
+      for (const [index, line] of readFileSync(file, 'utf-8').split('\n').entries()) {
+        if (!/\bkey=\{/.test(line)) continue;
+        if (/\bkey=\{[^}]*(?:metrics|sampledAt|Date\.now|percent|usedBytes|revealLeft|remaining)/.test(line)) {
+          offenders.push(`${rel}:${index + 1} keys an element on a polled value`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});

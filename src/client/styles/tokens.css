@@ -100,6 +100,9 @@
   --measure-boot: 60ch;
 
   --side-w: 220px;
+  /* How tall a table may get before it scrolls inside its card rather than lengthening the
+   * page. See `.scroll-x`. */
+  --table-max-block: 70vh;
   --gauge-h: 8px;
   --chevron: 5px;
   /* The skip link's parking space. Off-screen, never `display: none`, which would take it out
