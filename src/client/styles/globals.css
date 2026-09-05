@@ -895,3 +895,210 @@ col.col-action {
   color: var(--danger);
   border-color: var(--danger);
 }
+
+/* ── States under the pointer ─────────────────────────────────────────────
+ * Where a thing *goes* is not motion, so these are outside the guard below: an operator who has
+ * asked for no animation still gets the hover feedback, instantly.
+ */
+.btn:hover:not(:disabled) {
+  border-color: var(--ink-tertiary);
+  background: var(--surface-hover);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-bright);
+  border-color: var(--accent-bright);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--danger);
+}
+
+.chip:hover {
+  border-color: var(--ink-tertiary);
+}
+
+.side nav a:hover {
+  color: var(--ink-primary);
+  background: var(--surface-hover);
+}
+
+.expander:hover {
+  color: var(--ink-primary);
+}
+
+.select-wrap select:hover {
+  border-color: var(--ink-tertiary);
+}
+
+/* A hovered row, so the eye can read across a wide one. The detail row keeps its own surface. */
+.table tbody tr:hover > td,
+.table tbody tr:hover > th {
+  background: var(--surface-hover);
+}
+
+.detail-row:hover > td {
+  background: var(--surface-raised);
+}
+
+/* ── Motion ───────────────────────────────────────────────────────────────
+ * **Every transition, animation and `@keyframes` rule in this stylesheet is inside this block**,
+ * and `tests/integration/client-style.test.ts` asserts it. Two rules go with that:
+ *
+ * 1. **A closed allowlist of animatable properties**: `opacity`, `transform`, `--gauge-fill`,
+ *    `background-color`, `border-color`, `color`. Nothing that triggers layout — no `height`, no
+ *    `inset`, no `margin`, no `background-position`, no `filter`. The reason is this panel
+ *    specifically: it polls every two seconds, so a layout-animating property is a reflow per
+ *    frame *while data is arriving*, and the operator is reading numbers at the time.
+ * 2. **A state is not an animation.** Where a hovered button's colour lands, and which way the
+ *    chevron points, are above this block. Only the *travel* between two states is in here, so
+ *    reduced motion removes the travel and never the information.
+ *
+ * The focus ring is deliberately absent: it must be on screen on the frame the element takes
+ * focus, so it is not animated at all, under any preference.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  .btn,
+  .chip,
+  .expander,
+  .select-wrap select,
+  .side nav a,
+  .table tbody tr > td,
+  .table tbody tr > th {
+    transition:
+      background-color var(--t-fast) var(--ease),
+      border-color var(--t-fast) var(--ease),
+      color var(--t-fast) var(--ease);
+  }
+
+  .btn:active:not(:disabled),
+  .chip:active {
+    transform: scale(0.98);
+    transition: transform var(--t-press) var(--ease);
+  }
+
+  .chevron {
+    transition: transform var(--t-standard) var(--ease);
+  }
+
+  /* The gauge. `--gauge-fill` is registered in `tokens.css`; without that registration this
+   * transition is silently discrete and the bar steps between polls, which is what it did. The
+   * duration is the slow one deliberately: a bar showing a rate should not arrive faster than the
+   * rate can change, and this one is re-set every two seconds. */
+  .gauge-bar {
+    transition: --gauge-fill var(--t-slow) var(--ease);
+  }
+
+  /* The routed region, as an *animation* rather than a transition, so it runs on mount. Keyed by
+   * the route in `Shell.tsx` and by nothing else — a key carrying a polled value would replay
+   * this every two seconds. */
+  .screen {
+    animation: screen-in var(--t-standard) var(--ease) both;
+  }
+
+  .detail-row > td {
+    animation: fade-in var(--t-standard) var(--ease) both;
+  }
+
+  .skeleton {
+    animation: skeleton-pulse var(--t-pulse) ease-in-out infinite;
+  }
+
+  /* The dialog, both ways.
+   *
+   * `allow-discrete` on **`display` and `overlay` both**. `display` is what keeps the element
+   * rendered while the exit plays; `overlay` is what keeps it in the browser's *top layer* while
+   * it does. Without the second one the element leaves the top layer on the first frame of the
+   * exit and the rest of the animation plays behind the page, which looks like a bug in the page
+   * rather than in the animation.
+   *
+   * `@starting-style` supplies the from-state for the enter, because there is no previous state
+   * to transition from: the element was `display: none`. Where it is unsupported the dialog
+   * appears instantly — an acceptable degradation, written down rather than shimmed. */
+  .dialog {
+    opacity: 0;
+    transform: scale(0.97);
+    transition:
+      opacity var(--t-standard) var(--ease),
+      transform var(--t-standard) var(--ease),
+      display var(--t-standard) allow-discrete,
+      overlay var(--t-standard) allow-discrete;
+  }
+
+  .dialog[open] {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  @starting-style {
+    .dialog[open] {
+      opacity: 0;
+      transform: scale(0.97);
+    }
+  }
+
+  .dialog::backdrop {
+    opacity: 0;
+    transition:
+      opacity var(--t-fast) var(--ease),
+      display var(--t-fast) allow-discrete,
+      overlay var(--t-fast) allow-discrete;
+  }
+
+  .dialog[open]::backdrop {
+    opacity: 1;
+  }
+
+  @starting-style {
+    .dialog[open]::backdrop {
+      opacity: 0;
+    }
+  }
+
+  @keyframes screen-in {
+    from {
+      opacity: 0;
+      /* The block axis, so there is nothing to mirror: an inline shift would have to flip with
+       * the document's direction and a transform is physical. */
+      transform: translateY(var(--enter-shift));
+    }
+
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes skeleton-pulse {
+    0%,
+    100% {
+      opacity: var(--skeleton-low);
+    }
+
+    50% {
+      opacity: var(--skeleton-high);
+    }
+  }
+}
+
+/* The gauge's transition, switched off **explicitly** rather than merely left out.
+ * `--gauge-fill` is a registered property whose value is re-set by script every two seconds; an
+ * explicit zero says the bar jumps, and cannot be re-enabled by a later rule that names a
+ * duration without checking. It is the one motion-related declaration outside the guard above,
+ * and the scan permits it because a zero duration is a de-animation. */
+@media (prefers-reduced-motion: reduce) {
+  .gauge-bar {
+    transition-duration: var(--t-none);
+  }
+}

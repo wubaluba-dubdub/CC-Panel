@@ -342,3 +342,150 @@ describe('M2.1.1 — one instant formatter', () => {
     expect(offenders).toEqual([]);
   });
 });
+
+/**
+ * Motion, as three scans.
+ *
+ * The operator asked for soft animation. What makes that safe on this panel rather than merely
+ * pretty is the two rules below, and both are the kind that hold on the first component and rot by
+ * the fortieth — so neither is a convention.
+ */
+
+/** The only properties this panel animates, and why each is on the list. */
+const ANIMATABLE = new Map<string, string>([
+  ['opacity', 'composited, no layout, no paint invalidation'],
+  ['transform', 'composited; the press scale, the chevron and the screen enter'],
+  ['--gauge-fill', 'registered with @property, so it interpolates; the gauge'],
+  ['background-color', 'a paint, not a layout: a hovered row and a hovered button'],
+  ['border-color', 'a paint: a hovered control'],
+  ['color', 'a paint: a hovered link and the expander'],
+  // The two discrete ones. Neither interpolates, and that is the point: they flip once, at the
+  // end, which is what keeps a closing dialog rendered and in the top layer while its opacity and
+  // transform play. They are only allowed with `allow-discrete`, which the scan checks.
+  ['display', 'discrete only — keeps a closing dialog rendered while its opacity plays'],
+  ['overlay', 'discrete only — keeps a closing dialog in the top layer while its opacity plays'],
+]);
+
+const GUARD = '@media (prefers-reduced-motion: no-preference)';
+
+/** Splits a comma-separated value without splitting inside `var(…)` or `cubic-bezier(…)`. */
+function topLevelParts(value: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const char of value) {
+    if (char === '(') depth += 1;
+    if (char === ')') depth -= 1;
+    if (char === ',' && depth === 0) {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  parts.push(current);
+  return parts.map((part) => part.trim()).filter((part) => part !== '');
+}
+
+/** True for a declaration that switches motion *off*, which is allowed anywhere. */
+function isDeAnimation(value: string): boolean {
+  return /^(?:none|0s|0ms|var\(--t-none\))$/.test(value.trim());
+}
+
+describe('M2.1.1 — motion is inside the reduced-motion guard', () => {
+  it('puts every transition, animation and @keyframes rule inside it', () => {
+    const offenders: string[] = [];
+    for (const decl of allDeclarations()) {
+      const animating =
+        /^(?:transition|animation)(?:-|$)/.test(decl.property) ||
+        decl.context.some((one) => one.startsWith('@keyframes'));
+      if (!animating) continue;
+      // A zero duration or `none` is a de-animation, not an animation, and has to be sayable
+      // outside the guard — the gauge's explicit `transition-duration: var(--t-none)` under
+      // `reduce` is the one place that matters.
+      if (isDeAnimation(decl.value)) continue;
+      if (!decl.context.includes(GUARD)) {
+        offenders.push(
+          `${decl.file}:${decl.line} \`${decl.property}: ${decl.value}\` is outside ${GUARD}`,
+        );
+      }
+    }
+    expect(offenders).toEqual([]);
+    // Not vacuous: there is motion to guard.
+    const guarded = allDeclarations().filter(
+      (decl) => decl.context.includes(GUARD) && /^transition|^animation/.test(decl.property),
+    );
+    expect(guarded.length).toBeGreaterThan(4);
+  });
+
+  it('animates only the properties on the allowlist', () => {
+    const offenders: string[] = [];
+    for (const decl of allDeclarations()) {
+      // A property declared inside a @keyframes block is animated by definition.
+      if (decl.context.some((one) => one.startsWith('@keyframes'))) {
+        if (!ANIMATABLE.has(decl.property)) {
+          offenders.push(`${decl.file}:${decl.line} @keyframes animates ${decl.property}`);
+        }
+        continue;
+      }
+      if (decl.property !== 'transition' && decl.property !== 'transition-property') continue;
+      if (isDeAnimation(decl.value)) continue;
+      for (const part of topLevelParts(decl.value)) {
+        const property = part.split(/\s+/)[0]!;
+        if (!ANIMATABLE.has(property)) {
+          offenders.push(`${decl.file}:${decl.line} transitions ${property}, which is not on the allowlist`);
+          continue;
+        }
+        // `display` and `overlay` do not interpolate. Transitioned without `allow-discrete` they
+        // would flip on the first frame and the exit would play behind the page.
+        if ((property === 'display' || property === 'overlay') && !part.includes('allow-discrete')) {
+          offenders.push(`${decl.file}:${decl.line} transitions ${property} without allow-discrete`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('scans values that would fail it — the patterns are not vacuous', () => {
+    expect(topLevelParts('opacity var(--t-fast) var(--ease), transform var(--t-slow) var(--ease)')).toEqual([
+      'opacity var(--t-fast) var(--ease)',
+      'transform var(--t-slow) var(--ease)',
+    ]);
+    // A `cubic-bezier(a, b, c, d)` inline would otherwise split into four parts.
+    expect(topLevelParts('height cubic-bezier(0.2, 0, 0.2, 1)')).toEqual([
+      'height cubic-bezier(0.2, 0, 0.2, 1)',
+    ]);
+    for (const forbidden of ['height', 'inline-size', 'inset-block-start', 'margin', 'filter', 'background-position']) {
+      expect(ANIMATABLE.has(forbidden), `${forbidden} must not be animatable`).toBe(false);
+    }
+    expect(isDeAnimation('none')).toBe(true);
+    expect(isDeAnimation('var(--t-none)')).toBe(true);
+    expect(isDeAnimation('opacity var(--t-fast) var(--ease)')).toBe(false);
+  });
+
+  it('registers --gauge-fill, because an unregistered property interpolates discretely', () => {
+    // The absence of this block is invisible: the transition applies, does nothing, and looks
+    // exactly like an animation nobody added.
+    const registration = allDeclarations().filter((decl) =>
+      decl.context.some((one) => one === '@property --gauge-fill'),
+    );
+    const descriptor = (name: string): string | undefined =>
+      registration.find((decl) => decl.property === name)?.value;
+    expect(descriptor('syntax')).toBe("'<percentage>'");
+    expect(descriptor('inherits')).toBe('false');
+    expect(descriptor('initial-value')).toBe('0%');
+    // And the transition it exists for.
+    const gauge = allDeclarations().find(
+      (decl) => decl.context.at(-1) === '.gauge-bar' && decl.property === 'transition',
+    );
+    expect(gauge?.value).toContain('--gauge-fill');
+    expect(gauge?.context).toContain(GUARD);
+    // Switched off explicitly under `reduce`, not merely left out.
+    const off = allDeclarations().find(
+      (decl) =>
+        decl.context.includes('@media (prefers-reduced-motion: reduce)') &&
+        decl.property === 'transition-duration',
+    );
+    expect(off?.value).toBe('var(--t-none)');
+  });
+});

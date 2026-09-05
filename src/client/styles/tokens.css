@@ -37,6 +37,9 @@
   --bg: #0a0a0b;
   --surface: #131316;
   --surface-raised: #1b1b1f;
+  /* Under the pointer. Between `--surface-raised` and `--hairline`, so a hovered row reads as
+   * lifted without becoming a fourth surface anything is *drawn* on. */
+  --surface-hover: #212127;
   --hairline: #26262b;
   --hairline-strong: #34343b;
 
@@ -52,6 +55,10 @@
   --accent: #6e8bff;
   --accent-ink: #0a0a0b;
   --accent-dim: #2b3a7a;
+  /* The accent under the pointer. A literal rather than a `color-mix()` of the accent: an
+   * unsupported `color-mix` is an invalid value, and an invalid `background` on the primary
+   * button is a transparent button rather than a slightly wrong colour. */
+  --accent-bright: #8a9fff;
   --danger: #ff6b6b;
   --warn: #ffb95c;
   --ok: #57d9a3;
@@ -140,6 +147,25 @@
 
   --enter-shift: 4px;
 
-  /* Set from script with `setProperty`, never from a `style` attribute — see globals.css. */
-  --gauge-fill: 0%;
+}
+
+/*
+ * The gauge's fill, **registered**.
+ *
+ * This block is not decoration. An unregistered custom property has no type, so its computed
+ * value is a token stream and CSS interpolates it **discretely** — the transition in
+ * `globals.css` §*Motion* would apply, do nothing visible, and look exactly like an animation
+ * nobody added. `syntax` is what makes `0%` → `74.2%` a continuous interpolation.
+ *
+ * `inherits: false` because the fill belongs to the one bar it is set on, and `initial-value`
+ * because a registered property must have one for a non-universal syntax — which also removes the
+ * need for a `:root` declaration: an unset bar is an empty bar.
+ *
+ * Set from script with `element.style.setProperty`, never from a `style` attribute, which
+ * `style-src 'self'` blocks. See `components/Gauge.tsx`.
+ */
+@property --gauge-fill {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 0%;
 }
