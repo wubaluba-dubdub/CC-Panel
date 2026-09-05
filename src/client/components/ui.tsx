@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useLocale } from '../i18n/index.js';
 
 /**
- * The primitives. Eight of them, in one file, because each is a handful of lines and the point
- * of having them at all is that a screen cannot invent its own.
+ * The primitives. In one file, because each is a handful of lines and the point of having them
+ * at all is that a screen cannot invent its own.
  *
  * Everything here obeys the two client rules: **no `style` prop** (`style-src 'self'` blocks a
  * `style` attribute, and the CSSOM path React uses for `style={{}}` has historically been
@@ -14,15 +14,64 @@ import { useLocale } from '../i18n/index.js';
 export function Card({
   title,
   children,
+  wide = false,
 }: {
   title?: ReactNode;
   children?: ReactNode;
+  /**
+   * Lets the card grow past the reading measure, for a data table.
+   *
+   * `.screen > *` clamps every direct child of the routed region to `--measure-prose`, because
+   * prose reads badly past about 76 characters. A table of four timestamps and a client string
+   * is not prose: clamped, it would scroll horizontally on a 1920px display for a reason that
+   * has nothing to do with the display. See `docs/UI.md` §*The two measures*.
+   */
+  wide?: boolean;
 }): ReactNode {
   return (
-    <section className="card">
+    <section className={wide ? 'card card-wide' : 'card'}>
       {title === undefined ? null : <h2>{title}</h2>}
       {children}
     </section>
+  );
+}
+
+/**
+ * The inner half of containment: the card clips, and this scrolls.
+ *
+ * A card owns its border, its radius and its padding, and nothing inside it may cross them —
+ * so anything that can be wider than the card goes in here. That is the whole fix for the
+ * defect family M2.1.1 repaired, where a table laid out by its own content drew its last
+ * column's header and every row's divider across the card's border and out onto the page.
+ *
+ * ── Two accessibility decisions, and one of them is a deliberate omission ────
+ *
+ * `role="region"` with a name, so the box is a landmark a screen reader can be told about
+ * rather than an anonymous `<div>` that happens to scroll.
+ *
+ * **No `tabindex`.** Chrome 127 and later make a scroll container keyboard-focusable by
+ * itself, and only when it has no focusable descendant; Firefox and Safari do not do it at
+ * all. An explicit `tabindex="0"` would give a stop in every engine — including a stop that
+ * does nothing at all on the common case where the table is not overflowing, and a stop
+ * immediately before the row's own controls where Chrome already provides one. Every row in
+ * both tables carries a focusable control (the row expander, and the action button), so Tab
+ * reaches the region's contents and the browser scrolls a focused cell into view, which is
+ * how a keyboard user reaches a column that is off the edge. This is reasoned from the
+ * specification and **not** verified in a browser — `docs/SECURITY.md` §*Manual browser
+ * checks* item 33 is the verification.
+ */
+export function ScrollRegion({
+  label,
+  children,
+}: {
+  /** From `ts()`. The same string the table's `<caption>` carries. */
+  label: string;
+  children: ReactNode;
+}): ReactNode {
+  return (
+    <div className="scroll-x" role="region" aria-label={label}>
+      {children}
+    </div>
   );
 }
 

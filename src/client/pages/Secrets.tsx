@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Badge, Button, Card, CopyButton, Field, Notice } from '../components/ui.js';
+import { Badge, Button, Card, CopyButton, Field, Notice, ScrollRegion } from '../components/ui.js';
 import { Mono, MonoBlock } from '../components/Ltr.js';
 import { useLocale } from '../i18n/index.js';
 import { api, ApiError } from '../lib/api.js';
@@ -35,7 +35,7 @@ import type {
 const REVEAL_MS = 20_000;
 
 export function Secrets(): React.JSX.Element {
-  const { t, locale } = useLocale();
+  const { t, ts, locale } = useLocale();
   const [secrets, setSecrets] = useState<SecretMetadataResponse['secrets'] | null>(null);
   const [telegram, setTelegram] = useState<NotificationStatusResponse | null>(null);
   const [error, setError] = useState<React.ReactNode | null>(null);
@@ -136,13 +136,14 @@ export function Secrets(): React.JSX.Element {
       {error === null ? null : <Notice kind="danger">{error}</Notice>}
       {notice === null ? null : <Notice kind="ok">{notice}</Notice>}
 
-      <Card>
+      <Card wide>
         {secrets === null ? (
           <p className="hint">{t('common.loading')}</p>
         ) : secrets.length === 0 ? (
           <p>{t('secrets.empty')}</p>
         ) : (
-          <table className="table">
+          <ScrollRegion label={ts('secrets.title')}>
+            <table className="table">
             <thead>
               <tr>
                 <th scope="col">{t('secrets.scope')}</th>
@@ -176,7 +177,8 @@ export function Secrets(): React.JSX.Element {
                 </tr>
               ))}
             </tbody>
-          </table>
+            </table>
+          </ScrollRegion>
         )}
         <p className="hint">{t('secrets.revealWarning')}</p>
       </Card>

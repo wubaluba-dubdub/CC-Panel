@@ -52,6 +52,17 @@ const PHYSICAL_CSS: { pattern: RegExp; instead: string }[] = [
   { pattern: /\btext-align\s*:\s*(left|right)\b/, instead: 'text-align: start / end' },
   { pattern: /\bfloat\s*:\s*(left|right)\b/, instead: 'float: inline-start / inline-end' },
   { pattern: /\bclear\s*:\s*(left|right)\b/, instead: 'clear: inline-start / inline-end' },
+  // Added in M2.1.1. These name a *physical axis* rather than a physical side, so they carry no
+  // direction assumption — which is exactly why they need an allowlist with a reason rather than
+  // a ban: the two the panel uses are legitimate and the next one probably is not.
+  { pattern: /(?<![-\w])width\s*:/, instead: 'inline-size' },
+  { pattern: /(?<![-\w])height\s*:/, instead: 'block-size' },
+  { pattern: /\bmin-width\s*:/, instead: 'min-inline-size' },
+  { pattern: /\bmax-width\s*:/, instead: 'max-inline-size' },
+  { pattern: /\bmin-height\s*:/, instead: 'min-block-size' },
+  { pattern: /\bmax-height\s*:/, instead: 'max-block-size' },
+  { pattern: /\boverflow-x\s*:/, instead: 'overflow-inline' },
+  { pattern: /\boverflow-y\s*:/, instead: 'overflow-block' },
 ];
 
 /**
@@ -62,9 +73,25 @@ const PHYSICAL_CSS: { pattern: RegExp; instead: string }[] = [
  * Keyed by `<file>:<property>` so an exemption cannot silently widen to a whole file.
  */
 const PHYSICAL_ALLOWED = new Map<string, string>([
-  // Nothing yet. The two cases expected to need it eventually are a drop shadow's offset and
-  // an icon that means "down"; both are physical facts about the thing, not about the reading
-  // direction, and both belong here with a sentence when they arrive.
+  // The two cases expected to need it eventually are a drop shadow's offset and an icon that
+  // means "down"; both are physical facts about the thing rather than about the reading
+  // direction. Neither has arrived. What has:
+  [
+    'styles/globals.css:overflow-inline',
+    'M2.1.1: `overflow-x` on the table scroll region and on `.main`. A horizontal axis is ' +
+      'symmetric under a direction change — an RTL document scrolls the same box the other way ' +
+      'with no rule change — so the physical axis name carries no direction assumption. ' +
+      '`overflow-inline` is the logical spelling and is too recent to make a browser release ' +
+      'date a requirement of this panel.',
+  ],
+  [
+    'styles/globals.css:inline-size',
+    'M2.1.1: `width` on a `<col>` element. A table column\'s used width is the one thing the ' +
+      'fixed table layout algorithm reads, and it is the property CSS 2.1 §17.5.2.1 names; ' +
+      '`inline-size` computes to the same value but routes it through the logical-property ' +
+      'alias, and a column that silently failed to take its width would divide the table into ' +
+      'equal parts — the exact defect the fixed layout was adopted to fix.',
+  ],
 ]);
 
 // ── 2. Runtime CSS-in-JS ─────────────────────────────────────────────────────
@@ -152,6 +179,10 @@ describe('M2.1 — the client keeps to its own rules', () => {
       const rel = relative(CLIENT_ROOT, file).split('\\').join('/');
       for (const [index, line] of readFileSync(file, 'utf-8').split('\n').entries()) {
         const code = codeOf(line);
+        // A media condition is evaluated before custom properties are substituted and has no
+        // logical spelling at all — `@media (inline-size: …)` is a container query, not a media
+        // query. So `(max-width: 720px)` is a structural exception rather than an allowlisted one.
+        if (/@media\b/.test(code)) continue;
         for (const { pattern, instead } of PHYSICAL_CSS) {
           if (!pattern.test(code)) continue;
           if (PHYSICAL_ALLOWED.has(`${rel}:${instead}`)) continue;
@@ -172,6 +203,9 @@ describe('M2.1 — the client keeps to its own rules', () => {
       [/\btext-align\s*:\s*(left|right)\b/, 'text-align: left;'],
       [/\bborder-left\b/, 'border-left: 1px solid var(--hairline);'],
       [/\bfloat\s*:\s*(left|right)\b/, 'float: right;'],
+      [/(?<![-\w])width\s*:/, 'width: 100%;'],
+      [/\bmax-width\s*:/, 'max-width: 76ch;'],
+      [/\boverflow-x\s*:/, 'overflow-x: auto;'],
     ];
     for (const [pattern, sample] of samples) {
       expect(pattern.test(sample), sample).toBe(true);
@@ -186,6 +220,10 @@ describe('M2.1 — the client keeps to its own rules', () => {
         'text-align: start;',
         'border-inline-start: 1px solid var(--hairline);',
         'border-start-start-radius: var(--radius);',
+        'inline-size: 100%;',
+        'max-inline-size: var(--measure-prose);',
+        'min-block-size: 100vh;',
+        'block-size: var(--gauge-h);',
       ]) {
         expect(pattern.test(good), `${pattern} matched ${good}`).toBe(false);
       }

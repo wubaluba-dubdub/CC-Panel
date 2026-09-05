@@ -1,0 +1,142 @@
+/*
+ * The tokens. **This is the only file in the client that may contain a literal value.**
+ *
+ * A colour, a spacing step, a radius, a duration, an easing curve: written here once and
+ * referenced with `var()` everywhere else. `tests/integration/client-style.test.ts` scans every
+ * other `.css`, `.ts` and `.tsx` file under `src/client` and fails on a colour literal, a raw
+ * duration, an easing curve or a raw `px` length — so the rule is enforced rather than followed.
+ *
+ * The one exception the scan permits, because CSS gives no alternative: a `px` length inside an
+ * `@media` condition. Media queries are evaluated before custom properties are substituted, so
+ * `@media (max-width: var(--x))` does not work in any engine.
+ *
+ * ── Why the ink tokens are named for a role and not for a shade ──────────────
+ *
+ * They used to be `--text`, `--text-muted`, `--text-faint`. Three deliberate tokens, but named
+ * for *how dim* they are, which is a question with no answer at the point of use — so the
+ * sessions screen ended up with the column headers, the "Hard expiry" sub-line and the footnote
+ * all at the same value for three different reasons, and read as three ad-hoc greys. The names
+ * now say what each is *for*, and `docs/UI.md` §1 carries the rule:
+ *
+ *   primary    a value the operator reads: a cell, a heading, body text
+ *   secondary  prose that supports a value: a lede, a card's explanation, a badge
+ *   tertiary   text about the interface rather than about the data: a column header, a
+ *              footnote, a field hint, the identity block
+ *
+ * ── Motion ───────────────────────────────────────────────────────────────────
+ *
+ * Four durations and one curve, and nothing outside this file names any of them. `--t-fast` is
+ * for a colour change under the pointer, `--t-standard` for something entering, `--t-slow` for
+ * the gauge (a bar that is showing a *rate* should not arrive faster than the rate changes), and
+ * `--t-press` for the 1-frame-and-a-bit scale on `:active`. `--t-none` is an explicit zero, used
+ * where a rule has to say "no motion" rather than merely not saying anything.
+ */
+
+:root {
+  /* ── Surfaces. Three, and no more: a dark interface with six greys reads as noise. ── */
+  --bg: #0a0a0b;
+  --surface: #131316;
+  --surface-raised: #1b1b1f;
+  --hairline: #26262b;
+  --hairline-strong: #34343b;
+
+  /* ── Ink. Three tones, named for their role — see the note above. ── */
+  --ink-primary: #e8e8ea;
+  --ink-secondary: #9a9aa2;
+  --ink-tertiary: #6b6b73;
+
+  /* ── One accent, plus the three states that must never be the accent ──────
+   * Status colours are not brand colours. A red that is also the accent makes every button
+   * look like a warning.
+   */
+  --accent: #6e8bff;
+  --accent-ink: #0a0a0b;
+  --accent-dim: #2b3a7a;
+  --danger: #ff6b6b;
+  --warn: #ffb95c;
+  --ok: #57d9a3;
+
+  /* ── Two values that are edges rather than fills ──────────────────────────
+   * `--highlight` is the one-pixel inner top highlight that makes a card read as a raised
+   * surface without a gradient and without a second background. `--backdrop` dims the page
+   * behind a modal.
+   */
+  --highlight: rgb(255 255 255 / 6%);
+  --backdrop: rgb(0 0 0 / 60%);
+
+  /* Scrollbars, so a scroll container inside a dark card does not show a bright platform bar. */
+  --scrollbar-thumb: #3d3d45;
+  --scrollbar-track: #17171a;
+
+  /* ── The 8px grid ────────────────────────────────────────────────────────── */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 16px;
+  --s4: 24px;
+  --s5: 32px;
+  --s6: 48px;
+  --s7: 64px;
+
+  --radius-sm: 4px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+
+  --border-w: 1px;
+  --rule-w: 3px;
+  --focus-w: 2px;
+  --focus-offset: 2px;
+
+  /* ── Measures ────────────────────────────────────────────────────────────
+   * `--measure-prose` is a reading measure and applies to every direct child of `.main`.
+   * `--measure-wide` is what a card holding a data table is allowed to grow to, because a
+   * table is not prose and four timestamp columns do not fit a reading measure. See
+   * `docs/UI.md` §*The two measures*.
+   */
+  --measure-prose: 76ch;
+  --measure-wide: 132ch;
+  --measure-auth: 44ch;
+  --measure-dialog: 52ch;
+  --measure-boot: 60ch;
+
+  --side-w: 220px;
+  --gauge-h: 8px;
+  --chevron: 5px;
+  /* The skip link's parking space. Off-screen, never `display: none`, which would take it out
+   * of the tab order and defeat the point. */
+  --offscreen: -9999px;
+
+  /* ── Type ────────────────────────────────────────────────────────────────
+   * Vazirmatn first in both stacks: it covers Persian and has a Latin companion, so a mixed
+   * line does not change font mid-sentence. The system fallbacks matter more than usual here —
+   * `scripts/fonts.mjs` is not run at build time, so a tree without the woff2 files renders in
+   * the fallback rather than failing.
+   */
+  --font-ui: Vazirmatn, Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-lg: 17px;
+  --text-xl: 22px;
+  --text-2xl: 28px;
+
+  /* ── Motion ──────────────────────────────────────────────────────────────── */
+  --t-press: 90ms;
+  --t-fast: 120ms;
+  --t-standard: 160ms;
+  --t-slow: 220ms;
+  --t-pulse: 1400ms;
+  --t-none: 0s;
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+
+  --skeleton-low: 0.3;
+  --skeleton-mid: 0.5;
+  --skeleton-high: 0.7;
+
+  --enter-shift: 4px;
+
+  /* Set from script with `setProperty`, never from a `style` attribute — see globals.css. */
+  --gauge-fill: 0%;
+}

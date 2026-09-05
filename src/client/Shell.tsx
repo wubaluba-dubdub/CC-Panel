@@ -77,7 +77,14 @@ export function Shell({
       </div>
       {/* `tabIndex={-1}` so the skip link and every navigation can move focus here. */}
       <main className="main" id="main" tabIndex={-1}>
-        <Screen route={route} refresh={refresh} navigate={navigate} me={me} />
+        {/* The routed region, and **keyed by the route and by nothing else**. The key is what
+            makes the enter animation in §*Motion* run on a navigation; a key carrying any
+            polled value would remount this subtree every two seconds and replay the animation
+            while the operator was reading it. `docs/UI.md` §*Motion* states the rule and
+            `tests/integration/client-style.test.ts` asserts this line. */}
+        <div className="screen" key={route.name}>
+          <Screen route={route} refresh={refresh} navigate={navigate} me={me} />
+        </div>
       </main>
     </div>
   );

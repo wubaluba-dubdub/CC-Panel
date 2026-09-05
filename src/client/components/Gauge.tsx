@@ -12,7 +12,7 @@ import { useEffect, useRef, type ReactNode } from 'react';
  * this panel is not resting on that.
  *
  * So the value goes in through `element.style.setProperty('--gauge-fill', …)` — the form MDN
- * documents as allowed — and the stylesheet reads it with `width: var(--gauge-fill)`. There is
+ * documents as allowed — and the stylesheet reads it with `inline-size: var(--gauge-fill)`. There is
  * no `style` attribute in the markup at any point, which
  * `tests/integration/client-discipline.test.ts` enforces for the whole client.
  *

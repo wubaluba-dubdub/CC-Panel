@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Badge, Button, Card, Notice } from '../components/ui.js';
+import { Badge, Button, Card, Notice, ScrollRegion } from '../components/ui.js';
 import { Mono } from '../components/Ltr.js';
 import { useLocale } from '../i18n/index.js';
 import { api } from '../lib/api.js';
@@ -19,7 +19,7 @@ import type { RevokedResponse, SessionListResponse, SessionSummary } from '../..
  * text, never as markup.
  */
 export function Sessions(): React.JSX.Element {
-  const { t, locale } = useLocale();
+  const { t, ts, locale } = useLocale();
   const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
   const [error, setError] = useState<React.ReactNode | null>(null);
   const [notice, setNotice] = useState<React.ReactNode | null>(null);
@@ -74,8 +74,9 @@ export function Sessions(): React.JSX.Element {
       {error === null ? null : <Notice kind="danger">{error}</Notice>}
       {notice === null ? null : <Notice kind="ok">{notice}</Notice>}
 
-      <Card>
-        <table className="table">
+      <Card wide>
+        <ScrollRegion label={ts('sessions.title')}>
+          <table className="table">
           <thead>
             <tr>
               <th scope="col">{t('sessions.level')}</th>
@@ -128,7 +129,8 @@ export function Sessions(): React.JSX.Element {
               </tr>
             ))}
           </tbody>
-        </table>
+          </table>
+        </ScrollRegion>
         {sessions === null ? <p className="hint">{t('common.loading')}</p> : null}
         <p className="hint">{t('sessions.noIpNote')}</p>
       </Card>

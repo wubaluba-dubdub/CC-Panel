@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Badge, Button, Card, Notice } from '../components/ui.js';
+import { Badge, Button, Card, Notice, ScrollRegion } from '../components/ui.js';
 import { Mono } from '../components/Ltr.js';
 import { useLocale } from '../i18n/index.js';
 import { api } from '../lib/api.js';
@@ -26,7 +26,7 @@ import type { AuditEntryView, AuditPageResponse, AuditVerifyResponse } from '../
  * intact. The server sends that as a `hint` rather than as prose.
  */
 export function Audit(): React.JSX.Element {
-  const { t, locale } = useLocale();
+  const { t, ts, locale } = useLocale();
   const [entries, setEntries] = useState<AuditEntryView[]>([]);
   const [cursor, setCursor] = useState<number | null>(null);
   const [end, setEnd] = useState(false);
@@ -107,7 +107,7 @@ export function Audit(): React.JSX.Element {
         ) : null}
       </Card>
 
-      <Card>
+      <Card wide>
         <div className="field">
           <label htmlFor="event-filter">{t('audit.filter')}</label>
           <select
@@ -129,7 +129,8 @@ export function Audit(): React.JSX.Element {
           </select>
         </div>
 
-        <table className="table">
+        <ScrollRegion label={ts('audit.title')}>
+          <table className="table">
           <thead>
             <tr>
               <th scope="col">{t('audit.when')}</th>
@@ -160,7 +161,8 @@ export function Audit(): React.JSX.Element {
               </tr>
             ))}
           </tbody>
-        </table>
+          </table>
+        </ScrollRegion>
 
         <div className="row">
           {end ? (

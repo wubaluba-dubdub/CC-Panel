@@ -1,97 +1,49 @@
+@import './tokens.css';
 @import './fonts.css';
 
 /*
- * The design system, as custom properties.
+ * The design system. Every literal value lives in `tokens.css`; this file only references them.
  *
  * Plain CSS, and that is a decision rather than an omission — PLAN.md §M2.1 item 1 says
  * "Tailwind v4 theme" and PLAN.md §*Decisions taken in M2.1* item 23 records why it is not
- * one. The short version: R3's logical-property rule is only real if a static scan can see
- * a violation, and a scan over CSS declarations is exact where a scan over `className`
+ * one. The short version: R3's logical-property rule is only real if a static scan can see a
+ * violation, and a scan over CSS declarations is exact where a scan over `className`
  * strings would have to encode Tailwind's whole utility vocabulary and fail *silently*
  * when it missed one.
  *
- * ── Two rules this file follows without exception ───────────────────────────
+ * ── Four rules this file follows without exception ───────────────────────────
  *
  * 1. **Logical properties only.** `margin-inline-start`, not `margin-left`;
  *    `text-align: start`, not `left`; `inset-inline-end`, not `right`. Persian is
  *    right-to-left, and direction has to be a *setting* rather than a rewrite.
  *    `tests/integration/client-discipline.test.ts` scans for the physical forms.
- * 2. **No data-dependent value ever reaches a `style` attribute or `style.cssText`**, both
+ *
+ *    Two physical *axis* names are used deliberately and carry no direction assumption,
+ *    because the axis is symmetric under a direction change: `overflow-x` on a horizontal
+ *    scroll container, and `width` on a `<col>` element. Both are documented in
+ *    `docs/UI.md` §7 with the reason; `overflow-inline` would be the logical spelling and is
+ *    too recent to depend on, and a `<col>`'s used width is the one thing table layout reads.
+ * 2. **No literal values.** No colour, duration, easing curve or raw `px` length appears
+ *    below this comment. `tests/integration/client-style.test.ts` enforces it.
+ * 3. **No data-dependent value ever reaches a `style` attribute or `style.cssText`**, both
  *    of which `style-src 'self'` blocks. A value that varies with data is set with
  *    `element.style.setProperty('--x', v)` — the CSSOM path MDN documents as *not* covered
  *    by `style-src-attr` — and read here through `var()`. The resource gauge is the
  *    component this decides; see `--gauge-fill` below.
+ * 4. **A container owns its edges.** Nothing drawn inside a card may cross its border, its
+ *    radius or its padding box. Anything that can be wider than its container sits in a
+ *    scroll region inside it, and the container clips. This is §*Containment* below, and it
+ *    is the fix for the whole family of defects M2.1.1 repaired.
+ *
+ * Every transition, animation and `@keyframes` rule is in §*Motion* at the foot of this file,
+ * inside `@media (prefers-reduced-motion: no-preference)`, and touches only the six properties
+ * `docs/UI.md` §*Motion* allows. Nothing that triggers layout is ever animated: this panel
+ * polls every two seconds, so a layout-animating property is a reflow per frame while data is
+ * arriving.
  */
 
 :root {
   color-scheme: dark;
-
-  /* ── Surfaces ────────────────────────────────────────────────────────────
-   * Three steps and no more. A dark interface with six greys reads as noise, and
-   * every extra one is a decision at every component.
-   */
-  --bg: #0a0a0b;
-  --surface: #131316;
-  --surface-raised: #1b1b1f;
-  --hairline: #26262b;
-  --hairline-strong: #34343b;
-
-  /* ── Ink ─────────────────────────────────────────────────────────────────── */
-  --text: #e8e8ea;
-  --text-muted: #9a9aa2;
-  --text-faint: #6b6b73;
-
-  /* ── One accent, plus the three states that must never be the accent ─────
-   * Status colours are not brand colours. A red that is also the accent makes every
-   * button look like a warning.
-   */
-  --accent: #6e8bff;
-  --accent-ink: #0a0a0b;
-  --accent-dim: #2b3a7a;
-  --danger: #ff6b6b;
-  --warn: #ffb95c;
-  --ok: #57d9a3;
-
-  /* ── The 8px grid ────────────────────────────────────────────────────────── */
-  --s1: 4px;
-  --s2: 8px;
-  --s3: 16px;
-  --s4: 24px;
-  --s5: 32px;
-  --s6: 48px;
-  --s7: 64px;
-
-  --radius: 8px;
-  --radius-sm: 4px;
-  --radius-lg: 12px;
-
-  /* ── Type ────────────────────────────────────────────────────────────────
-   * Vazirmatn first in both stacks: it covers Persian and has a Latin companion, so a
-   * mixed line does not change font mid-sentence. The system fallbacks matter more than
-   * usual here — `scripts/fonts.mjs` is not run at build time, so a tree without the
-   * woff2 files renders in the fallback rather than failing.
-   */
-  --font-ui: Vazirmatn, Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-
-  --text-xs: 12px;
-  --text-sm: 13px;
-  --text-base: 14px;
-  --text-lg: 17px;
-  --text-xl: 22px;
-  --text-2xl: 28px;
-
-  /* ── Motion ──────────────────────────────────────────────────────────────
-   * Every transition is on `transform` and `opacity` only, and every one is inside
-   * `@media (prefers-reduced-motion: no-preference)`. Nothing that the operator has to
-   * *read* animates.
-   */
-  --t-fast: 150ms;
-  --t-slow: 220ms;
-  --ease: cubic-bezier(0.2, 0, 0.2, 1);
-
-  /* Set from script with `setProperty`, never from a `style` attribute. */
-  --gauge-fill: 0%;
 }
 
 *,
@@ -105,7 +57,7 @@ body {
   margin: 0;
   padding: 0;
   background: var(--bg);
-  color: var(--text);
+  color: var(--ink-primary);
   font-family: var(--font-ui);
   font-size: var(--text-base);
   line-height: 1.5;
@@ -115,23 +67,24 @@ body {
 }
 
 body {
-  min-height: 100vh;
+  min-block-size: 100vh;
 }
 
 /* ── Focus, which is not optional ─────────────────────────────────────────
  * `:focus-visible` rather than `:focus`, so a mouse click does not draw a ring and a Tab
- * always does. Two-colour outline so it is visible on both the page and a raised surface.
+ * always does. It is tinted with the accent, and it **never animates**: a focus ring has to be
+ * on screen on the frame the element takes focus, so it is not in §*Motion* and must not be.
  */
 :focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: var(--focus-w) solid var(--accent);
+  outline-offset: var(--focus-offset);
   border-radius: var(--radius-sm);
 }
 
 a {
   color: var(--accent);
-  text-decoration-thickness: 1px;
-  text-underline-offset: 2px;
+  text-decoration-thickness: var(--border-w);
+  text-underline-offset: var(--focus-offset);
 }
 
 /* ── The left-to-right islands ────────────────────────────────────────────
@@ -145,6 +98,16 @@ a {
   text-align: start;
 }
 
+/* ── The numeric face ─────────────────────────────────────────────────────
+ * Every number and every timestamp in this panel is monospaced, which makes the
+ * tabular-figures question moot by construction: a monospaced face is tabular because every
+ * glyph has the same advance, so a polled value cannot change width as its digits change.
+ *
+ * That is not a preference, it is a measurement. `font-variant-numeric: tabular-nums` would
+ * have been the alternative, and Vazirmatn's Latin subset — the face the UI text is set in —
+ * ships `kern, liga, lnum, pnum, zero` and **no `tnum`**, so the declaration would have been
+ * a silent no-op on exactly the values it was there to protect. See `docs/UI.md` §*Numbers*.
+ */
 .mono {
   font-family: var(--font-mono);
   font-variant-ligatures: none;
@@ -164,16 +127,38 @@ bdi {
    * horizontal scrollbar the operator has to find. */
   overflow-wrap: anywhere;
   background: var(--surface-raised);
-  border: 1px solid var(--hairline);
+  border: var(--border-w) solid var(--hairline);
   border-radius: var(--radius);
   padding: var(--s3);
   margin-block: var(--s2);
   user-select: all;
 }
 
+/* ── Visually hidden, but present ─────────────────────────────────────────
+ * For a `<caption>` that names a table for a screen reader without drawing a title above it,
+ * and for the word a control needs when its meaning is carried by shape. The clip-rect form
+ * rather than `display: none`, which removes the element from the accessibility tree, or
+ * `visibility: hidden`, which does the same — either would make this decorative instead of
+ * useful.
+ */
+.visually-hidden {
+  position: absolute;
+  inline-size: var(--border-w);
+  block-size: var(--border-w);
+  padding: 0;
+  margin: calc(var(--border-w) * -1);
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── The diagnostic shell ─────────────────────────────────────────────────
+ * What the prefix root serves when there is no usable client bundle.
+ */
 .boot {
   padding: var(--s5);
-  max-width: 60ch;
+  max-inline-size: var(--measure-boot);
   margin-inline: auto;
 }
 
@@ -184,37 +169,26 @@ bdi {
 }
 
 .boot p {
-  color: var(--text-muted);
+  color: var(--ink-secondary);
   margin-block: 0 var(--s2);
 }
 
 /* ── The chip, which is the smallest thing that has to work in both directions ── */
 .chip {
   font: inherit;
-  color: var(--text-muted);
+  color: var(--ink-secondary);
   background: var(--surface);
-  border: 1px solid var(--hairline);
+  border: var(--border-w) solid var(--hairline);
   border-radius: var(--radius);
   padding: var(--s1) var(--s3);
   margin-inline-end: var(--s2);
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .chip-on {
   color: var(--accent);
   border-color: var(--accent-dim);
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .chip {
-    transition:
-      transform var(--t-fast) var(--ease),
-      opacity var(--t-fast) var(--ease);
-  }
-
-  .chip:active {
-    transform: scale(0.98);
-  }
 }
 
 /* ── Layout ───────────────────────────────────────────────────────────────
@@ -224,8 +198,8 @@ bdi {
  */
 .shell {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  min-height: 100vh;
+  grid-template-columns: var(--side-w) minmax(0, 1fr);
+  min-block-size: 100vh;
 }
 
 @media (max-width: 720px) {
@@ -236,7 +210,7 @@ bdi {
 
 .side {
   background: var(--surface);
-  border-inline-end: 1px solid var(--hairline);
+  border-inline-end: var(--border-w) solid var(--hairline);
   padding: var(--s4) var(--s3);
   display: flex;
   flex-direction: column;
@@ -250,14 +224,14 @@ bdi {
 }
 
 .side nav a {
-  color: var(--text-muted);
+  color: var(--ink-secondary);
   text-decoration: none;
   padding: var(--s2) var(--s3);
   border-radius: var(--radius);
 }
 
 .side nav a[aria-current='page'] {
-  color: var(--text);
+  color: var(--ink-primary);
   background: var(--surface-raised);
 }
 
@@ -267,7 +241,7 @@ bdi {
 }
 
 .identity {
-  color: var(--text-faint);
+  color: var(--ink-tertiary);
   font-size: var(--text-xs);
   margin-top: auto;
   display: flex;
@@ -276,20 +250,36 @@ bdi {
   align-items: start;
 }
 
+/* ── The two measures ─────────────────────────────────────────────────────
+ * `.main` may grow to the wide measure, and **every direct child of the routed region is
+ * clamped back to the reading measure** — so every screen is laid out exactly as it was,
+ * except a card that opts into `card-wide` for a data table. Four timestamp columns do not fit a reading measure, and
+ * a table that has to scroll on a 1920px display because prose reads better at 76 characters
+ * is the measure being applied to the wrong kind of content.
+ */
 .main {
   padding: var(--s5) var(--s4);
-  max-width: 76ch;
-  width: 100%;
+  max-inline-size: var(--measure-wide);
+  inline-size: 100%;
+  /* The screen-change animation shifts by `--enter-shift`; without this the shift is a
+   * horizontal scrollbar on the document for the duration of the animation. */
+  overflow-x: clip;
 }
 
-.main > h1 {
+/* The routed region. Keyed by the route in `Shell.tsx` and by nothing else, so the enter
+ * animation in §*Motion* runs on a navigation and never on a poll tick. */
+.screen > * {
+  max-inline-size: var(--measure-prose);
+}
+
+.screen > h1 {
   font-size: var(--text-2xl);
   font-weight: 600;
   margin-block: 0 var(--s2);
 }
 
 .lede {
-  color: var(--text-muted);
+  color: var(--ink-secondary);
   margin-block: 0 var(--s5);
 }
 
@@ -297,8 +287,8 @@ bdi {
  * the tab order and defeat the point. */
 .skip {
   position: absolute;
-  inset-inline-start: -9999px;
-  top: var(--s2);
+  inset-inline-start: var(--offscreen);
+  inset-block-start: var(--s2);
   background: var(--surface-raised);
   padding: var(--s2) var(--s3);
   border-radius: var(--radius);
@@ -309,13 +299,52 @@ bdi {
   inset-inline-start: var(--s2);
 }
 
-/* ── Cards and sections ─────────────────────────────────────────────────── */
+/* ── Cards, and §*Containment* ────────────────────────────────────────────
+ * A card owns its border, its radius, its padding and its background, and **nothing drawn
+ * inside it may cross any of them**. That is what `overflow: clip` says. It is the fix for
+ * the defect family M2.1.1 repaired: a table laid out by its content was wider than the card,
+ * nothing clipped and nothing scrolled, so the last column's header and every row's divider
+ * were drawn across the card's border and its rounded corner and out onto the page.
+ *
+ * `clip` rather than `hidden`, and the difference is not cosmetic: `hidden` makes the element
+ * a scroll *container*, which can be scrolled programmatically and by a focus move, so a card
+ * with one clipped pixel becomes a box the operator can nudge sideways with no scrollbar to
+ * say so. `clip` clips and cannot scroll. The `hidden` line before it is the fallback for an
+ * engine that does not parse `clip`, which then gets the containment and the scrollability.
+ *
+ * The consequence, and it is the reason §7 of `docs/UI.md` now carries a rule about it:
+ * **anything that must escape a card cannot be a positioned descendant of one.** Every
+ * overlay in this panel is a real `<dialog>` opened with `showModal()`, which the browser
+ * puts in the *top layer* — outside every clipping and stacking context on the page.
+ */
 .card {
+  position: relative;
   background: var(--surface);
-  border: 1px solid var(--hairline);
+  border: var(--border-w) solid var(--hairline);
   border-radius: var(--radius-lg);
   padding: var(--s4);
   margin-block-end: var(--s4);
+  overflow: hidden;
+  overflow: clip;
+}
+
+/* The one-pixel inner top highlight. A raised surface without a gradient and without a second
+ * background colour — `2.5`'s whole idea of "crisper" on a dark interface. `inset-inline` and
+ * `inset-block-start` keep it logical; it is inside the border, above the padding box. */
+.card::before {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  inset-block-start: 0;
+  block-size: var(--border-w);
+  background: var(--highlight);
+  pointer-events: none;
+}
+
+/* A card holding a data table may grow past the reading measure. Two class selectors, so it
+ * beats `.screen > *` on specificity rather than on source order. */
+.screen > .card-wide {
+  max-inline-size: none;
 }
 
 .card h2 {
@@ -325,8 +354,39 @@ bdi {
 }
 
 .card p {
-  color: var(--text-muted);
+  color: var(--ink-secondary);
   margin-block: 0 var(--s3);
+}
+
+/* A card's last paragraph has the card's own padding under it; a second margin there reads as
+ * a card that is taller than its content. */
+.card > :last-child {
+  margin-block-end: 0;
+}
+
+/* ── The scroll region ────────────────────────────────────────────────────
+ * The inner half of §*Containment*: the card clips, and anything that can be wider than the
+ * card scrolls **inside** it. Used by `<ScrollRegion>`, which is what every data table is
+ * wrapped in.
+ *
+ * `overflow-x` and not `overflow-inline`: the physical axis name carries no direction
+ * assumption here, because a horizontal axis is symmetric under a direction change — an
+ * RTL document scrolls the same box the other way with no rule change. `overflow-inline` is
+ * the logical spelling and is too recent to depend on for a panel that must not have a
+ * browser's release date as a requirement. Listed in the scan's allowlist with that reason.
+ *
+ * `scrollbar-gutter: stable` so nothing shifts when a scrollbar appears, and a thin
+ * scrollbar in the panel's own colours so a scroll container inside a dark card does not
+ * show a bright platform bar.
+ */
+.scroll-x {
+  overflow-x: auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  /* A scroll container is a containing block for its sticky descendants, which is what makes
+   * the table's sticky header stick to the top of *this* box rather than to the viewport. */
+  position: relative;
 }
 
 .row {
@@ -357,12 +417,13 @@ bdi {
 .btn {
   font: inherit;
   font-weight: 500;
-  color: var(--text);
+  color: var(--ink-primary);
   background: var(--surface-raised);
-  border: 1px solid var(--hairline-strong);
+  border: var(--border-w) solid var(--hairline-strong);
   border-radius: var(--radius);
   padding: var(--s2) var(--s3);
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .btn:disabled {
@@ -382,16 +443,10 @@ bdi {
   background: transparent;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .btn {
-    transition:
-      transform var(--t-fast) var(--ease),
-      opacity var(--t-fast) var(--ease);
-  }
-
-  .btn:active:not(:disabled) {
-    transform: scale(0.98);
-  }
+/* A button that sits in a table cell. Smaller, so a row of them does not set the row height. */
+.btn-cell {
+  font-size: var(--text-xs);
+  padding: var(--s1) var(--s2);
 }
 
 /* ── Fields ───────────────────────────────────────────────────────────────── */
@@ -404,19 +459,18 @@ bdi {
 
 .field label {
   font-size: var(--text-sm);
-  color: var(--text-muted);
+  color: var(--ink-tertiary);
 }
 
 .field input,
-.field textarea,
-.field select {
+.field textarea {
   font: inherit;
-  color: var(--text);
+  color: var(--ink-primary);
   background: var(--bg);
-  border: 1px solid var(--hairline-strong);
+  border: var(--border-w) solid var(--hairline-strong);
   border-radius: var(--radius);
   padding: var(--s2) var(--s3);
-  width: 100%;
+  inline-size: 100%;
 }
 
 /* A code, a token or a password is a left-to-right island even in a Persian form: the digits
@@ -428,7 +482,58 @@ bdi {
 
 .hint {
   font-size: var(--text-xs);
-  color: var(--text-faint);
+  color: var(--ink-tertiary);
+}
+
+/* ── The select ───────────────────────────────────────────────────────────
+ * A native `<select>`, deliberately: the keyboard behaviour, the screen-reader behaviour and
+ * the platform's own popup are what a hand-built listbox has to re-implement, and it gets one
+ * of them wrong. What is styled is the *closed* control — border, radius, focus ring and the
+ * chevron — and nothing else, because **an `<option>` cannot be styled meaningfully**: the
+ * popup is drawn by the operating system in every engine, so a colour set on an option is
+ * honoured on one platform and ignored on the next. `docs/UI.md` §*The select* says so, to
+ * save the afternoon.
+ *
+ * `inline-size: auto` with a maximum, because the widths a select gets by default are the two
+ * wrong ones: `100%` makes a six-word filter 620px wide next to controls that are sized by
+ * their content, and an unconstrained one grows to its longest option.
+ *
+ * The chevron is a CSS triangle on the wrapper, not a background image. `img-src 'self' data:`
+ * would permit a `data:` SVG — and `tests/integration/build.test.ts` asserts that the emitted
+ * stylesheet contains no `data:` URL and that every `url()` in it is relative, which is the
+ * rule that keeps a font from being inlined. A triangle needs neither exception.
+ */
+.select-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-inline-size: 100%;
+}
+
+.select-wrap select {
+  font: inherit;
+  color: var(--ink-primary);
+  background: var(--bg);
+  border: var(--border-w) solid var(--hairline-strong);
+  border-radius: var(--radius);
+  padding: var(--s2) var(--s3);
+  /* Room for the chevron, on the inline end in both directions. */
+  padding-inline-end: var(--s5);
+  inline-size: auto;
+  max-inline-size: 100%;
+  appearance: none;
+  cursor: pointer;
+}
+
+.select-wrap::after {
+  content: '';
+  position: absolute;
+  inset-inline-end: var(--s3);
+  inline-size: 0;
+  block-size: 0;
+  border-inline: var(--chevron) solid transparent;
+  border-block-start: var(--chevron) solid var(--ink-secondary);
+  pointer-events: none;
 }
 
 /* ── Notices ──────────────────────────────────────────────────────────────
@@ -436,8 +541,8 @@ bdi {
  * invisible to a colour-blind operator and to a screen reader.
  */
 .notice {
-  border: 1px solid var(--hairline-strong);
-  border-inline-start-width: 3px;
+  border: var(--border-w) solid var(--hairline-strong);
+  border-inline-start-width: var(--rule-w);
   border-radius: var(--radius);
   padding: var(--s3);
   margin-block-end: var(--s3);
@@ -461,23 +566,24 @@ bdi {
 
 /* ── The sign-in card, centred ─────────────────────────────────────────── */
 .auth {
-  min-height: 100vh;
+  min-block-size: 100vh;
   display: grid;
   place-items: center;
   padding: var(--s4);
 }
 
 .auth-card {
-  width: 100%;
-  max-width: 44ch;
+  inline-size: 100%;
+  max-inline-size: var(--measure-auth);
 }
 
 /* ── Tables ───────────────────────────────────────────────────────────────
  * `text-align: start` on every cell, so the whole table mirrors with the document instead of
- * needing a right-aligned variant.
+ * needing a right-aligned variant. Every table lives inside a `.scroll-x` region inside a
+ * card, so a value wider than the column scrolls rather than escaping — see §*Containment*.
  */
 .table {
-  width: 100%;
+  inline-size: 100%;
   border-collapse: collapse;
   font-size: var(--text-sm);
 }
@@ -486,12 +592,12 @@ bdi {
 .table td {
   text-align: start;
   padding: var(--s2);
-  border-block-end: 1px solid var(--hairline);
+  border-block-end: var(--border-w) solid var(--hairline);
   vertical-align: top;
 }
 
 .table th {
-  color: var(--text-faint);
+  color: var(--ink-tertiary);
   font-weight: 500;
   font-size: var(--text-xs);
   text-transform: uppercase;
@@ -499,21 +605,27 @@ bdi {
 }
 
 /* ── The dialog ───────────────────────────────────────────────────────────
- * A real `<dialog>` element: the browser gives the focus trap, the backdrop and Escape for
- * free, and every hand-rolled modal in the world gets at least one of those wrong.
+ * A real `<dialog>` element, opened with `showModal()`: the browser gives the focus trap, the
+ * inert background, the backdrop and Escape for free, and every hand-rolled modal in the world
+ * gets at least one of those wrong.
+ *
+ * It is also the **only** way an overlay can be correct now that a card clips (§*Containment*):
+ * `showModal()` promotes the element to the browser's *top layer*, which is outside every
+ * clipping context, stacking context and `overflow` on the page. A positioned `<div>` inside a
+ * card would be cut by the card. M2.2's command palette is the next thing this decides.
  */
 .dialog {
-  color: var(--text);
+  color: var(--ink-primary);
   background: var(--surface);
-  border: 1px solid var(--hairline-strong);
+  border: var(--border-w) solid var(--hairline-strong);
   border-radius: var(--radius-lg);
   padding: var(--s4);
-  max-width: 52ch;
-  width: calc(100% - var(--s5));
+  max-inline-size: var(--measure-dialog);
+  inline-size: calc(100% - var(--s5));
 }
 
 .dialog::backdrop {
-  background: rgb(0 0 0 / 60%);
+  background: var(--backdrop);
 }
 
 .dialog h2 {
@@ -524,21 +636,25 @@ bdi {
 
 /* ── The gauge ────────────────────────────────────────────────────────────
  * The fill is `var(--gauge-fill)`, set through `element.style.setProperty` and never through a
- * `style` attribute — see the CSP note at the top of this file. This is the one component in
- * the panel whose geometry depends on data.
+ * `style` attribute — see rule 3 at the top of this file. This is the one component in the
+ * panel whose geometry depends on data.
+ *
+ * The property is **registered** with `@property` in `tokens.css`. Without that registration an
+ * unregistered custom property interpolates *discretely*, so the transition in §*Motion* would
+ * be a silent no-op — indistinguishable from an animation nobody added.
  */
 .gauge {
-  height: 8px;
+  block-size: var(--gauge-h);
   background: var(--surface-raised);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   overflow: hidden;
 }
 
 .gauge-bar {
-  height: 100%;
-  width: var(--gauge-fill);
+  block-size: 100%;
+  inline-size: var(--gauge-fill);
   background: var(--accent);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .gauge-warn .gauge-bar {
@@ -561,15 +677,19 @@ bdi {
   justify-content: space-between;
   gap: var(--s2);
   font-size: var(--text-sm);
-  color: var(--text-muted);
+  color: var(--ink-secondary);
 }
 
 .badge {
   font-size: var(--text-xs);
-  border: 1px solid var(--hairline-strong);
-  border-radius: 999px;
-  padding: 2px var(--s2);
-  color: var(--text-muted);
+  border: var(--border-w) solid var(--hairline-strong);
+  border-radius: var(--radius-pill);
+  padding: var(--s1) var(--s2);
+  color: var(--ink-secondary);
+  /* A pill never wraps. "This device" broken onto two lines inside its own border was one of
+   * M2.1.1's reported defects, and the column budget is what stops it recurring. */
+  white-space: nowrap;
+  display: inline-block;
 }
 
 .badge-ok {
