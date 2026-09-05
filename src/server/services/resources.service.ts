@@ -1,7 +1,7 @@
 import { readFileSync, statSync, statfsSync } from 'node:fs';
 import { cpus, freemem, totalmem } from 'node:os';
 import { join } from 'node:path';
-import type { MetricsResponse } from '../../shared/types.js';
+import type { ResourceSnapshot } from '../../shared/types.js';
 import { type Clock, isoFrom, systemClock } from '../utils/clock.js';
 
 /**
@@ -301,13 +301,17 @@ export function readDisk(dataDir: string): DiskReading {
 // ─── The snapshot the endpoint serves ────────────────────────────────────────
 
 /**
- * What the endpoint serves.
+ * What this sampler produces — which is the response *minus* the watchdog block.
  *
- * Declared as the shared `MetricsResponse` and then re-stated in full below, so the
+ * Declared as the shared `ResourceSnapshot` and then re-stated in full below, so the
  * two cannot drift: if a field is added here and not to the contract in
  * `src/shared/types.ts` — the file the Phase 2 client reads — this stops compiling.
+ *
+ * Deliberately **not** `MetricsResponse`, which adds `watchdog`. The sampler does not
+ * know the watchdog exists, and a required key here would be the first place that
+ * stopped being true; `routes/metrics.ts` is where the two are joined.
  */
-export type MetricsSnapshot = MetricsResponse & {
+export type MetricsSnapshot = ResourceSnapshot & {
   memory: {
     usedBytes: number;
     /** Null means **no limit**, never "unknown" and never zero. */

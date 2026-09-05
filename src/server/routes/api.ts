@@ -5,6 +5,7 @@ import type { RateLimiter } from '../plugins/rate-limit.js';
 import type { AuthRuntime } from '../services/auth-runtime.js';
 import type { NotifyService } from '../services/notify.service.js';
 import type { ResourceSampler } from '../services/resources.service.js';
+import type { Watchdog } from '../services/watchdog.service.js';
 import auditRoutes from './audit.js';
 import authRoutes from './auth.js';
 import metricsRoutes from './metrics.js';
@@ -27,6 +28,7 @@ export default async function apiRoutes(
     limiter: RateLimiter;
     metrics: ResourceSampler;
     notify: NotifyService;
+    watchdog: Watchdog;
   },
 ): Promise<void> {
   const { runtime, limiter } = opts;
@@ -71,6 +73,6 @@ export default async function apiRoutes(
   await app.register(sessionRoutes, { runtime });
   await app.register(securityRoutes, { runtime });
   await app.register(auditRoutes, { runtime });
-  await app.register(metricsRoutes, { metrics: opts.metrics });
+  await app.register(metricsRoutes, { metrics: opts.metrics, watchdog: opts.watchdog });
   await app.register(notificationRoutes, { runtime, notify: opts.notify });
 }

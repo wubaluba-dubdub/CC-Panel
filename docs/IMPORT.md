@@ -717,7 +717,9 @@ machine — the panel declining to become a place credentials live is the point,
 ## 10. What M2.2 must reserve now
 
 **This is why R8 is designed before M2.2 rather than at M5.** The `projects` table is
-migration `011` and it persists across every later change. M1.7 flagged exactly this hazard
+migration `012` — M2.1 took `011` for `users.locale` and the watchdog's clear-window columns,
+and a migration number is claimed by the commit that lands rather than reserved by a design —
+and it persists across every later change. M1.7 flagged exactly this hazard
 with a numeric `projectId` in a table that outlives the decision, and the fix was to decide
 before the table existed rather than to ALTER live operator data afterwards.
 
@@ -727,10 +729,10 @@ operator's projects in it, and a `NOT NULL` column added then has to invent a va
 existing row — which is how a provenance field ends up meaning "created here, probably". A new
 table added later is just a new table.
 
-So: **the provenance and review columns land in `011` with M2.2. The per-item approval table
+So: **the provenance and review columns land in `012` with M2.2. The per-item approval table
 lands with R8's own migration.**
 
-### 10.1 Columns migration 011 must carry
+### 10.1 Columns migration 012 must carry
 
 | Column | Type | Why it cannot wait |
 | :--- | :--- | :--- |
@@ -835,12 +837,47 @@ Three ways out, and the third is the one to take:
 argument at spawn and a second generated file, and the payoff is that the one key the panel
 genuinely owns stops depending on the contents of a directory anybody can write.
 
-**This needs verifying before M2.4 builds on it.** `--settings` is recorded in
-[`PLAN.md`](../PLAN.md) as a level in the chain (verified 2026-09-03), and a level in the chain
-is a *layer* — but whether it layers or *replaces* the lower levels is the difference between
-"the panel's Stop hook always wins" and "the panel just deleted the operator's settings", and
-this document has not tested it. It is one command with a temporary config dir, and it belongs
-in the M2.4 milestone before the generator is written.
+**Answered on 2026-09-05: it layers.** The question this section left open — whether
+`--settings` merges with the lower levels or replaces them — was resolved against the current
+settings documentation and the surrounding issue history, because M2.4's generator depends on
+it. **The chain is a merge, not a selection:** for a scalar key the highest-precedence file
+that defines it supplies the value, **arrays are concatenated and de-duplicated across
+scopes**, and objects are deep-merged. The documented exceptions that do *not* merge are
+`fallbackModel`, `availableModels`, `modelPicker`, `modelSettings` and `claudeMdExcludes`.
+Permission rules merge, with `deny` beating `ask` beating `allow`.
+
+So recommendation (3) is safe in the direction that was worrying: **passing `--settings` does
+not discard the operator's own user-level settings**, and the panel *can* outrank a workspace
+file for any scalar and for any individual key of a deep-merged object — including
+`env.ANTHROPIC_BASE_URL` and `env.ANTHROPIC_AUTH_TOKEN`.
+
+**And it is the reason the EXECUTABLE class exists.** `hooks` is array-valued, so an uploaded
+`hooks.Stop` is *concatenated* with the panel's rather than outranked by it — **it still
+runs**. `mcpServers` is deep-merged, so an uploaded server is *added*, not replaced.
+`permissions.allow` merges. **Every key in the executable and permission-widening classes of
+[§5.3](#53-executable--stripped-by-default-and-this-is-the-whole-security-argument) and
+[§5.4](#54-permission-widening--the-same-treatment-listed-separately-so-it-looks-like-what-it-is)
+is a key that merges**, which is why stripping them is mandatory and why no amount of
+precedence can substitute for it. There is a public issue whose title is a user complaining
+that the settings flag merges instead of overriding hooks configuration; that is the
+behaviour.
+
+One consequence for `hooks.Stop` specifically, and it *softens* the failure above: because
+hooks concatenate, a workspace `hooks.Stop` cannot remove the panel's — both fire, and the
+turn-complete notification survives a hostile workspace file. What it does not survive is the
+panel not passing `--settings` at all.
+
+**Merge semantics are a property of a release, and must never carry a security property.** The
+exception list and the same-name rules changed at named versions (v2.1.175, v2.1.228,
+v2.1.242). Rely on the merge for convenience; never as the reason a class is safe. This is the
+same rule as [§1.1](#11-one-refinement-because-the-reframe-is-not-quite-unconditional)'s: folder
+trust must not be why something is treated as inert.
+
+**The empirical check stays a requirement on M2.4**, narrowed to what is worth confirming
+rather than what is now known: run the generator against a temporary config dir with a
+deliberately conflicting `hooks.Stop` in a scratch workspace, confirm **both** hooks fire, and
+**record the observed behaviour and the Claude Code version beside the claim** — because the
+version is what the claim is true of.
 
 ---
 

@@ -268,7 +268,7 @@ second, competing design for anything already specified.
   including a correction: M2.4's claim that *"the operator cannot break the turn-complete
   notification by hand"* is false, because `hooks.Stop` in a workspace `.claude/settings.json`
   outranks the user-level file the panel generates.
-- **R8 × M2.2's table.** The provenance and review columns must be in migration `011` from the
+- **R8 × M2.2's table.** The provenance and review columns must be in migration `012` from the
   start ([`docs/IMPORT.md`](docs/IMPORT.md) §10). A column added later is an `ALTER` against
   live operator data; the per-item approval **table** is not, and lands with R8.
 - **R3 × everything server-side.** The server gains no locale. `GET /api/audit`,
@@ -369,8 +369,45 @@ And two that are settled rather than open:
     `worker-src` to the CSP to make an editor work.**
 12. **Migration numbering: M1.7 took `009`.** It landed first. M2.2's projects table takes
     the next number, and the rule is the obvious one — a migration number is claimed by the
-    commit that lands, never reserved by a plan. *M1.8 then took `010`* by the same rule, so
-    **M2.2's projects table is `011`**.
+    commit that lands, never reserved by a plan. *M1.8 then took `010`* by the same rule, and
+    *M2.1 took `011`* — `users.locale` plus the two `*_clearing_since` columns, one migration
+    for one milestone — so **M2.2's projects table is `012`**, and R8's provenance and review
+    columns ride in `012` with it. Every place that said `011` was the projects table has been
+    corrected ([`docs/IMPORT.md` §10](docs/IMPORT.md) and §*The decisions that block M2.1*
+    item 6 below); the number in a design is a claim about ordering and nothing else.
+
+### Decisions taken in M2.1 (2026-09-05)
+
+Numbered on from the M1.8 list below, which they continue rather than replace.
+
+19. **The recovery debounce replaces the alert cooldown (M2.1).** The whole argument is in
+    §*Built in M1.8*, item 3, where the paragraph it corrects lives. The one line worth having
+    here: an alert channel whose last word can be false forever is worse than one that
+    occasionally repeats itself.
+20. **No absolute memory floor to go with the percentage (M2.1, and revisit at M3).** A second
+    knob whose default has no evidence behind it is a setting nobody can tune. The figures
+    that would justify one — how much memory a real concurrent-agent workload actually uses,
+    and therefore what floor is worth alerting on — are produced by the resource widget built
+    in M2.1. **Revisit at M3 with those numbers**, not before.
+21. **`Watchdog.status()` is folded into `GET /api/metrics`, not given a route (M2.1).** A
+    separate endpoint would have been a second response shape, a second poll to budget, and a
+    second line in `EXPECTED_ROUTE_TREE`, for a payload the widget reads on exactly the same
+    schedule as the figures it sits beside.
+22. **`claude --settings` layers; it does not replace (M2.4, documentation only).** Verified
+    against the current settings documentation on 2026-09-05 and recorded in §M2.4 and
+    [`docs/IMPORT.md` §11.4](docs/IMPORT.md). The consequence that matters is not the
+    reassuring half — it is that `hooks`, `mcpServers` and `permissions.allow` **merge**, so an
+    uploaded workspace file's hook is *concatenated* with the panel's rather than outranked by
+    it. That is why R8's executable class exists, and it is why merge semantics may be relied
+    on for convenience and never for a security property.
+23. **The client is plain CSS, not Tailwind (M2.1).** §M2.1 item 1 below says "Tailwind v4
+    theme" and the code does not have one. The deciding argument is the enforcement: R3's
+    logical-property rule is only real if a static scan can see a violation, and a scan over
+    CSS declarations is exact where a scan over `className` strings has to encode Tailwind's
+    whole utility vocabulary and fails *silently* when it misses one. Tailwind would also have
+    put a native binary (`@tailwindcss/oxide`) in the builder stage for a design system of
+    about 400 lines. Design tokens are custom properties in `globals.css`; the item is
+    corrected in place.
 
 ### Decisions taken in M1.8 (2026-09-05)
 
@@ -1414,14 +1451,57 @@ deliberately.
    and derives the other ten points lower. Two settable numbers can be set the wrong way
    round, and `clear` above `alert` is not a hysteresis band but a machine that alternates on
    every sample. The shipped defaults are the design's 85/75 and 80/70 exactly.
-3. **Hysteresis is not the whole answer, so there is also a cooldown and an `alerted`
-   flag.** The band stops chatter *on the boundary*; a workload genuinely swinging through
-   the whole band would still alert on every cycle, so one alert per rule per thirty minutes.
-   The consequence needed a decision: a crossing whose alert the cooldown swallowed must not
-   produce a recovery either, because a "back to normal" for something the operator was
-   never told about is a message about nothing. So `alerted` is tracked separately from the
-   crossing state, and the property is **every alert that was sent gets a recovery, and
-   nothing else does**.
+3. **Hysteresis is not the whole answer, so there is also a window and an `alerted` flag.**
+   The band stops chatter *on the boundary*; a workload genuinely swinging through the whole
+   band would still alert on every cycle, so there is a thirty-minute window as well. The
+   consequence needed a decision: a crossing whose alert was never delivered must not produce
+   a recovery either, because a "back to normal" for something the operator was never told
+   about is a message about nothing. So `alerted` is tracked separately from the crossing
+   state, and the property is **every alert that was sent gets a recovery, and nothing else
+   does**.
+
+   > **Corrected in M2.1 — the window was on the wrong side.** This item shipped as *one
+   > alert per rule per thirty minutes*: a cooldown on the **alert**. What that permits, and
+   > it is not a corner case:
+   >
+   > ```
+   > t=0   crosses above  -> alert sent
+   > t=5   drops below    -> recovery sent
+   > t=10  crosses above  -> suppressed by the cooldown
+   > t=10+ stays above indefinitely
+   > ```
+   >
+   > The operator's most recent message says "recovered" while the condition is bad, and
+   > nothing ever corrects it. A duplicate message is a nuisance; that is misinformation, and
+   > it is the failure that teaches an operator to distrust the channel completely. The old
+   > paragraph also claimed the cooldown was what made `alerted` necessary, which is now
+   > false for a better reason — see below.
+   >
+   > M2.1 moves the same thirty minutes to the **recovery**: one alert on entering `above`;
+   > the rule stays `above` until the reading has been at or below the clear line
+   > *continuously* for the clear window; then one recovery, and only then can a new alert
+   > fire. `notification_state` gains `memory_clearing_since` and `disk_clearing_since`
+   > (migration 011) to hold that run, and `NULL` there is the debounce reset. The invariant
+   > it buys is stated as one sentence and asserted as four tests: **the most recent message
+   > the operator received always describes the current state of that rule.** A flap is
+   > exactly one alert and one recovery. The alert side then needs no throttle at all,
+   > because a second alert is unreachable before a recovery.
+   >
+   > **`alerted` is kept, and it is load-bearing for a different reason.** Nothing swallows
+   > an alert any more, but delivery can still fail: a full queue refuses the newest event.
+   > So `Watchdog` reads the `EnqueueResult` it already got back and writes `alerted: false`
+   > when the enqueue was refused, and the recovery for that crossing is silent. What is
+   > *not* wired is a row that queued and then `abandoned` after fifteen attempts — that
+   > would mean the notify layer calling back into the watchdog, which the post-commit
+   > observer design exists to avoid, and `notification.abandoned` is an audit row and an
+   > alert of its own.
+   >
+   > One more thing came out of the change. `CrossingDecision` now carries **`transition`
+   > beside `emit`**, because they are not the same decision: the audit row follows the
+   > transition and the Telegram message follows `emit`. Collapsed into one, an undelivered
+   > alert left the log saying a threshold was crossed and never saying it cleared — the log
+   > lying by omission, in the same way the state machine could. The `cleared` row carries
+   > `notified: false` so the pair is checkable from the log alone.
 4. **Disk is `(total - available) / total`.** The design says "80 %" without saying of what.
    `available` is `bavail` — the field M2.4's import cap already reads — and the question the
    alert answers is whether the panel can still *write*, for which a block reserved for root
@@ -1459,6 +1539,17 @@ interval, and at 1000 ms against 30 000 ms the result is wrong by a factor of th
 remaining a plausible number on a dashboard. `tests/unit/watchdog.test.ts` and
 `tests/integration/watchdog.test.ts` both point the two at *one* fixture cgroup and assert
 they still disagree about the interval, so the assertion is not vacuous.
+
+**The status block, added in M2.1.** `Watchdog.status()` is served as the `watchdog` key of
+`GET /api/metrics` rather than from a route of its own: same session, same poll, no new line
+in `EXPECTED_ROUTE_TREE`, and no second response shape for the client to learn. It carries
+`enabled` (the switch) separately from `running` (the timer), a per-rule `armed` with a
+**reason code** — `disabled` / `no_limit` / `unavailable` — the thresholds, the crossing
+state, `alertedAt`, `clearingSince`, the OOM counter with a `baseline` flag, this watcher's
+own `cpuSampleWindowMs`, and what the run marker said at boot (`checked` separately from
+`cleanShutdown`, because *nothing looked* and *shut down cleanly* are different facts). Every
+string in it is a code from a closed set or an ISO-8601 timestamp; the exact set of string
+leaves is pinned twice in `tests/integration/metrics.test.ts`.
 
 **The client's poll budget, for M2.1.** Two seconds visible, thirty seconds hidden
 (`document.visibilityState`), and nothing at all when the tab is closed. Two seconds is
@@ -1687,7 +1778,7 @@ Three more that I think are blocking, and this is the judgement the milestone is
 
 And two that R8 added on 2026-09-05, both blocking a milestone rather than M2.1:
 
-6. **The `projects` provenance and review columns, in migration `011`, with M2.2.**
+6. **The `projects` provenance and review columns, in migration `012`, with M2.2.**
    [`docs/IMPORT.md`](docs/IMPORT.md) §10. `origin`, `origin_ref`, `origin_at`,
    `source_install_id`, `review_state`, `reviewed_at`, `artefacts_json`. The one that is easy
    to argue away is `review_state`, and it is the one that matters: whether anybody has looked
@@ -1861,8 +1952,8 @@ the operator's projects in it — and a `NOT NULL` provenance column added then 
 value for every existing row. R8's *per-item* approval table is the other side of that line and
 lands with R8: adding a table later is free.
 
-The migration is **`011`**. M1.7 took `009` and M1.8 took `010`, by the rule that a number is
-claimed by the commit that lands.
+The migration is **`012`**. M1.7 took `009`, M1.8 took `010` and M2.1 took `011`, by the rule
+that a number is claimed by the commit that lands.
 
 **Commit:** `feat(m2.2): projects`
 
@@ -1883,6 +1974,47 @@ settings**, `claude --settings`, `.claude/settings.local.json`, `.claude/setting
 `~/.claude/settings.json` (verified against `code.claude.com/docs/en/settings` on
 **2026-09-03**). A panel that edits the wrong file in that chain appears to work and changes
 nothing, which for a beginner is an unfindable bug.
+
+##### `--settings` layers, and the reassuring half is not the important half
+
+Confirmed on **2026-09-05** (documentation plus the surrounding issue history), because M2.4's
+generator depends on it and finding out late is expensive. **The chain is a merge, not a
+selection.** For a scalar key, the highest-precedence file that defines it supplies the value;
+**arrays are concatenated and de-duplicated across scopes**; objects are deep-merged.
+Documented exceptions that do *not* merge — `fallbackModel`, `availableModels`, `modelPicker`,
+`modelSettings`, `claudeMdExcludes` — where the highest-precedence file that defines the key
+supplies the whole value. Permission rules merge across scopes, with `deny` beating `ask`
+beating `allow`.
+
+Four consequences, and they point in different directions:
+
+1. **Passing `--settings` does not discard the operator's own user-level settings.** The
+   opposite-and-worse failure — the panel silently deleting their configuration — is not a
+   real risk.
+2. **The panel *can* outrank a workspace file** for any scalar, and for any individual key of
+   a deep-merged object, including `env.ANTHROPIC_BASE_URL` and `env.ANTHROPIC_AUTH_TOKEN`.
+   That is the mechanism the generator should use — a generated file passed with `--settings`,
+   at level 2 — rather than relying on the user-level file `CLAUDE_CONFIG_DIR` relocates,
+   which is the *lowest* of the five.
+3. **It does not make the executable class safe, and this is the half that matters.** `hooks`
+   is array-valued, so an uploaded `hooks.Stop` is **concatenated with the panel's rather
+   than outranked by it — it still runs**. `mcpServers` is deep-merged, so an uploaded server
+   is *added*, not replaced. `permissions.allow` merges. **Every key in R8's executable and
+   permission-widening classes is a key that merges**, which is precisely why the class
+   exists and why stripping it stays mandatory ([`docs/IMPORT.md` §5.3](docs/IMPORT.md)).
+4. **Merge semantics are a property of a release.** The exception list and the same-name
+   rules changed at named versions (v2.1.175, v2.1.228, v2.1.242). **Rely on them for
+   convenience; never for a security property.** Folder trust must never be the reason a
+   class is treated as safe.
+
+**Net effect on the claim in the paragraph below:** it becomes nearly true, for a different
+reason than either side of the argument had. A workspace `hooks.Stop` cannot *remove* the
+panel's, because hooks concatenate — both fire. So the turn-complete notification survives a
+hostile workspace file. What it does not survive is **the panel not passing `--settings` at
+all**. The verification requirement stands and is M2.4's: before the generator is written,
+confirm the behaviour against a temporary config dir with a deliberately conflicting
+`hooks.Stop` in a scratch workspace, and **record the observed behaviour and the Claude Code
+version next to the claim.**
 
 Two consequences, and the second one is not obvious:
 
@@ -1928,6 +2060,13 @@ explains why that key is not theirs.
 > which is level 2 and outranks both workspace files, plus a named warning either way.
 > [`docs/IMPORT.md`](docs/IMPORT.md) §11.4 has the argument, the two rejected alternatives, and
 > the one thing that must be verified before the generator is written.
+>
+> **Refined on 2026-09-05 by the `--settings` answer above.** `hooks` is array-valued and
+> **merges across scopes**, so a workspace `hooks.Stop` does not replace the panel's — both
+> fire, and the turn-complete notification survives. The failure mode is therefore not "the
+> operator broke it by hand" but "the panel never passed `--settings`". The fix is unchanged;
+> the reason it works is different, and the same merge behaviour is exactly why R8's
+> executable class cannot be made safe by precedence.
 
 **Three more things R8 requires of this model**, all of them cheaper now than after the settings
 screens exist ([`docs/IMPORT.md`](docs/IMPORT.md) §11): `.claude/settings.local.json` is in the
@@ -2104,7 +2243,9 @@ crossing-alert state machine is no longer part of this milestone** — it was bu
 because a poll-driven sampler cannot observe a crossing while nobody is polling and the
 panel could otherwise report a failed login and not an OOM kill. What M2.7 inherits is
 `Watchdog.status()`: whether each rule is *armed*, its thresholds, its current state, and the
-OOM counter. Showing "memory alerting: disabled — this container has no memory limit" is part
+OOM counter — **served as the `watchdog` key of `GET /api/metrics` since M2.1**, which also
+built the first version of the widget over it (M2.1 Part 4). M2.7 is the polish pass, not the
+first render. Showing "memory alerting: disabled — this container has no memory limit" is part
 of the widget, not a footnote: a rule with no denominator is disabled rather than healthy, and
 the boot log and `npm run preflight` are the only places that say so today. Every figure in it is a `dir="ltr"` island with
 `formatTechnical`, and a `null` limit renders as a used-only figure with no bar — which is the

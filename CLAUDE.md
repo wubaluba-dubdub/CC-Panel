@@ -154,6 +154,8 @@ build failure, not a warning.
 - Database tables: `users`, `sessions`, `audit_log`, `audit_chain`, `secrets`,
   `auth_failures`, `recovery_codes`, `notification_queue`, `notification_state`.
   (`lockouts`, from migration 005, is dropped by 007 — there is no lockout.)
+  Migration **011** adds `users.locale` and the two `*_clearing_since` columns; M2.2's
+  `projects` table is **012**.
 
 ### Error Handling
 - Server: Return generic error messages to avoid leaking info (e.g., "Invalid credentials").
@@ -309,6 +311,17 @@ rather than code:
   unprivileged process cannot have, which is the question M2.4's import cap asks.
   `projects/` is deliberately **not** walked — a recursive walk of checkouts and
   `node_modules` on a one-second cadence is the display becoming its own load.
+- **The watchdog's status rides in this response, under `watchdog`** (M2.1). No second
+  route: same session, same poll, no new line in `EXPECTED_ROUTE_TREE`, and the widget can
+  say *memory alerts are off because this container reports no limit* instead of drawing a
+  gauge that silently means nothing. It is also the one place the two consumers of
+  `resources.service.ts` meet — the sampler does not know the watchdog exists and vice
+  versa — so `MetricsResponse` is `ResourceSnapshot` (what the sampler produces) plus
+  `watchdog`, and the route is what joins them. **Every string in the block is a code from a
+  closed set or an ISO-8601 timestamp, never prose**, for the same reason the figures are raw
+  numbers, and `tests/integration/metrics.test.ts` pins the exact set of string leaves twice:
+  once with both rules armed and once with memory disarmed, which differ by exactly the two
+  `reason` paths.
 - Not built here: per-project attribution (there are no projects, and `perProject` is
   declared absent rather than empty). Threshold-crossing alerts were also deferred from
   M1.7 for a structural reason and are built in M1.8 — see below.
@@ -316,8 +329,9 @@ rather than code:
 ## The resource watchdog
 `src/server/services/watchdog.service.ts` (the watcher, the run marker, the OOM counter)
 and `services/resource-alerts.ts` (the pure crossing machine and its persistence).
-Migration 010. Always on from boot to shutdown at a 30 s cadence; no route, no UI — M2.7
-is where it becomes visible. Full rationale in `PLAN.md` §*Built in M1.8*; the decisions
+Migrations 010 and 011. Always on from boot to shutdown at a 30 s cadence; no route of its
+own — `GET /api/metrics` carries `Watchdog.status()` as its `watchdog` block since M2.1, and
+M2.7 is the widget over it. Full rationale in `PLAN.md` §*Built in M1.8*; the decisions
 rather than the code:
 
 - **A second sample pair, not a second use of the first.** The poll-driven sampler is
@@ -331,10 +345,22 @@ rather than the code:
   delta by the other's interval, and at 1000 ms against 30 000 ms the answer is wrong by a
   factor of thirty — still a number, still in range, still plausible on a dashboard.
 - **Alerts fire on a crossing, not on a level**, with a *separate, lower* clear threshold
-  (derived, ten points down) and a 30-minute cooldown. A sustained 95 % is one message.
-  `alerted` is tracked separately from `above`/`below` so that **every alert that was sent
-  gets a recovery and nothing else does** — a recovery for an alert the cooldown swallowed
-  would be a message about something the operator has no record of.
+  (derived, ten points down) and a **30-minute debounce on the recovery, not on the alert**.
+  A sustained 95 % is one message. The invariant is *the most recent message the operator
+  received always describes the current state of that rule*: one alert on entering `above`,
+  the rule stays `above` until the reading has been at or below the clear line continuously
+  for the clear window, then one recovery — and only then can a new alert fire. A flap is
+  exactly one alert and one recovery. **M1.8 had the window on the alert side and M2.1 moved
+  it**, because a cooldown there permits a "recovered" message followed by a suppressed
+  re-crossing, leaving the operator's last word about that rule false forever. The alert side
+  needs no throttle at all, because a second alert is unreachable before a recovery.
+  `alerted` survives the change and is what keeps *silence* unambiguous: a full queue refuses
+  the newest event, and a recovery for an alert that never left the panel would be a message
+  about something the operator has no record of — so the watchdog writes `alerted: false`
+  when its enqueue is refused and the recovery is silent. The **audit row follows the
+  transition and the message follows the emit**, which are not the same decision: an
+  undelivered alert still writes `resource.threshold_cleared`, with `notified: false`, rather
+  than leaving the log saying a threshold was crossed and never saying it cleared.
 - **A missing denominator disables a rule; it never defaults one.** `memory.max` holding
   the literal `max`, or no cgroup v2 at all, means there is nothing for a fraction to be a
   fraction of — so the machine *freezes* (no transition, no message, no bookkeeping lost)
@@ -370,8 +396,9 @@ rather than the code:
   teaches an operator to ignore the channel that also carries "someone signed in". The
   figure is still *measured*, because it is what says what the panel was doing when it died:
   the marker carries it and the unclean-restart message reads it.
-- **The alert state lives in `notification_state` beside the drop counter**, read once per
-  tick and written only when something changed — an idle panel does not dirty a page every
+- **The alert state lives in `notification_state` beside the drop counter** (migration 011
+  adds `memory_clearing_since` and `disk_clearing_since` for the recovery debounce), read
+  once per tick and written only when something changed — an idle panel does not dirty a page every
   thirty seconds. The four watchdog audit events have **explicit `null` rules** in
   `notification-rules.ts`: the watchdog enqueues its own typed event with the numbers in it,
   and a rule there would turn the row into a headline-plus-a-time `security_alert` — the
@@ -1062,11 +1089,15 @@ what the plan calls for.
 - **R8 — importing an unfinished project: designed, no code.** `docs/IMPORT.md`, written in
   M1.8, built in M2.8. Two arrival paths (ZIP upload, git clone) with genuinely different
   threat profiles and **one** pipeline from staging onward, enforced by a static scan. Two of
-  its decisions land earlier than M2.8 and are the reason it was designed now: migration 011's
-  provenance and review columns on `projects`, and four changes to M2.4's settings model — one
-  of which corrects M2.4's claim that the operator cannot break the turn-complete notification
-  by hand. They can, and so can an uploaded project, because a workspace
-  `.claude/settings.json` outranks the user-level file the panel generates.
+  its decisions land earlier than M2.8 and are the reason it was designed now: migration 012's
+  provenance and review columns on `projects` (M2.1 took 011), and four changes to M2.4's
+  settings model. One of those was a correction to M2.4's claim that the operator cannot break
+  the turn-complete notification by hand — **and M2.1 refined the correction**: `claude
+  --settings` *layers*, and `hooks` is array-valued and **merges across scopes**, so a
+  workspace `hooks.Stop` is concatenated with the panel's rather than replacing it. Both fire.
+  The notification therefore survives a hostile workspace file; what it does not survive is the
+  panel never passing `--settings`. The same merge behaviour is exactly why R8's executable
+  class cannot be made safe by precedence — see `docs/IMPORT.md` §11.4.
 - **M1.8 — the resource watchdog: done (no UI).** The always-on 30 s watcher, the memory
   and disk crossing rules with derived clear thresholds and a 30-minute cooldown, the
   `oom_kill` counter, and unclean-restart detection through a run marker in `/data/run`;

@@ -2,11 +2,16 @@ import type { Database } from 'better-sqlite3';
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { type Clock, isoFrom, systemClock } from '../utils/clock.js';
+import type {
+  WatchdogBlock,
+  WatchdogDisarmedReason,
+  WatchdogRuleStatus,
+} from '../../shared/types.js';
 import { AuditEvent, type AuditService } from './audit.service.js';
 import type { NotifyService } from './notify.service.js';
 import {
-  ALERT_COOLDOWN_MS,
   AlertStateStore,
+  CLEAR_WINDOW_MS,
   type Band,
   bandFromPercent,
   evaluateCrossing,
@@ -196,37 +201,18 @@ export function clearMarker(dataDir: string): void {
 
 // ─── Status, for the tests today and M2.7 later ──────────────────────────────
 
-export interface RuleStatus {
-  /** False when there is no denominator, which is a *disabled* rule and not a healthy one. */
-  readonly armed: boolean;
-  /** Why it is not armed, in machine-readable form. Null when it is. */
-  readonly reason: 'no_limit' | 'unavailable' | null;
-  readonly thresholdPercent: number;
-  readonly clearPercent: number;
-  readonly state: RuleState['state'];
-  /** The last observed fraction as a percentage, or null. */
-  readonly percent: number | null;
-}
+/**
+ * The status block, which is the shared contract and not a shape of its own.
+ *
+ * `status()` returns exactly what `GET /api/metrics` puts under `watchdog`, because a
+ * second shape between the two would be a translation layer with nothing to translate —
+ * and every string in it has to come from a closed set for the client to be able to
+ * render it in Persian. See `src/shared/types.ts`.
+ */
+export type WatchdogStatus = WatchdogBlock;
 
-export interface WatchdogStatus {
-  readonly running: boolean;
-  readonly cadenceMs: number;
-  readonly sampledAt: string | null;
-  readonly source: MetricsSource | null;
-  readonly memory: RuleStatus;
-  readonly disk: RuleStatus;
-  readonly oomKills: number | null;
-  readonly cpuPercentOfQuota: number | null;
-  /**
-   * The wall-clock window the CPU figure was computed over.
-   *
-   * Reported so the two consumers of `resources.service.ts` can be told apart by
-   * evidence: this watcher's window is its own cadence and the metrics sampler's is
-   * its own, and a shared previous-sample slot would show up here as one of them
-   * carrying the other's interval.
-   */
-  readonly cpuSampleWindowMs: number | null;
-}
+/** Why a rule is not armed. Codes only; the client owns the sentence. */
+export type DisarmedReason = WatchdogDisarmedReason;
 
 export interface WatchdogOptions {
   dataDir: string;
@@ -239,8 +225,17 @@ export interface WatchdogOptions {
   memoryPercent?: number;
   diskPercent?: number;
   cadenceMs?: number;
-  cooldownMs?: number;
+  /** How long the reading must stay at or below the clear line before a recovery. */
+  clearWindowMs?: number;
   startTimer?: StartTimer;
+  /**
+   * Whether the watcher is meant to run at all (`PANEL_WATCHDOG_ENABLED`).
+   *
+   * Passed in rather than inferred from `running`, because `status()` has to tell the
+   * difference between *switched off* and *not started yet* — and the widget's answer
+   * to those two is not the same sentence.
+   */
+  enabled?: boolean;
   /**
    * Test seam, and the disk analogue of `cgroupRoot`.
    *
@@ -265,7 +260,8 @@ export class Watchdog {
   readonly #memoryPercent: number;
   readonly #diskPercent: number;
   readonly #cadenceMs: number;
-  readonly #cooldownMs: number;
+  readonly #clearWindowMs: number;
+  readonly #enabled: boolean;
   readonly #startTimer: StartTimer;
   readonly #readDisk: (dataDir: string) => DiskReading;
   readonly #log: (event: Record<string, unknown> & { message: string }) => void;
@@ -282,8 +278,17 @@ export class Watchdog {
   #lastDiskPercent: number | null = null;
   #lastCpuPercent: number | null = null;
   #lastCpuWindowMs: number | null = null;
-  #memoryReason: RuleStatus['reason'] = 'unavailable';
-  #diskReason: RuleStatus['reason'] = 'unavailable';
+  #memoryReason: WatchdogDisarmedReason | null = 'unavailable';
+  #diskReason: WatchdogDisarmedReason | null = 'unavailable';
+  /**
+   * What `bootCheck()` found, kept so the widget can show it.
+   *
+   * `#bootChecked` is separate from `#uncleanRestart === null`, because *nothing looked*
+   * and *the previous run shut down cleanly* are different facts and the operator's
+   * screen must not spell them the same way.
+   */
+  #bootChecked = false;
+  #uncleanRestart: UncleanRestart | null = null;
 
   constructor(opts: WatchdogOptions) {
     this.#dataDir = opts.dataDir;
@@ -300,7 +305,8 @@ export class Watchdog {
     this.#memoryPercent = Math.round(this.#memoryBand.alert * 100);
     this.#diskPercent = Math.round(this.#diskBand.alert * 100);
     this.#cadenceMs = opts.cadenceMs ?? WATCHDOG_CADENCE_MS;
-    this.#cooldownMs = opts.cooldownMs ?? ALERT_COOLDOWN_MS;
+    this.#clearWindowMs = opts.clearWindowMs ?? CLEAR_WINDOW_MS;
+    this.#enabled = opts.enabled ?? true;
     this.#startTimer = opts.startTimer ?? realInterval;
     this.#readDisk = opts.diskReader ?? readDisk;
     this.#log = opts.log ?? ((): void => {});
@@ -382,6 +388,8 @@ export class Watchdog {
     }
 
     this.#startedAt = isoFrom(this.#clock.now());
+    this.#bootChecked = true;
+    this.#uncleanRestart = finding;
     this.#writeMarker();
     return finding;
   }
@@ -502,14 +510,14 @@ export class Watchdog {
       memoryFraction,
       this.#memoryBand,
       atMs,
-      this.#cooldownMs,
+      this.#clearWindowMs,
     );
     const diskDecision = evaluateCrossing(
       previous.disk,
       diskFraction,
       this.#diskBand,
       atMs,
-      this.#cooldownMs,
+      this.#clearWindowMs,
     );
     const oomReading = readOomKills(this.#cgroupRoot);
     const oom = evaluateOomKills(
@@ -532,8 +540,25 @@ export class Watchdog {
     this.#lastLimitBytes = limitBytes;
     this.#lastDiskPercent = diskFraction === null ? null : round1(diskFraction * 100);
 
-    if (memory.emit !== null) {
-      this.#emitCrossing('memory', memory.emit, {
+    // ── Emit, and correct the bookkeeping if the message never left ──────────
+    //
+    // `alerted` is the flag that keeps *silence* unambiguous: a recovery is sent only for
+    // an alert the operator was actually told about. Since M2.1 the machine always sets
+    // it on entering `above` — there is no cooldown left to swallow an alert — so the one
+    // way it can be wrong is a **refused enqueue**: a full queue drops the newest event
+    // (`NotifyService` counts the drop and audits it). If that happens the operator has no
+    // record of the alert, so the recovery must be silent, and the state is corrected here
+    // rather than left claiming they were told.
+    //
+    // What this deliberately does *not* cover is a row that was queued and then
+    // `abandoned` after fifteen failed attempts. Knowing that would mean the notify layer
+    // calling back into the watchdog, which is a coupling the post-commit observer design
+    // exists to avoid; `notification.abandoned` is an audit row and an alert of its own.
+    let memoryState = memory.next;
+    let diskState = diskDecision.next;
+
+    if (memory.transition !== null) {
+      const delivered = this.#emitCrossing('memory', memory.transition, memory.emit, {
         percent: this.#lastMemoryPercent ?? 0,
         thresholdPercent: this.#memoryPercent,
         usedBytes,
@@ -541,9 +566,12 @@ export class Watchdog {
         since: previous.memory.since,
         atMs,
       });
+      if (memory.emit === 'alert' && !delivered) {
+        memoryState = { ...memoryState, alerted: false };
+      }
     }
-    if (diskDecision.emit !== null) {
-      this.#emitCrossing('disk', diskDecision.emit, {
+    if (diskDecision.transition !== null) {
+      const delivered = this.#emitCrossing('disk', diskDecision.transition, diskDecision.emit, {
         percent: this.#lastDiskPercent ?? 0,
         thresholdPercent: this.#diskPercent,
         usedBytes: disk.totalBytes - disk.availableBytes,
@@ -551,6 +579,19 @@ export class Watchdog {
         since: previous.disk.since,
         atMs,
       });
+      if (diskDecision.emit === 'alert' && !delivered) {
+        diskState = { ...diskState, alerted: false };
+      }
+    }
+
+    // A second write, and only when an enqueue was actually refused. The first write
+    // above is the one that matters for crash safety; this one narrows a claim that
+    // turned out to be false.
+    if (memoryState !== memory.next || diskState !== diskDecision.next) {
+      this.#store.write(
+        { memory: memory.next, disk: diskDecision.next, oomKills: oom.next },
+        { memory: memoryState, disk: diskState, oomKills: oom.next },
+      );
     }
     if (oom.newKills > 0) {
       this.#emitOomKill(oom.newKills, oom.next ?? oom.newKills, usedBytes, limitBytes);
@@ -559,9 +600,22 @@ export class Watchdog {
     this.#writeMarker();
   }
 
+  /**
+   * The audit row for a transition, and the message for it if there is one to send.
+   *
+   * **The row follows the transition and the message follows `emit`, and they are not the
+   * same decision.** A rule leaving `above` whose alert never reached the operator writes
+   * `resource.threshold_cleared` and sends nothing — because the log is the record of what
+   * happened and the message is a claim about what the operator knows. Collapsing them
+   * left the log saying a threshold was crossed and never saying it cleared, which is the
+   * log lying by omission.
+   *
+   * Returns whether the message was actually enqueued; false when there was none to send.
+   */
   #emitCrossing(
     resource: 'memory' | 'disk',
-    emit: 'alert' | 'recovery',
+    transition: 'crossed' | 'cleared',
+    emit: 'alert' | 'recovery' | null,
     figures: {
       percent: number;
       thresholdPercent: number;
@@ -570,16 +624,18 @@ export class Watchdog {
       since: string | null;
       atMs: number;
     },
-  ): void {
+  ): boolean {
     const aboveForSeconds =
-      emit === 'recovery' && figures.since !== null
+      transition === 'cleared' && figures.since !== null
         ? Math.max(0, Math.round((figures.atMs - Date.parse(figures.since)) / 1000))
         : null;
 
     this.#audit.write({
       event:
-        emit === 'alert' ? AuditEvent.ResourceThresholdCrossed : AuditEvent.ResourceThresholdCleared,
-      outcome: emit === 'alert' ? 'failure' : 'success',
+        transition === 'crossed'
+          ? AuditEvent.ResourceThresholdCrossed
+          : AuditEvent.ResourceThresholdCleared,
+      outcome: transition === 'crossed' ? 'failure' : 'success',
       meta: {
         resource,
         percent: figures.percent,
@@ -587,14 +643,27 @@ export class Watchdog {
         usedBytes: figures.usedBytes,
         limitBytes: figures.limitBytes,
         aboveForSeconds,
+        // Recorded because the pair has to be checkable from the log alone: a `cleared`
+        // row with `notified: false` is a recovery the operator was deliberately not sent,
+        // and without this field it is indistinguishable from one that went missing.
+        notified: emit !== null,
       },
     });
 
+    if (emit === null) {
+      this.#log({
+        message: 'resource threshold cleared without a message, because the alert never went out',
+        resource,
+        percent: figures.percent,
+      });
+      return false;
+    }
+
     // No `throttleKey` here: the crossing machine already guarantees one message per
-    // crossing, and its cooldown is the throttle. A second one on top would silence a
+    // crossing, and its clear window is the debounce. A throttle on top would silence a
     // recovery, which is the message that makes the silence after an alert mean
-    // something.
-    this.#notify.notify({
+    // something — and since M2.1 the recovery is the leg the invariant depends on.
+    const enqueued = this.#notify.notify({
       kind: 'resource_alert',
       resource,
       state: emit === 'alert' ? 'above' : 'cleared',
@@ -608,7 +677,9 @@ export class Watchdog {
       message: emit === 'alert' ? 'resource threshold crossed' : 'resource threshold cleared',
       resource,
       percent: figures.percent,
+      queued: enqueued.queued,
     });
+    return enqueued.queued !== null;
   }
 
   #emitOomKill(
@@ -649,32 +720,79 @@ export class Watchdog {
     });
   }
 
+  /**
+   * Everything the widget needs, and nothing it would have to interpret.
+   *
+   * One database read (the same single row `#sample` reads) and otherwise fields this
+   * object is already holding, so folding it into `GET /api/metrics` costs the poll one
+   * `SELECT` on a one-row table rather than a second endpoint's worth of work.
+   *
+   * **Switched off outranks every other reason.** With `PANEL_WATCHDOG_ENABLED` off
+   * nothing is sampled, so `#memoryReason` still holds its constructed default — and
+   * reporting `unavailable` there would send the operator to look at the cgroup instead
+   * of at the switch.
+   */
   status(): WatchdogStatus {
     const state = this.#store.read();
+    const rule = (
+      reason: WatchdogDisarmedReason | null,
+      thresholdPercent: number,
+      clearFraction: number,
+      ruleState: RuleState,
+      percent: number | null,
+    ): WatchdogRuleStatus => {
+      const effective = this.#enabled ? reason : 'disabled';
+      return {
+        armed: effective === null,
+        reason: effective,
+        thresholdPercent,
+        clearPercent: Math.round(clearFraction * 100),
+        state: ruleState.state,
+        percent,
+        alertedAt: ruleState.alerted ? ruleState.lastAlertAt : null,
+        clearingSince: ruleState.clearingSince,
+      };
+    };
+
     return {
+      enabled: this.#enabled,
       running: this.running,
       cadenceMs: this.#cadenceMs,
+      clearWindowMs: this.#clearWindowMs,
       sampledAt: this.#lastSampledAt,
       source: this.#lastSource,
-      memory: {
-        armed: this.#memoryReason === null,
-        reason: this.#memoryReason,
-        thresholdPercent: this.#memoryPercent,
-        clearPercent: Math.round(this.#memoryBand.clear * 100),
-        state: state.memory.state,
-        percent: this.#lastMemoryPercent,
-      },
-      disk: {
-        armed: this.#diskReason === null,
-        reason: this.#diskReason,
-        thresholdPercent: this.#diskPercent,
-        clearPercent: Math.round(this.#diskBand.clear * 100),
-        state: state.disk.state,
-        percent: this.#lastDiskPercent,
-      },
-      oomKills: state.oomKills,
+      memory: rule(
+        this.#memoryReason,
+        this.#memoryPercent,
+        this.#memoryBand.clear,
+        state.memory,
+        this.#lastMemoryPercent,
+      ),
+      disk: rule(
+        this.#diskReason,
+        this.#diskPercent,
+        this.#diskBand.clear,
+        state.disk,
+        this.#lastDiskPercent,
+      ),
+      oom: { kills: state.oomKills, baseline: state.oomKills !== null },
       cpuPercentOfQuota: this.#lastCpuPercent,
       cpuSampleWindowMs: this.#lastCpuWindowMs,
+      previousRun: {
+        checked: this.#bootChecked,
+        cleanShutdown: this.#bootChecked ? this.#uncleanRestart === null : null,
+        detail:
+          this.#uncleanRestart === null
+            ? null
+            : {
+                startedAt: this.#uncleanRestart.previousStartedAt,
+                lastSeenAt: this.#uncleanRestart.lastSeenAt,
+                ranForSeconds: this.#uncleanRestart.ranForSeconds,
+                usedBytes: this.#uncleanRestart.usedBytes,
+                limitBytes: this.#uncleanRestart.limitBytes,
+                markerUnreadable: this.#uncleanRestart.unreadable,
+              },
+      },
     };
   }
 }

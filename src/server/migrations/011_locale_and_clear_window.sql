@@ -1,0 +1,54 @@
+-- Migration 011: M2.1's two columns — the recovery debounce, and the stored locale.
+--
+-- ── Why one migration for two unrelated things ───────────────────────────────
+--
+-- A migration number is claimed by the commit that lands (PLAN.md §*Decisions taken
+-- after M2.0*, 12), and both of these land in M2.1. Splitting them would either take
+-- two numbers out of a sequence M2.2 is already told to continue at `012`, or leave a
+-- number to be filled in later — and the runner applies by *version*, so a `011`
+-- arriving after `012` was applied still runs, out of order, against a schema it was
+-- not written for. One number per milestone is the shape that cannot do that.
+--
+-- ── notification_state: the recovery debounce ────────────────────────────────
+--
+-- M1.8 shipped a 30-minute cooldown on the **alert** side, and the sequence it
+-- permits is one the operator cannot recover from:
+--
+--     t=0   crosses above  -> alert sent
+--     t=5   drops below    -> recovery sent
+--     t=10  crosses above  -> suppressed by the cooldown
+--     t=10+ stays above indefinitely
+--
+-- The most recent message says "recovered" while the condition is bad, and nothing
+-- will ever correct it. A duplicate message is a nuisance; that is misinformation.
+--
+-- So the cooldown moves to the side where it cannot lie. A rule enters `above` and
+-- alerts immediately, then stays in `above` until the reading has been at or below
+-- the clear threshold **continuously** for the clear window — at which point it emits
+-- one recovery. `*_clearing_since` is when that continuous run started, and NULL
+-- means there is no run in progress. A reading back above the clear line sets it to
+-- NULL again, which is the debounce reset and the whole mechanism.
+--
+-- The alert side then needs no throttle at all: a second alert is unreachable before
+-- a recovery, because the rule never leaves `above` without emitting one.
+--
+-- `*_last_alert_at` is kept and **nothing branches on it** any more. It is the record
+-- of when the operator was told, which the status block reports; the comment in
+-- `services/resource-alerts.ts` says so at the field, because a timestamp that used
+-- to gate something is exactly the field a later change would gate on again.
+ALTER TABLE notification_state ADD COLUMN memory_clearing_since TEXT;
+ALTER TABLE notification_state ADD COLUMN disk_clearing_since TEXT;
+
+-- ── users: the stored locale ─────────────────────────────────────────────────
+--
+-- Nullable, and NULL is not `'en'`: it means the operator has never chosen, so the
+-- guess from `Accept-Language` is still in force. Once they choose, the column is the
+-- authority and the header is ignored — which is the difference between "we do not
+-- know yet" and "they picked English".
+--
+-- A column on `users` rather than a row in `config/instance.json`, because there is
+-- exactly one user and this is their preference, not a fact the installer set. It is
+-- also what M2.5 should read for the notification locale, so that
+-- `PANEL_NOTIFY_LOCALE` becomes the initial default for one stored value rather than
+-- a second independent setting.
+ALTER TABLE users ADD COLUMN locale TEXT CHECK (locale IS NULL OR locale IN ('en', 'fa'));

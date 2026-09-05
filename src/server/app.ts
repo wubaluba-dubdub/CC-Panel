@@ -146,7 +146,7 @@ export interface ServerConfig {
   watchdog?: {
     cgroupRoot?: string;
     cadenceMs?: number;
-    cooldownMs?: number;
+    clearWindowMs?: number;
     startTimer?: StartTimer;
     /** Arm the real 30 s interval even under vitest. Off by default. */
     autoStart?: boolean;
@@ -403,7 +403,13 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
     },
     ...(config.watchdog?.cgroupRoot !== undefined ? { cgroupRoot: config.watchdog.cgroupRoot } : {}),
     ...(config.watchdog?.cadenceMs !== undefined ? { cadenceMs: config.watchdog.cadenceMs } : {}),
-    ...(config.watchdog?.cooldownMs !== undefined ? { cooldownMs: config.watchdog.cooldownMs } : {}),
+    ...(config.watchdog?.clearWindowMs !== undefined
+      ? { clearWindowMs: config.watchdog.clearWindowMs }
+      : {}),
+    // So `status()` can say *switched off* rather than *no cgroup*: with the watchdog
+    // disabled nothing is ever sampled, and reporting the sampler's default would send
+    // the operator to look at the container instead of at the setting.
+    enabled: env.PANEL_WATCHDOG_ENABLED,
     ...(config.watchdog?.startTimer ? { startTimer: config.watchdog.startTimer } : {}),
   });
 
@@ -554,6 +560,7 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
     limiter,
     metrics,
     notify,
+    watchdog,
     prefix: `/${basePath}`,
   });
 

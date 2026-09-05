@@ -70,14 +70,35 @@ export function clampPercent(percent: number): number {
 }
 
 /**
- * How long one alert for a rule silences the next.
+ * How long the reading must stay at or below the clear threshold before a rule
+ * recovers.
  *
- * Hysteresis stops chatter *on the boundary*; this bounds a workload that genuinely
- * swings through the whole band. Half an hour rather than the security alerts'
- * fifteen minutes, because a resource condition is fixed by a human deleting
- * something or restarting something, and neither is a five-minute job.
+ * **This is a debounce on the recovery, not a cooldown on the alert**, and the side it
+ * is on is the whole point. M1.8 had it on the alert side, which permits this:
+ *
+ * ```
+ * t=0   crosses above  -> alert sent
+ * t=5   drops below    -> recovery sent
+ * t=10  crosses above  -> suppressed by the cooldown
+ * t=10+ stays above indefinitely
+ * ```
+ *
+ * The operator's most recent message says "recovered" while the condition is bad, and
+ * nothing ever corrects it. A duplicate message is a nuisance; that is misinformation,
+ * and it is the failure that teaches an operator to distrust the channel completely.
+ *
+ * The invariant this file now holds instead: **the most recent message the operator
+ * received always describes the current state of that rule.** One alert on entering
+ * `above`; the rule stays `above` until the reading has been at or below the clear
+ * threshold continuously for this window; then one recovery, and only then can a new
+ * alert fire. A flap produces exactly one alert and exactly one recovery.
+ *
+ * Half an hour rather than the security alerts' fifteen minutes, because a resource
+ * condition is fixed by a human deleting something or restarting something, and
+ * neither is a five-minute job — so half an hour of quiet is evidence the human
+ * finished, not evidence of a gap between two spikes.
  */
-export const ALERT_COOLDOWN_MS = 30 * 60_000;
+export const CLEAR_WINDOW_MS = 30 * 60_000;
 
 // ─── The crossing machine ────────────────────────────────────────────────────
 
@@ -90,20 +111,60 @@ export interface RuleState {
   /**
    * Whether the operator was actually **told**.
    *
-   * Distinct from `state` because the cooldown can swallow an alert, and a recovery
-   * for an alert that was never sent is a message about nothing. Every alert that went
-   * out gets a recovery; nothing else does. That is what makes silence unambiguous in
-   * both directions.
+   * Kept from M1.8 even though the alert side no longer has a throttle to swallow an
+   * alert, because a *queued* alert is not a delivered one: fifteen failed attempts
+   * over 77 minutes end in `abandoned`, and a recovery for an alert the operator never
+   * saw is a message about nothing. Every alert that went out gets a recovery; nothing
+   * else does.
    */
   readonly alerted: boolean;
+  /**
+   * When the alert was sent.
+   *
+   * **Nothing branches on this.** It was the cooldown's clock in M1.8 and it is now a
+   * record for the status block — kept because "when was I told" is a useful thing to
+   * be able to answer, and named here because a timestamp that used to gate something
+   * is exactly the field a later change would gate on again. The gate is
+   * {@link RuleState.clearingSince}, on the other side.
+   */
   readonly lastAlertAt: string | null;
+  /**
+   * When the current continuous run at or below the clear threshold began.
+   *
+   * Null means there is no run in progress: either the rule is `below` already, or it
+   * is `above` and the latest reading was still over the clear line. A reading back
+   * above the clear line sets this to null, which is the debounce reset.
+   */
+  readonly clearingSince: string | null;
 }
 
-export const BELOW: RuleState = { state: 'below', since: null, alerted: false, lastAlertAt: null };
+export const BELOW: RuleState = {
+  state: 'below',
+  since: null,
+  alerted: false,
+  lastAlertAt: null,
+  clearingSince: null,
+};
 
 export interface CrossingDecision {
   readonly next: RuleState;
+  /**
+   * What to **tell the operator**, or null for nothing.
+   *
+   * Distinct from {@link CrossingDecision.transition} because they can disagree in one
+   * direction: a rule leaving `above` whose alert was never delivered transitions and
+   * says nothing, because a "back to normal" for a message the operator never got is a
+   * message about nothing.
+   */
   readonly emit: 'alert' | 'recovery' | null;
+  /**
+   * What **happened**, or null if nothing did.
+   *
+   * The audit row follows this and not `emit`. Collapsing the two would leave the log
+   * saying a threshold was crossed and never saying it cleared — the log lying by
+   * omission, in exactly the way this file exists to prevent.
+   */
+  readonly transition: 'crossed' | 'cleared' | null;
 }
 
 /**
@@ -113,40 +174,76 @@ export interface CrossingDecision {
  * `max`, or no cgroup at all — and the machine **freezes**: no transition, no message,
  * and no bookkeeping lost. A rule that treated a missing denominator as zero would
  * report a healthy panel; one that reset the state would drop the `alerted` flag and
- * lose the recovery for an alert the operator is still holding.
+ * lose the recovery for an alert the operator is still holding. It also does **not**
+ * advance the clearing run: a rule that lost its denominator mid-run must not be
+ * counted as thirty quiet minutes.
  */
 export function evaluateCrossing(
   current: RuleState,
   fraction: number | null,
   band: Band,
   nowMs: number,
-  cooldownMs: number = ALERT_COOLDOWN_MS,
+  clearWindowMs: number = CLEAR_WINDOW_MS,
 ): CrossingDecision {
-  if (fraction === null) return { next: current, emit: null };
+  if (fraction === null) return { next: current, emit: null, transition: null };
 
   if (current.state === 'below') {
-    if (fraction < band.alert) return { next: current, emit: null };
+    if (fraction < band.alert) {
+      // Below and staying below. `clearingSince` has no meaning here; normalise it so
+      // a state left over from an earlier version of the row cannot survive.
+      return current.clearingSince === null
+        ? { next: current, emit: null, transition: null }
+        : { next: { ...current, clearingSince: null }, emit: null, transition: null };
+    }
 
-    const cooled =
-      current.lastAlertAt === null || nowMs - Date.parse(current.lastAlertAt) >= cooldownMs;
+    // Entering `above`. **No cooldown on this side, deliberately**: the rule cannot be
+    // here unless a recovery was emitted first, so a second alert without an
+    // intervening recovery is unreachable rather than suppressed.
     return {
       next: {
         state: 'above',
         since: isoFrom(nowMs),
-        alerted: cooled,
-        lastAlertAt: cooled ? isoFrom(nowMs) : current.lastAlertAt,
+        alerted: true,
+        lastAlertAt: isoFrom(nowMs),
+        clearingSince: null,
       },
-      emit: cooled ? 'alert' : null,
+      emit: 'alert',
+      transition: 'crossed',
     };
   }
 
   // Above. Still above until it is at or below the *clear* line, which is the whole
   // point of the band: one number would make 85.0 % and 84.9 % a message each.
-  if (fraction > band.clear) return { next: current, emit: null };
+  if (fraction > band.clear) {
+    // The debounce reset. A dip that comes back up starts the window again from zero,
+    // which is what makes a flap one alert and one recovery instead of a stream.
+    return current.clearingSince === null
+      ? { next: current, emit: null, transition: null }
+      : { next: { ...current, clearingSince: null }, emit: null, transition: null };
+  }
+
+  // At or below the clear line. Start the run, or see whether it is long enough.
+  if (current.clearingSince === null) {
+    return {
+      next: { ...current, clearingSince: isoFrom(nowMs) },
+      emit: null,
+      transition: null,
+    };
+  }
+  if (nowMs - Date.parse(current.clearingSince) < clearWindowMs) {
+    return { next: current, emit: null, transition: null };
+  }
 
   return {
-    next: { state: 'below', since: null, alerted: false, lastAlertAt: current.lastAlertAt },
+    next: {
+      state: 'below',
+      since: null,
+      alerted: false,
+      lastAlertAt: current.lastAlertAt,
+      clearingSince: null,
+    },
     emit: current.alerted ? 'recovery' : null,
+    transition: 'cleared',
   };
 }
 
@@ -184,10 +281,12 @@ interface StateRow {
   memory_since: string | null;
   memory_alerted: number;
   memory_last_alert_at: string | null;
+  memory_clearing_since: string | null;
   disk_state: CrossingState;
   disk_since: string | null;
   disk_alerted: number;
   disk_last_alert_at: string | null;
+  disk_clearing_since: string | null;
   oom_kills: number | null;
 }
 
@@ -213,7 +312,9 @@ export class AlertStateStore {
     const row = this.#db
       .prepare(
         `SELECT memory_state, memory_since, memory_alerted, memory_last_alert_at,
-                disk_state, disk_since, disk_alerted, disk_last_alert_at, oom_kills
+                memory_clearing_since,
+                disk_state, disk_since, disk_alerted, disk_last_alert_at,
+                disk_clearing_since, oom_kills
            FROM notification_state WHERE id = 1`,
       )
       .get() as StateRow | undefined;
@@ -225,12 +326,14 @@ export class AlertStateStore {
         since: row.memory_since,
         alerted: row.memory_alerted === 1,
         lastAlertAt: row.memory_last_alert_at,
+        clearingSince: row.memory_clearing_since,
       },
       disk: {
         state: row.disk_state,
         since: row.disk_since,
         alerted: row.disk_alerted === 1,
         lastAlertAt: row.disk_last_alert_at,
+        clearingSince: row.disk_clearing_since,
       },
       oomKills: row.oom_kills,
     };
@@ -243,7 +346,9 @@ export class AlertStateStore {
       .prepare(
         `UPDATE notification_state
             SET memory_state = ?, memory_since = ?, memory_alerted = ?, memory_last_alert_at = ?,
+                memory_clearing_since = ?,
                 disk_state = ?, disk_since = ?, disk_alerted = ?, disk_last_alert_at = ?,
+                disk_clearing_since = ?,
                 oom_kills = ?, updated_at = ?
           WHERE id = 1`,
       )
@@ -252,10 +357,12 @@ export class AlertStateStore {
         next.memory.since,
         next.memory.alerted ? 1 : 0,
         next.memory.lastAlertAt,
+        next.memory.clearingSince,
         next.disk.state,
         next.disk.since,
         next.disk.alerted ? 1 : 0,
         next.disk.lastAlertAt,
+        next.disk.clearingSince,
         next.oomKills,
         isoNow(this.#clock),
       );
@@ -268,7 +375,8 @@ function sameRule(a: RuleState, b: RuleState): boolean {
     a.state === b.state &&
     a.since === b.since &&
     a.alerted === b.alerted &&
-    a.lastAlertAt === b.lastAlertAt
+    a.lastAlertAt === b.lastAlertAt &&
+    a.clearingSince === b.clearingSince
   );
 }
 

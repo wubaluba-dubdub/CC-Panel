@@ -128,7 +128,7 @@ export interface CreateTestServerOptions {
   watchdog?: {
     cgroupRoot?: string;
     cadenceMs?: number;
-    cooldownMs?: number;
+    clearWindowMs?: number;
     startTimer?: StartTimer;
     autoStart?: boolean;
   };

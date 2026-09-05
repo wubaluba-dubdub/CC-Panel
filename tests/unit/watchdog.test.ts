@@ -95,7 +95,7 @@ function build(opts: {
   diskReader?: (dataDir: string) => DiskReading;
   memoryPercent?: number;
   diskPercent?: number;
-  cooldownMs?: number;
+  clearWindowMs?: number;
   cadenceMs?: number;
   startTimer?: StartTimer;
 }): Watchdog {
@@ -178,17 +178,66 @@ describe('the memory rule', () => {
     expect(events('resource_alert')).toHaveLength(1);
     expect(watchdog.status().memory.state).toBe('above');
 
-    // Below the clear threshold: the recovery, carrying how long it was above.
+    // Below the clear threshold. **Not yet a recovery**: the reading has to stay there for
+    // the clear window, which is what stops the operator's last message from being a
+    // "recovered" that a re-crossing five minutes later would silently contradict.
     setMemory(dir, Math.round(0.6 * GIB));
     clock.advance(30_000);
     watchdog.tick();
+    expect(events('resource_alert')).toHaveLength(1);
+    expect(watchdog.status().memory.state).toBe('above');
+    expect(watchdog.status().memory.clearingSince).not.toBeNull();
+
+    // Sixty more ticks — half an hour — with the reading still low. Now it recovers, once.
+    for (let i = 0; i < 60; i += 1) {
+      clock.advance(30_000);
+      watchdog.tick();
+    }
     const both = events<{ state: string; aboveForSeconds: number | null }>('resource_alert');
     expect(both).toHaveLength(2);
     expect(both[1]!.state).toBe('cleared');
-    // Crossed on the first tick after the memory was raised (t = 30 s) and cleared at
-    // t = 660 s, so twenty-one cadences above the threshold.
-    expect(both[1]!.aboveForSeconds).toBe(21 * 30);
+    // Crossed on the first tick after the memory was raised (t = 30 s); the reading went
+    // below the clear line at t = 660 s and the window elapsed at t = 2460 s, so the rule
+    // was `above` for 2430 s. The duration is measured from the crossing and not from the
+    // dip, deliberately: that is how long the condition actually held.
+    expect(both[1]!.aboveForSeconds).toBe(2430);
     expect(auditEvents()).toContain(AuditEvent.ResourceThresholdCleared);
+    expect(watchdog.status().memory.state).toBe('below');
+    expect(watchdog.status().memory.clearingSince).toBeNull();
+    expect(watchdog.status().memory.alertedAt).toBeNull();
+  });
+
+  it('does not recover after a dip that comes back up, and never says it did', () => {
+    // The M1.8 sequence, end to end through the real watcher: cross, drop, cross back
+    // inside the clear window, then stay high. The old machine sent a recovery on the drop
+    // and suppressed the re-crossing with its cooldown, leaving "back to normal" as the
+    // operator's most recent message about a rule that was above and staying there.
+    const dir = container(Math.round(0.91 * GIB));
+    const watchdog = build({ cgroupRoot: dir });
+    watchdog.tick();
+    expect(events<{ state: string }>('resource_alert').map((e) => e.state)).toEqual(['above']);
+
+    // Ten minutes below the clear line — a third of the window, no recovery.
+    setMemory(dir, Math.round(0.4 * GIB));
+    for (let i = 0; i < 20; i += 1) {
+      clock.advance(30_000);
+      watchdog.tick();
+    }
+    expect(events('resource_alert')).toHaveLength(1);
+
+    // Back over the threshold, and held there for an hour.
+    setMemory(dir, Math.round(0.95 * GIB));
+    for (let i = 0; i < 120; i += 1) {
+      clock.advance(30_000);
+      watchdog.tick();
+    }
+
+    // Exactly one message in the whole sequence, and it is the alert.
+    const messages = events<{ state: string }>('resource_alert');
+    expect(messages.map((e) => e.state)).toEqual(['above']);
+    expect(watchdog.status().memory.state).toBe('above');
+    expect(watchdog.status().memory.clearingSince).toBeNull();
+    expect(watchdog.status().memory.alertedAt).not.toBeNull();
   });
 
   it('survives a restart mid-crossing without re-alerting, because the state is on the volume', () => {
@@ -263,6 +312,55 @@ describe('the disk rule', () => {
   });
 });
 
+describe('an alert that was never delivered', () => {
+  it('clears in silence, because a recovery for it would be a message about nothing', () => {
+    // `alerted` is what keeps *silence* unambiguous, and since M2.1 the crossing machine
+    // always sets it on entering `above` — there is no cooldown left to swallow an alert.
+    // The one thing that can still go wrong is delivery: a full queue refuses the newest
+    // event. The operator then has no record of the alert, so a "back to normal" would be
+    // a message about something they never saw.
+    const dir = container(Math.round(0.95 * GIB));
+    // A queue with room for one row, and that row spent before the watchdog runs. The cap
+    // is floored at 1 by `NotifyService`, so "full" has to be arranged rather than
+    // configured to zero. `notify()` then returns `{queued: null}`, counts the drop and
+    // audits it — and the watchdog reads the return value rather than assuming it worked.
+    const full = new NotifyService({
+      transport: new SilentTransport(),
+      audit,
+      clock,
+      maxPending: 1,
+    });
+    expect(full.notify({ kind: 'test', at: '2026-01-01T00:00:00.000Z' }).queued).not.toBeNull();
+    const watchdog = new Watchdog({
+      dataDir,
+      notify: full,
+      audit,
+      clock,
+      cgroupRoot: dir,
+      diskReader: volumeAt(0.1),
+    });
+
+    watchdog.tick();
+    // The audit row is written whatever the queue does — the log is the authority.
+    expect(auditEvents()).toContain(AuditEvent.ResourceThresholdCrossed);
+    expect(queued().filter((row) => row.kind === 'resource_alert')).toHaveLength(0);
+    // And the rule records that the operator was *not* told.
+    expect(watchdog.status().memory.state).toBe('above');
+    expect(watchdog.status().memory.alertedAt).toBeNull();
+
+    // Now let the condition end, for well over the clear window. No recovery is sent.
+    setMemory(dir, Math.round(0.4 * GIB));
+    for (let i = 0; i < 80; i += 1) {
+      clock.advance(30_000);
+      watchdog.tick();
+    }
+    expect(watchdog.status().memory.state).toBe('below');
+    expect(queued().filter((row) => row.kind === 'resource_alert')).toHaveLength(0);
+    // The clearing is still recorded in the log, which is where "what happened" lives.
+    expect(auditEvents()).toContain(AuditEvent.ResourceThresholdCleared);
+  });
+});
+
 describe('OOM kills', () => {
   it('adopts the counter on the first sample and reports every increase after it', () => {
     const dir = container(0.5 * GIB, { oomKill: 4 });
@@ -272,7 +370,7 @@ describe('OOM kills', () => {
     // happened before this process, possibly before this build.
     watchdog.tick();
     expect(queued()).toHaveLength(0);
-    expect(watchdog.status().oomKills).toBe(4);
+    expect(watchdog.status().oom.kills).toBe(4);
 
     // Two more processes killed. `oom_kill` counts processes, so this is one message
     // saying two — which is exactly the concurrency policy's scenario of several agents
@@ -314,7 +412,7 @@ describe('OOM kills', () => {
     clock.advance(30_000);
     watchdog.tick();
     expect(events('oom_kill')).toHaveLength(0);
-    expect(watchdog.status().oomKills).toBe(0);
+    expect(watchdog.status().oom.kills).toBe(0);
 
     // And the next real kill in the new cgroup is reported against the new baseline.
     setOomKills(dir, 1);
@@ -330,7 +428,7 @@ describe('OOM kills', () => {
     clock.advance(30_000);
     watchdog.tick();
     expect(events('oom_kill')).toHaveLength(0);
-    expect(watchdog.status().oomKills).toBeNull();
+    expect(watchdog.status().oom.kills).toBeNull();
   });
 });
 
