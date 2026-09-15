@@ -1,11 +1,50 @@
-import { describe, expect, it } from 'vitest';
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ensureDataLayout } from '../../src/server/app.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
-const read = (name: string): string => readFileSync(join(ROOT, name), 'utf-8');
+
+/**
+ * Lazy, memoized, and called only from inside `it`/`beforeAll` — never at module scope.
+ * The eager form turned a deleted artifact into an ENOENT at import time that aborted
+ * this whole file, all 32 of its assertions, before a single test was registered; the
+ * nine days that followed are why this comment exists. The memoization also makes the
+ * artifacts that several describes read (`package.json`, `.dockerignore`) one disk read
+ * per file per run.
+ */
+const cache = new Map<string, string>();
+const read = (name: string): string => {
+  const hit = cache.get(name);
+  if (hit !== undefined) return hit;
+  const text = readFileSync(join(ROOT, name), 'utf-8');
+  cache.set(name, text);
+  return text;
+};
+
+/**
+ * Every artifact this file asserts against, in one place. The test below is the one
+ * whose absence let a deleted file masquerade as a crash: it fails *naming* the missing
+ * artifacts, so a deletion reads as a failing assertion instead of an ENOENT stack trace
+ * that silences every other describe in the file.
+ */
+const ARTIFACTS = [
+  'entrypoint.sh',
+  'Dockerfile',
+  '.dockerignore',
+  '.gitattributes',
+  '.railway/railway.ts',
+  'docs/DEPLOY.md',
+  'package.json',
+  'src/server/env.ts',
+  'src/server/utils/privileges.ts',
+] as const;
+
+it('every deploy artifact asserted in this file exists', () => {
+  const missing = ARTIFACTS.filter((name) => !existsSync(join(ROOT, name)));
+  expect(missing, `missing deploy artifacts: ${missing.join(', ')}`).toEqual([]);
+});
 
 /**
  * The same rule the other static scans in this suite use: prose about a policy is the
@@ -36,8 +75,13 @@ const codeOnly = (text: string): string =>
  */
 
 describe('entrypoint.sh', () => {
-  const entrypoint = read('entrypoint.sh');
-  const code = codeOnly(entrypoint);
+  let entrypoint = '';
+  let code = '';
+
+  beforeAll(() => {
+    entrypoint = read('entrypoint.sh');
+    code = codeOnly(entrypoint);
+  });
 
   it('contains no CR bytes', () => {
     // The fault this whole line-endings exercise exists for. A CRLF shebang makes the
@@ -160,7 +204,11 @@ describe('entrypoint.sh', () => {
 });
 
 describe('Dockerfile', () => {
-  const dockerfile = read('Dockerfile');
+  let dockerfile = '';
+
+  beforeAll(() => {
+    dockerfile = read('Dockerfile');
+  });
 
   it('uses the same base image in both stages', () => {
     // better-sqlite3 is compiled in the builder against that image's glibc, libstdc++
@@ -260,8 +308,11 @@ describe('Dockerfile', () => {
 });
 
 describe('.dockerignore', () => {
-  const ignore = read('.dockerignore');
-  const lines = ignore.split('\n').map((l) => l.trim());
+  let lines: string[] = [];
+
+  beforeAll(() => {
+    lines = read('.dockerignore').split('\n').map((l) => l.trim());
+  });
 
   it('excludes every kind of local state and secret', () => {
     for (const pattern of ['.env', '.env.*', '.localdata', '.localdate', '*.db', 'data']) {
@@ -285,7 +336,11 @@ describe('.dockerignore', () => {
 });
 
 describe('.gitattributes', () => {
-  const attributes = read('.gitattributes');
+  let attributes = '';
+
+  beforeAll(() => {
+    attributes = read('.gitattributes');
+  });
 
   it('pins LF for shell scripts, the Dockerfile and the entrypoint', () => {
     expect(attributes).toMatch(/^\*\.sh\s+text eol=lf$/m);
@@ -302,27 +357,54 @@ describe('.gitattributes', () => {
   });
 });
 
-describe('railway.json', () => {
-  const config = JSON.parse(read('railway.json')) as {
-    build: { builder: string };
-    deploy: { healthcheckPath: string; numReplicas: number; restartPolicyType: string };
-  };
+describe('.railway/railway.ts', () => {
+  // Read as text on purpose: this file's first line imports `railway/iac`, so importing
+  // it here would pull the Railway SDK into the test run. The literals below are the
+  // values production is pinned to, and each regex is anchored to the field it names.
+  let iac = '';
+
+  beforeAll(() => {
+    iac = read('.railway/railway.ts');
+  });
 
   it('builds from the Dockerfile rather than a detected buildpack', () => {
-    expect(config.build.builder).toBe('DOCKERFILE');
+    // railway.json declared `builder: DOCKERFILE`; when it was deleted the declaration
+    // had to move here rather than vanish, or every deploy was one auto-detection away
+    // from Nixpacks.
+    expect(iac).toMatch(/build:\s*\{\s*builder:\s*"DOCKERFILE"\s*\}/);
   });
 
   it('points the healthcheck at /healthz', () => {
     // Railway polls this until it returns 200 and only then makes the deployment live.
     // A wrong path means every deploy waits out the timeout and then fails.
-    expect(config.deploy.healthcheckPath).toBe('/healthz');
+    expect(iac).toMatch(/healthcheck:\s*"\/healthz"/);
   });
 
-  it('pins one replica, because two would open the same SQLite file', () => {
+  it('waits 120 seconds for that healthcheck', () => {
+    expect(iac).toMatch(/healthcheckTimeout:\s*120/);
+  });
+
+  it('pins a total of exactly one replica across all regions', () => {
     // Not a scaling preference. `panel.db` is a single file on a single volume with
     // WAL; a second replica is a second writer, and Railway volumes attach to one
-    // service instance anyway.
-    expect(config.deploy.numReplicas).toBe(1);
+    // service instance anyway. The *sum* over regions is asserted, not the presence of
+    // one region key, because `replicas` accepts a per-region map: two regions with a
+    // copy each would pass a presence check and still be two writers.
+    const block = /replicas:\s*\{([^}]*)\}/.exec(iac);
+    expect(block, 'no per-region replicas map found').not.toBeNull();
+    const counts = [...block![1]!.matchAll(/:\s*(\d+)/g)].map((m) => Number(m[1]));
+    expect(counts, 'the replicas map lists no regions').not.toEqual([]);
+    expect(counts.reduce((a, b) => a + b, 0)).toBe(1);
+  });
+
+  it('pins the deployed source to a full 40-hex-character commit', () => {
+    const sha = /commitSha:\s*"([0-9a-f]+)"/.exec(iac);
+    expect(sha, 'no commitSha pin found').not.toBeNull();
+    expect(sha![1]).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it('deploys the master branch', () => {
+    expect(iac).toMatch(/branch:\s*"master"/);
   });
 });
 
@@ -335,13 +417,17 @@ describe('railway.json', () => {
  * a reason the runbook itself caused, so the two lists are compared instead of trusted.
  */
 describe('docs/DEPLOY.md', () => {
-  const runbook = read('docs/DEPLOY.md');
-  const env = read('src/server/env.ts');
-
+  let runbook = '';
   /** Every `PANEL_*` / `RAILWAY_*` name the env schema actually reads. */
-  const declared = new Set(
-    [...env.matchAll(/^\s{2}(PANEL_[A-Z_]+|RAILWAY_[A-Z_]+):/gm)].map((m) => m[1]!),
-  );
+  let declared = new Set<string>();
+
+  beforeAll(() => {
+    runbook = read('docs/DEPLOY.md');
+    const env = read('src/server/env.ts');
+    declared = new Set(
+      [...env.matchAll(/^\s{2}(PANEL_[A-Z_]+|RAILWAY_[A-Z_]+):/gm)].map((m) => m[1]!),
+    );
+  });
 
   it('documents every variable the server reads', () => {
     expect(declared.size).toBeGreaterThan(5);
