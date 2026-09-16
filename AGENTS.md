@@ -16,7 +16,7 @@ are documented with reasons. Do not "modernise", "clean up", or "improve" them.
   unilaterally change it. The operator decides.
 - Terminal output is the source of truth. Never report success without it.
 - Before claiming any task complete, all three must pass:
-  `npm run typecheck && npm test && npx eslint .`
+  `npm run typecheck && npm test && npm run lint`
 - `npm test` must print `RUN v4.x`. Anything else means the wrong vitest.
 - `npm audit --omit=dev` must report 0 vulnerabilities. Non-zero is a build
   failure, not a warning.
@@ -35,6 +35,8 @@ are documented with reasons. Do not "modernise", "clean up", or "improve" them.
 - Server build is `tsc -p tsconfig.build.json`. Two tsconfigs: server has node
   types and no DOM, client has DOM and cannot reach `node:fs`.
   `npm run typecheck` runs both.
+- Deployment configuration lives in `.railway/railway.ts`; `railway.json` no
+  longer exists.
 
 ## Hard constraints (each is enforced by a test — expect a red suite)
 
@@ -110,7 +112,9 @@ Do not bump these without reading the reason first.
 - `005_lockout.sql` is left as written; `007_auth.sql` drops the table. There is
   no lockout. Do not resurrect it.
 - Tables: `users`, `sessions`, `audit_log`, `audit_chain`, `secrets`,
-  `auth_failures`, `recovery_codes`, `notification_queue`, `notification_state`.
+  `auth_failures`, `recovery_codes`, `notification_queue`, `notification_state`,
+  `schema_migrations`. `sqlite_sequence` also appears; it is SQLite's own
+  AUTOINCREMENT bookkeeping table, not schema drift.
 - Never edit a migration that has shipped. Add a new one.
 
 ## Naming

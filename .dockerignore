@@ -64,7 +64,7 @@ Thumbs.db
 docs
 .github
 Dockerfile.dev
-railway.json
+.railway
 
 # scripts/ is NOT ignored: the build runs scripts/copy-assets.mjs, which is what puts
 # the .sql migrations into dist. It is copied into the builder stage only and never

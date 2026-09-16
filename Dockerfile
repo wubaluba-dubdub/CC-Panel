@@ -104,7 +104,7 @@ ENV HOME=/data/home \
 EXPOSE 8080
 
 # For local `docker run`, where nothing else is watching. Railway uses its own
-# configured healthcheck (railway.json / the service settings) and ignores this one,
+# configured healthcheck (.railway/railway.ts / the service settings) and ignores this one,
 # so this exists so that `docker ps` says something true — see docs/DEPLOY.md.
 #
 # Uses PORT rather than a literal so overriding the port does not silently disable the

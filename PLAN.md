@@ -11,7 +11,8 @@ build is `tsc -p tsconfig.build.json` and there is no client to bundle until M2)
 (no per-IP logic, no lockout), and the M1.4/M1.5 entries list the files that were
 added instead. M1.6 added the deployment artefacts this tree never listed
 (`entrypoint.sh`, `.gitattributes`, `src/server/cli/*`, `docs/DEPLOY.md`) alongside
-the `Dockerfile` and `railway.json` it did. M1.7's files are listed in its own
+the `Dockerfile` and `railway.json` it did — `railway.json` was later replaced by
+`.railway/railway.ts` (2ff32ea, Infrastructure as Code). M1.7's files are listed in its own
 design section below, and M1.8's under §*Built in M1.8*
 (`services/watchdog.service.ts`, `services/resource-alerts.ts`,
 `migrations/010_watchdog.sql`, `tests/unit/resource-alerts.test.ts`,
@@ -24,7 +25,7 @@ design section below, and M1.8's under §*Built in M1.8*
 ├── README.md
 ├── docs/
 │   └── SECURITY.md
-├── railway.json
+├── railway.json  (deleted in 2ff32ea; Railway config now lives in .railway/railway.ts)
 ├── Dockerfile
 ├── .dockerignore
 ├── package.json
@@ -2392,7 +2393,7 @@ requirement that section exists for.
 
 ### Post-M2
 - Write `docs/SECURITY.md` mapping table.
-- Write `Dockerfile` + `railway.json` + `README.md` env-var section.
+- Write `Dockerfile` + `.railway/railway.ts` + `README.md` env-var section.
 - Final verification against all 11 acceptance criteria.
 - Update `CLAUDE.md` with Phase 1 decisions and Phase 2 handoff notes.
 - **Commit:** `docs: phase 1 completion and deployment artifacts`

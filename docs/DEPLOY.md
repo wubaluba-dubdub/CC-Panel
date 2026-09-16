@@ -23,7 +23,7 @@ Three things about this panel that shape everything below:
 1. **It stores its whole state in one SQLite file on one volume.** There is no external
    database. That makes it cheap and makes backups a single file — and it means the
    service runs as exactly **one replica**, because two replicas would be two writers on
-   one file. `railway.json` pins `numReplicas: 1`; do not raise it.
+   one file. `.railway/railway.ts` pins the total replica count at 1; do not raise it.
 2. **`PANEL_MASTER_KEY` is permanent.** Every stored secret is encrypted under a key
    derived from it, and every audit-log row is signed with another. There is no rotation
    procedure. Losing it means losing the encrypted secrets and the ability to verify the
@@ -133,10 +133,11 @@ source map did.
 
 1. Railway dashboard → **New Project** → **Deploy from GitHub repo**.
 2. Authorise Railway for the repository if it asks, and pick `cc-panel`.
-3. Railway will detect `railway.json` and build from the `Dockerfile`. It will also start
-   a first deployment **immediately, and that deployment will fail** — there are no
-   variables yet, so the panel refuses to boot. That is correct behaviour, not a problem
-   to fix; it will succeed once step 6 is done.
+3. Railway will build from the `Dockerfile` — `.railway/railway.ts` pins that builder,
+   and `railway config plan` then `railway config apply` apply that file. It will also
+   start a first deployment **immediately, and that deployment will fail** — there are
+   no variables yet, so the panel refuses to boot. That is correct behaviour, not a
+   problem to fix; it will succeed once step 6 is done.
 
 Do not add a second service. One service, one volume, one replica.
 
@@ -268,10 +269,11 @@ than one that did not start.
 
 ## 8. Set the healthcheck path
 
-`railway.json` already sets it:
+`.railway/railway.ts` already sets it:
 
-```json
-"deploy": { "healthcheckPath": "/healthz", "healthcheckTimeout": 120 }
+```txt
+healthcheck: "/healthz",
+healthcheckTimeout: 120,
 ```
 
 If your service's dashboard settings override the file, set **Settings → Deploy →
