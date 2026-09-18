@@ -138,6 +138,12 @@ source map did.
    variables yet, so the panel refuses to boot. That is correct behaviour, not a problem
    to fix; it will succeed once step 6 is done.
 
+4. **Verify the build source.** Railway auto-detects the Dockerfile from the repository root,
+   but this is a platform behaviour, not an IaC property — `.railway/railway.ts` has no
+   explicit `builder` or `dockerfile` field. Check **Settings → Deploy → Build Source** to
+   confirm it says `Dockerfile`. If it says something else (e.g. Nixpacks), set it to
+   `Dockerfile` manually.
+
 Do not add a second service. One service, one volume, one replica.
 
 ---

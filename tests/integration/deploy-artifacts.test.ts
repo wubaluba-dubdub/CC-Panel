@@ -306,27 +306,33 @@ describe('Railway IaC (.railway/railway.ts)', () => {
   const iac = read('.railway/railway.ts');
 
   it('points the healthcheck at /healthz', () => {
-    // Railway polls this until it returns 200 and only then makes the deployment live.
-    // A wrong path means every deploy waits out the timeout and then fails.
+    // Sees: the literal `healthcheck: "/healthz"` property in .railway/railway.ts (line 7).
+    // Does not see: whether the Railway dashboard overrides this value, or whether the
+    // Dockerfile HEALTHCHECK (used only by local `docker run`) matches.
     const match = /healthcheck:\s*"([^"]+)"/.exec(iac);
     expect(match, 'healthcheck property not found in .railway/railway.ts').not.toBeNull();
     expect(match![1]).toBe('/healthz');
   });
 
   it('pins one replica, because two would open the same SQLite file', () => {
-    // Not a scaling preference. `panel.db` is a single file on a single volume with
-    // WAL; a second replica is a second writer, and Railway volumes attach to one
-    // service instance anyway.
+    // Sees: the literal `replicas: { "ams": 1 }` property in .railway/railway.ts (line 9).
+    // Does not see: whether the Railway dashboard overrides this value, or whether a
+    // future IaC change adds a second region key. The regex captures the first numeric
+    // value after `replicas:`, which is the replica count for the primary region.
     const match = /replicas:\s*\{[^}]*:\s*(\d+)/.exec(iac);
     expect(match, 'replicas property not found in .railway/railway.ts').not.toBeNull();
     expect(Number(match![1])).toBe(1);
   });
 
-  it('has a Dockerfile in the repository root (the builder source)', () => {
-    // The IaC file's source: github(...) implies Railway builds from the Dockerfile.
-    // The Dockerfile must exist for that to work.
-    expect(() => read('Dockerfile')).not.toThrow();
-  });
+  // What this describe block sees: the healthcheck path and replica count declared in
+  // .railway/railway.ts. These are explicit properties Railway reads from the IaC file.
+  //
+  // What it does NOT see: the builder source. .railway/railway.ts uses github(...) as
+  // the source, which means Railway auto-detects the Dockerfile — there is no explicit
+  // builder or dockerfile property in the IaC file. The Dockerfile's existence is a
+  // precondition for a successful deploy, not a Railway-configured fact, so asserting
+  // it here would claim more than the file proves. The operator must verify the build
+  // source in the Railway dashboard (see docs/DEPLOY.md §4).
 });
 
 /**
