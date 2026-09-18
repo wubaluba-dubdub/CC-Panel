@@ -302,27 +302,30 @@ describe('.gitattributes', () => {
   });
 });
 
-describe('railway.json', () => {
-  const config = JSON.parse(read('railway.json')) as {
-    build: { builder: string };
-    deploy: { healthcheckPath: string; numReplicas: number; restartPolicyType: string };
-  };
-
-  it('builds from the Dockerfile rather than a detected buildpack', () => {
-    expect(config.build.builder).toBe('DOCKERFILE');
-  });
+describe('Railway IaC (.railway/railway.ts)', () => {
+  const iac = read('.railway/railway.ts');
 
   it('points the healthcheck at /healthz', () => {
     // Railway polls this until it returns 200 and only then makes the deployment live.
     // A wrong path means every deploy waits out the timeout and then fails.
-    expect(config.deploy.healthcheckPath).toBe('/healthz');
+    const match = /healthcheck:\s*"([^"]+)"/.exec(iac);
+    expect(match, 'healthcheck property not found in .railway/railway.ts').not.toBeNull();
+    expect(match![1]).toBe('/healthz');
   });
 
   it('pins one replica, because two would open the same SQLite file', () => {
     // Not a scaling preference. `panel.db` is a single file on a single volume with
     // WAL; a second replica is a second writer, and Railway volumes attach to one
     // service instance anyway.
-    expect(config.deploy.numReplicas).toBe(1);
+    const match = /replicas:\s*\{[^}]*:\s*(\d+)/.exec(iac);
+    expect(match, 'replicas property not found in .railway/railway.ts').not.toBeNull();
+    expect(Number(match![1])).toBe(1);
+  });
+
+  it('has a Dockerfile in the repository root (the builder source)', () => {
+    // The IaC file's source: github(...) implies Railway builds from the Dockerfile.
+    // The Dockerfile must exist for that to work.
+    expect(() => read('Dockerfile')).not.toThrow();
   });
 });
 
