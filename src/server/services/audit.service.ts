@@ -4,12 +4,18 @@ import { getDb } from '../db.js';
 import { KeyPurpose, SecretString, deriveSubkey } from '../crypto.js';
 import { containsRedactableSecret, createBasePathElider } from '../plugins/logger-redaction.js';
 import { type Clock, isoNow, systemClock } from '../utils/clock.js';
+import type { AuditEventName, AuditOutcome } from '../../shared/types.js';
 
 /**
  * The audit event vocabulary.
  *
  * Fixed strings, not free text, so a query in M1.5 can filter on them and a typo
  * cannot invent a new event type that nothing knows how to display.
+ *
+ * The canonical source is `src/shared/types.ts`. These values re-export it so
+ * server code can use `AuditEvent.LoginSuccess` as a const rather than a string
+ * literal, and `notification-rules.ts` takes its exhaustiveness from the shared
+ * `AuditEventName` via `satisfies Record<AuditEventName, …>`.
  */
 export const AuditEvent = {
   SetupCompleted: 'setup.completed',
@@ -28,96 +34,19 @@ export const AuditEvent = {
   SecretRevealed: 'secret.revealed',
   SecretChanged: 'secret.changed',
   BasePathRegenerated: 'base_path.regenerated',
-  /**
-   * Written by retention, immediately before it deletes anything, so the deletion
-   * is itself part of the record. A gap in the ids with no checkpoint row above it
-   * is evidence of tampering rather than housekeeping.
-   */
   AuditTrimmed: 'audit.trimmed',
-  /**
-   * A state-changing request carrying a session cookie was admitted with **no**
-   * `Origin` header at all.
-   *
-   * Not a rejection and not an error: the admission is deliberate, because a browser
-   * attaches `Origin` to every mutating request and every WebSocket handshake, so an
-   * absent header means a non-browser client. But in production it should never
-   * happen, and an event that should never happen is exactly the kind that must not
-   * be silent. Written by `createOriginAbsenceAuditor` in `plugins/origin-check.ts`,
-   * throttled, and carrying the path and method — never the cookie.
-   */
   OriginAbsentAdmitted: 'origin.absent_admitted',
-  /**
-   * A queued notification reached its destination. Records the queue row, the kind and
-   * how many attempts it took — **never the message body**, which is a rendered event
-   * and would put in the audit log exactly what the queue table already holds.
-   */
   NotificationSent: 'notification.sent',
-  /**
-   * A queued notification was given up on after the attempt cap.
-   *
-   * The row stays in `notification_queue` as well: "the panel tried to tell you and
-   * could not" is itself information, and the queue is the only place it exists.
-   */
   NotificationAbandoned: 'notification.abandoned',
-  /**
-   * The queue was at its cap and an event was refused.
-   *
-   * Written once per fill, not once per refusal — a flood that fills the queue would
-   * otherwise flood the audit log behind it, and the audit log is the thing that must
-   * still be working when everything else is not.
-   */
   NotificationDropped: 'notification.dropped',
-  /**
-   * A resource crossed its alert threshold, or came back below the clear threshold.
-   *
-   * Written by the watchdog, on the **crossing** and not on the level, so a volume
-   * that has been 92 % full for a week is one row and not one every thirty seconds.
-   * The pair matters: a log that recorded the crossing and never the return leaves a
-   * reader with the same ambiguous silence the notification design exists to avoid.
-   */
   ResourceThresholdCrossed: 'resource.threshold_crossed',
   ResourceThresholdCleared: 'resource.threshold_cleared',
-  /**
-   * The cgroup's `oom_kill` counter went up: something in this container was killed
-   * for memory.
-   *
-   * Almost always a **child** — an agent, a build, a git subprocess — because a kill
-   * that takes the panel cannot be recorded by the panel. That case appears in the
-   * log as {@link AuditEvent.UncleanRestart} on the next boot instead.
-   */
   ResourceOomKill: 'resource.oom_kill',
-  /**
-   * The previous run left its marker behind, so it was not given the chance to shut
-   * down or did not take it.
-   *
-   * Deliberately not called a crash. A container killed for memory, a platform
-   * redeploy whose graceful shutdown overran the grace period, and a genuine crash
-   * are the same evidence from in here — a marker that is still there.
-   */
   UncleanRestart: 'panel.unclean_restart',
-} as const;
+} as const satisfies Record<string, AuditEventName>;
 
-export type AuditEventName = (typeof AuditEvent)[keyof typeof AuditEvent];
-
-export type AuditOutcome = 'success' | 'failure';
-
-/**
- * Why a login failed, as a category.
- *
- * Never the attempted username, never the attempted password, never which of the
- * two was wrong at a level of detail the response does not already reveal. The
- * operator needs to know "someone is guessing"; they do not need the guesses.
- */
-export const FailureReason = {
-  BadCredentials: 'bad_credentials',
-  BadTotpCode: 'bad_totp_code',
-  BadRecoveryCode: 'bad_recovery_code',
-  ReplayedTotpCode: 'replayed_totp_code',
-  NoPendingLogin: 'no_pending_login',
-  TwoFactorNotEnrolled: 'two_factor_not_enrolled',
-} as const;
-
-export type FailureReasonName = (typeof FailureReason)[keyof typeof FailureReason];
+export type { AuditEventName, AuditOutcome } from '../../shared/types.js';
+export { FailureReason, type FailureReasonName } from '../../shared/types.js';
 
 /** Only primitives. An object value is how a `SecretString` sneaks in nested. */
 export type AuditMetaValue = string | number | boolean | null;
@@ -134,7 +63,7 @@ export interface AuditEntry {
 export interface AuditRecord {
   id: number;
   ts: string;
-  event: string;
+  event: AuditEventName;
   actorIp: string | null;
   userAgent: string | null;
   outcome: string;
@@ -692,7 +621,7 @@ export class AuditService {
     return {
       id: row.id,
       ts: row.ts,
-      event: row.event,
+      event: row.event as AuditEventName,
       actorIp: row.actor_ip,
       userAgent: row.user_agent,
       outcome: row.outcome,

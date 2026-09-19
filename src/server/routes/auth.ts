@@ -7,6 +7,7 @@ import {
   requireFullSession,
   requireLevel,
 } from '../plugins/auth.js';
+import { BUILD_IDENTITY } from '../utils/build-info.js';
 import { clientIpForDisplay, userAgentForDisplay } from '../utils/client-ip.js';
 import { codeBody, loginBody, parseBody, stepUpBody } from '../utils/zod-schemas.js';
 import {
@@ -343,6 +344,7 @@ export default async function authRoutes(
       // is a stored answer to override it with.
       locale: user.locale,
       session: toSessionSummary(session, session.id),
+      buildId: BUILD_IDENTITY.buildId,
     };
     return response;
   });

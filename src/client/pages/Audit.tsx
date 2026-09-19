@@ -7,7 +7,9 @@ import { useLocale } from '../i18n/index.js';
 import { api } from '../lib/api.js';
 import { META_INLINE_PAIRS, metaPairs, rawMeta, type MetaPair } from '../lib/meta.js';
 import { AUDIT_TABLE, type AuditColumnKey } from '../lib/table.js';
-import type { AuditEntryView, AuditPageResponse, AuditVerifyResponse } from '../../shared/types.js';
+import { browserLabel, summariseClient } from '../lib/user-agent.js';
+import type { AuditEntryView, AuditPageResponse, AuditVerifyResponse, AuditEventName } from '../../shared/types.js';
+import { AUDIT_EVENTS } from '../../shared/types.js';
 
 /**
  * The audit log, and the one question it exists to answer.
@@ -81,12 +83,14 @@ export function Audit(): React.JSX.Element {
     }
   };
 
-  /** The events actually present, so the filter cannot offer one that returns nothing. */
-  const events = [...new Set(entries.map((entry) => entry.event))].sort();
+  /** The full closed set, not just the events present on the current page. */
+  const events: readonly AuditEventName[] = AUDIT_EVENTS;
 
   const rows: DataRow<AuditColumnKey>[] = entries.map((entry) => {
     const pairs = metaPairs(entry.meta);
     const raw = rawMeta(entry.meta);
+    const client = summariseClient(entry.userAgent);
+    const clientLabel = browserLabel(client);
     return {
       id: entry.id,
       cells: {
@@ -111,11 +115,17 @@ export function Audit(): React.JSX.Element {
           </>
         ),
       },
-      ...(pairs.length === 0
+      ...(pairs.length === 0 && clientLabel === null
         ? {}
         : {
             detail: (
               <>
+                {clientLabel !== null ? (
+                  <p className="hint">
+                    <Mono>{t('audit.client')}</Mono> {clientLabel}
+                    {client.platform !== 'Unknown' ? ` (${client.platform})` : ''}
+                  </p>
+                ) : null}
                 {pairs.length > META_INLINE_PAIRS ? (
                   <Pairs pairs={pairs.slice(META_INLINE_PAIRS)} />
                 ) : null}

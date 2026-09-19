@@ -103,8 +103,8 @@ design section below, and M1.8's under §*Built in M1.8*
 │   │   │   ├── Security.tsx
 │   │   │   └── AuditLog.tsx
 │   │   └── styles/
-│   │       ├── globals.css       # tailwind v4 directives, theme tokens, animations
-│   │       └── fonts.css         # self-hosted Inter + JetBrains Mono @font-face
+│   │       ├── globals.css       # plain CSS reset and base styles (supersedes tailwind plan)
+│   │       └── fonts.css         # self-hosted Vazirmatn + JetBrains Mono @font-face
 │   └── shared/
 │       └── types.ts              # API contract types shared between server/client
 ├── tests/
@@ -128,7 +128,7 @@ design section below, and M1.8's under §*Built in M1.8*
 │       ├── rate-limit.test.ts
 │       └── secret-leak.test.ts   # sentinel secret sweep
 └── scripts/
-    └── generate-fonts.sh         # downloads Inter + JetBrains Mono woff2
+    └── fonts.mjs                 # downloads Vazirmatn + JetBrains Mono woff2 (supersedes generate-fonts.sh)
 ```
 
 ## Dependencies
@@ -149,8 +149,7 @@ design section below, and M1.8's under §*Built in M1.8*
 - `typescript` ^5.7
 - `vite` ^6
 - `@vitejs/plugin-react`
-- `tailwindcss` ^4
-- `@tailwindcss/vite`
+- (tailwindcss and @tailwindcss/vite removed in M2.1.1 — plain CSS used instead)
 - `vitest` ^4
 - `supertest`
 - `@types/better-sqlite3`
@@ -1875,8 +1874,8 @@ shape.
 The eight items as they always were, plus R3 built in from the first line rather than
 retrofitted:
 
-1. Tailwind v4 theme: colors, spacing, font stacks, animation keyframes in
-   `globals.css`. Self-host fonts via `fonts.css`.
+1. Plain CSS design tokens in `globals.css` (supersedes original Tailwind v4 plan).
+   Self-host Vazirmatn + JetBrains Mono via `fonts.css`.
 2. Primitive components: Button, Input, Card, Dialog, Skeleton, Tooltip, Badge,
    Layout. All keyboard-accessible, focus-visible rings, ARIA.
 3. Client lib: api fetch wrapper (CSRF token, base path), auth context, toast

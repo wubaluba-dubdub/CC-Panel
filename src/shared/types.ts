@@ -70,6 +70,8 @@ export interface MeResponse {
    */
   locale: 'en' | 'fa' | null;
   session: SessionSummary;
+  /** A 7-character commit SHA, or a timestamp-based fallback. Exposed only behind authentication. */
+  buildId: string;
 }
 
 /** `PATCH /api/settings/locale`. */
@@ -142,7 +144,7 @@ export interface PasswordChangedResponse {
 export interface AuditEntryView {
   id: number;
   ts: string;
-  event: string;
+  event: AuditEventName;
   outcome: string;
   /** Display only, recorded from attacker-controllable input. Never decided from. */
   actorIp: string | null;
@@ -479,3 +481,88 @@ export interface ErrorResponse {
   /** What the client should say about it. See {@link ErrorCode}. */
   code: ErrorCode;
 }
+
+// ── Audit events (single source of truth) ──────────────────────────────────
+//
+// The server's `AuditEvent` const re-exports these values. The client's filter
+// uses `AUDIT_EVENTS` for the full closed set. notification-rules.ts takes its
+// exhaustiveness from this declaration via `satisfies Record<AuditEventName, …>`.
+
+/** Every audit event the panel can write. Derived from the server's `AuditEvent` const. */
+export type AuditEventName =
+  | 'setup.completed'
+  | 'two_factor.enrollment_started'
+  | 'login.success'
+  | 'login.failure'
+  | 'totp.failure'
+  | 'recovery_code.used'
+  | 'auth.delay_applied'
+  | 'session.created'
+  | 'session.revoked'
+  | 'password.changed'
+  | 'stepup.granted'
+  | 'two_factor.disabled'
+  | 'recovery_codes.regenerated'
+  | 'secret.revealed'
+  | 'secret.changed'
+  | 'base_path.regenerated'
+  | 'audit.trimmed'
+  | 'origin.absent_admitted'
+  | 'notification.sent'
+  | 'notification.abandoned'
+  | 'notification.dropped'
+  | 'resource.threshold_crossed'
+  | 'resource.threshold_cleared'
+  | 'resource.oom_kill'
+  | 'panel.unclean_restart';
+
+/** The full closed set, as a runtime array. For the client audit filter. */
+export const AUDIT_EVENTS: readonly AuditEventName[] = [
+  'setup.completed',
+  'two_factor.enrollment_started',
+  'login.success',
+  'login.failure',
+  'totp.failure',
+  'recovery_code.used',
+  'auth.delay_applied',
+  'session.created',
+  'session.revoked',
+  'password.changed',
+  'stepup.granted',
+  'two_factor.disabled',
+  'recovery_codes.regenerated',
+  'secret.revealed',
+  'secret.changed',
+  'base_path.regenerated',
+  'audit.trimmed',
+  'origin.absent_admitted',
+  'notification.sent',
+  'notification.abandoned',
+  'notification.dropped',
+  'resource.threshold_crossed',
+  'resource.threshold_cleared',
+  'resource.oom_kill',
+  'panel.unclean_restart',
+] as const;
+
+// ── Failure reasons (single source of truth) ───────────────────────────────
+
+/**
+ * Why a login failed, as a category.
+ *
+ * Never the attempted username, never the attempted password, never which of the
+ * two was wrong at a level of detail the response does not already reveal. The
+ * operator needs to know "someone is guessing"; they do not need the guesses.
+ */
+export const FailureReason = {
+  BadCredentials: 'bad_credentials',
+  BadTotpCode: 'bad_totp_code',
+  BadRecoveryCode: 'bad_recovery_code',
+  ReplayedTotpCode: 'replayed_totp_code',
+  NoPendingLogin: 'no_pending_login',
+  TwoFactorNotEnrolled: 'two_factor_not_enrolled',
+} as const;
+
+export type FailureReasonName = (typeof FailureReason)[keyof typeof FailureReason];
+
+export type AuditOutcome = 'success' | 'failure';

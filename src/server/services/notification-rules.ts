@@ -1,4 +1,5 @@
-import { AuditEvent, type AuditEventName } from './audit.service.js';
+import { AuditEvent } from './audit.service.js';
+import type { AuditEventName } from '../../shared/types.js';
 
 /**
  * Which audit events are worth a message on the operator's phone, in one file.
