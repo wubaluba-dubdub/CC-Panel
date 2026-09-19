@@ -165,6 +165,33 @@ export function columnAad(table: string, rowId: string | number, column: string)
 }
 
 /**
+ * Builds AAD from any number of segments, validating every one of them.
+ *
+ * `columnAad` guards `table` and `column` but deliberately lets `rowId` carry
+ * colons — a `secrets` v2 rowId is the scope, and project scopes are
+ * `project:<uuid>` (see `SecretsRepository.#aadFor`). That is safe only while the
+ * segments after the rowId are colon-free, and it makes the rowId the one AAD
+ * component that can silently grow a colon. Bindings that cannot lean on that
+ * argument — the four-segment project ones — come here, where the `:`-join is
+ * injective over the segment tuple because no segment may contain the separator.
+ *
+ * With three segments it produces exactly the bytes `columnAad` would for the
+ * same inputs (pinned by test), so the v1/v2 legacy shapes are unchanged.
+ */
+export function segmentedAad(...segments: string[]): string {
+  if (segments.length < 2) {
+    throw new Error(`segmented AAD needs at least two segments (got ${segments.length})`);
+  }
+  for (const [index, segment] of segments.entries()) {
+    if (segment.includes(':')) {
+      throw new Error(`AAD segment ${index} must not contain ':' (got ${JSON.stringify(segment)})`);
+    }
+    if (segment.length === 0) throw new Error(`AAD segment ${index} must not be empty`);
+  }
+  return segments.join(':');
+}
+
+/**
  * Encrypts `plaintext` under the secret-column subkey.
  *
  * Returns a versioned, self-describing string: `v1.<nonce>.<ciphertext>.<tag>`,

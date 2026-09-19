@@ -17,9 +17,16 @@ import {
 import { getDb } from '../../src/server/db.js';
 import { SecretString, mask } from '../../src/server/crypto.js';
 import { SecretsRepository } from '../../src/server/services/secrets.service.js';
+import {
+  PROJECT_HOOK_TOKEN_NAME,
+  projectSecretScope,
+} from '../../src/server/utils/project-secret-scope.js';
 import { createRedactedLogger, BASE_PATH_PLACEHOLDER } from '../../src/server/plugins/logger-redaction.js';
 
 const BASE = 'leaktest-base-path-sentinel';
+
+/** The RFC 4122 example uuid — a synthetic project, never a real row's identity. */
+const PROJECT_UUID = '123e4567-e89b-42d3-a456-426614174000';
 
 /**
  * Two secret sentinels, because the two defences have different reach.
@@ -212,11 +219,16 @@ describe('M1.3 — sentinel leak sweep', () => {
     const repo = new SecretsRepository();
     repo.set('global', 'anthropic_auth_token', PATTERNED);
     repo.set('global', 'opaque_token', new SecretString(OPAQUE));
+    // M2.2A: the project scope and name are swept from the moment they are
+    // declared, so a consumer landing later cannot narrow this sentinel by
+    // claiming to be new. Synthetic value only, as everywhere else here.
+    repo.set(projectSecretScope(PROJECT_UUID), PROJECT_HOOK_TOKEN_NAME, new SecretString(OPAQUE));
 
     // Confirm the sentinels really are in play — a sweep that passes because
     // nothing was ever seeded proves nothing.
     expect(repo.get('global', 'anthropic_auth_token')!.reveal()).toBe(PATTERNED);
     expect(repo.get('global', 'opaque_token')!.reveal()).toBe(OPAQUE);
+    expect(repo.get(projectSecretScope(PROJECT_UUID), PROJECT_HOOK_TOKEN_NAME)!.reveal()).toBe(OPAQUE);
 
     await ctx.app.ready();
     expect(ctx.app.printRoutes({ commonPrefix: false })).toBe(EXPECTED_ROUTE_TREE);
