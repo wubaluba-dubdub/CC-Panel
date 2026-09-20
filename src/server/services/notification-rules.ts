@@ -117,6 +117,9 @@ export const NOTIFICATION_RULES = {
   [AuditEvent.NotificationSent]: null,
   [AuditEvent.NotificationAbandoned]: null,
   [AuditEvent.NotificationDropped]: null,
+  // A test enqueue is operator-initiated feedback, not a security signal. The
+  // queue row itself is the confirmation.
+  [AuditEvent.NotificationTestEnqueued]: null,
   // ── The watchdog's four, and they are silent *here* rather than unnotified ────
   //
   // Each of these already reaches the operator, and by a better route: the watchdog

@@ -70,8 +70,8 @@ export interface MeResponse {
    */
   locale: 'en' | 'fa' | null;
   session: SessionSummary;
-  /** A 7-character commit SHA, or a timestamp-based fallback. Exposed only behind authentication. */
-  buildId: string;
+  /** A 7-character commit SHA from a documented env var, or null when no source is available. Exposed only behind authentication. */
+  buildId: string | null;
 }
 
 /** `PATCH /api/settings/locale`. */
@@ -484,40 +484,14 @@ export interface ErrorResponse {
 
 // ── Audit events (single source of truth) ──────────────────────────────────
 //
-// The server's `AuditEvent` const re-exports these values. The client's filter
-// uses `AUDIT_EVENTS` for the full closed set. notification-rules.ts takes its
-// exhaustiveness from this declaration via `satisfies Record<AuditEventName, …>`.
+// `AUDIT_EVENTS` is the canonical runtime declaration. `AuditEventName` is
+// derived from it — not listed again. The server's `AuditEvent` const
+// re-exports these values as ergonomic keys, constrained by
+// `satisfies Record<string, AuditEventName>`. notification-rules.ts takes its
+// exhaustiveness from `AuditEventName` via `satisfies Record<AuditEventName, …>`.
 
-/** Every audit event the panel can write. Derived from the server's `AuditEvent` const. */
-export type AuditEventName =
-  | 'setup.completed'
-  | 'two_factor.enrollment_started'
-  | 'login.success'
-  | 'login.failure'
-  | 'totp.failure'
-  | 'recovery_code.used'
-  | 'auth.delay_applied'
-  | 'session.created'
-  | 'session.revoked'
-  | 'password.changed'
-  | 'stepup.granted'
-  | 'two_factor.disabled'
-  | 'recovery_codes.regenerated'
-  | 'secret.revealed'
-  | 'secret.changed'
-  | 'base_path.regenerated'
-  | 'audit.trimmed'
-  | 'origin.absent_admitted'
-  | 'notification.sent'
-  | 'notification.abandoned'
-  | 'notification.dropped'
-  | 'resource.threshold_crossed'
-  | 'resource.threshold_cleared'
-  | 'resource.oom_kill'
-  | 'panel.unclean_restart';
-
-/** The full closed set, as a runtime array. For the client audit filter. */
-export const AUDIT_EVENTS: readonly AuditEventName[] = [
+/** The full closed set, as a runtime array. Canonical source — derive types from this. */
+export const AUDIT_EVENTS = [
   'setup.completed',
   'two_factor.enrollment_started',
   'login.success',
@@ -539,11 +513,15 @@ export const AUDIT_EVENTS: readonly AuditEventName[] = [
   'notification.sent',
   'notification.abandoned',
   'notification.dropped',
+  'notification.test_enqueued',
   'resource.threshold_crossed',
   'resource.threshold_cleared',
   'resource.oom_kill',
   'panel.unclean_restart',
 ] as const;
+
+/** Every audit event the panel can write. Derived from `AUDIT_EVENTS`. */
+export type AuditEventName = (typeof AUDIT_EVENTS)[number];
 
 // ── Failure reasons (single source of truth) ───────────────────────────────
 

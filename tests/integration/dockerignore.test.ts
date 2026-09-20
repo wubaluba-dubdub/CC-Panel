@@ -70,18 +70,15 @@ describe('.dockerignore must not exclude client sources', () => {
     ).toEqual([]);
   });
 
-  it('.dockerignore does NOT exclude dist/client (sources are needed, not built output)', () => {
+  it('.dockerignore correctly excludes host-built dist (the image builds its own)', () => {
     // The image builds its own dist. The .dockerignore correctly excludes host-built
-    // dist to avoid stale artifacts. This test verifies that the exclusion is
-    // intentional by checking that src/client/** is NOT excluded.
+    // dist to avoid stale artifacts. This test verifies the exclusion is present by
+    // checking that `dist` appears as a non-negated pattern.
     const dockerignorePath = join(import.meta.dirname, '..', '..', '.dockerignore');
     const content = readFileSync(dockerignorePath, 'utf-8');
     const patterns = parseDockerignore(content);
 
-    // src/client should not be matched by any non-negated pattern.
-    const srcClientExcluded = patterns.some(
-      (p) => !p.startsWith('!') && (globMatches('src/client/test.ts', p)),
-    );
-    expect(srcClientExcluded).toBe(false);
+    const hasDistExclusion = patterns.some((p) => !p.startsWith('!' ) && p === 'dist');
+    expect(hasDistExclusion).toBe(true);
   });
 });

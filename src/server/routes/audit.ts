@@ -4,6 +4,17 @@ import type { AuthRuntime } from '../services/auth-runtime.js';
 import { auditQuery, parseBody } from '../utils/zod-schemas.js';
 import type { AuditPageResponse, AuditVerifyResponse } from '../../shared/types.js';
 
+/** The exact keys that may appear in an AuditEntryView. A spread cannot add fields. */
+const AUDIT_ENTRY_KEYS: ReadonlySet<string> = new Set([
+  'id',
+  'ts',
+  'event',
+  'outcome',
+  'actorIp',
+  'userAgent',
+  'meta',
+]);
+
 /**
  * Reading the audit log.
  *
@@ -37,15 +48,25 @@ export default async function auditRoutes(
     });
 
     const response: AuditPageResponse = {
-      entries: page.entries.map((entry) => ({
-        id: entry.id,
-        ts: entry.ts,
-        event: entry.event,
-        outcome: entry.outcome,
-        actorIp: entry.actorIp,
-        userAgent: entry.userAgent,
-        meta: entry.meta,
-      })),
+      entries: page.entries.map((entry) => {
+        const view = {
+          id: entry.id,
+          ts: entry.ts,
+          event: entry.event,
+          outcome: entry.outcome,
+          actorIp: entry.actorIp,
+          userAgent: entry.userAgent,
+          meta: entry.meta,
+        };
+        // Ensure no future spread or field addition leaks unexpected keys to the client.
+        const viewKeys = new Set(Object.keys(view));
+        for (const key of viewKeys) {
+          if (!AUDIT_ENTRY_KEYS.has(key)) {
+            throw new Error(`unexpected key in AuditEntryView: ${key}`);
+          }
+        }
+        return view;
+      }),
       nextCursor: page.nextCursor,
     };
     return response;

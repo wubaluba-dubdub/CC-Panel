@@ -15,7 +15,6 @@ import { AuditEvent } from '../../src/server/services/audit.service.js';
  */
 export const UNAUDITED_MUTATING_ROUTES: ReadonlySet<string> = new Set([
   '/api/settings/locale',
-  '/api/notifications/test',
 ]);
 
 /**
@@ -41,6 +40,7 @@ export const ROUTE_TO_AUDIT_EVENT: Readonly<Record<string, string>> = {
   'POST /api/security/base-path/regenerate': AuditEvent.BasePathRegenerated,
   'PUT /api/secrets': AuditEvent.SecretChanged,
   'POST /api/secrets/reveal': AuditEvent.SecretRevealed,
+  'POST /api/notifications/test': AuditEvent.NotificationTestEnqueued,
 };
 
 /**
@@ -94,12 +94,8 @@ describe('audit coverage — every mutating route is audited or pinned', () => {
     ).toEqual([]);
   });
 
-  it('UNAUDITED_MUTATING_ROUTES is small and exception-free', () => {
-    // The task expected exactly one (/api/settings/locale), but
-    // /api/notifications/test also writes to notification_queue without an audit
-    // row — it enqueues a test message, which is not a privilege change or
-    // disclosure worth auditing.
-    expect(UNAUDITED_MUTATING_ROUTES.size).toBeLessThanOrEqual(2);
+  it('UNAUDITED_MUTATING_ROUTES is exactly the locale toggle', () => {
+    expect(UNAUDITED_MUTATING_ROUTES.size).toBe(1);
     expect(UNAUDITED_MUTATING_ROUTES.has('/api/settings/locale')).toBe(true);
   });
 
@@ -112,5 +108,47 @@ describe('audit coverage — every mutating route is audited or pinned', () => {
       }
     }
     expect(invalid, `Invalid audit events: ${invalid.join(', ')}`).toEqual([]);
+  });
+
+  it('POST /api/notifications/test writes notification.test_enqueued without leaking secrets', async () => {
+    const {
+      createAuthTestServer,
+      enrollAccount,
+      loginFully,
+      SESSION_COOKIE,
+    } = await import('../helpers/auth-harness.js');
+    const ctx = await createAuthTestServer();
+    const { secret } = await enrollAccount(ctx);
+    const { cookie } = await loginFully(ctx, secret);
+
+    // Trigger the notification test route.
+    const res = await ctx.inject({
+      method: 'POST',
+      url: ctx.url('/api/notifications/test'),
+      cookies: { [SESSION_COOKIE]: cookie },
+    });
+    expect(res.statusCode).toBe(202);
+
+    // The audit log must contain a notification.test_enqueued row.
+    const after = await ctx.inject({
+      method: 'GET',
+      url: ctx.url('/api/audit?event=notification.test_enqueued&limit=1'),
+      cookies: { [SESSION_COOKIE]: cookie },
+    });
+    const afterBody = JSON.parse(after.payload) as {
+      entries: { id: number; event: string; meta: Record<string, unknown> }[];
+    };
+    const testRow = afterBody.entries?.[0];
+    expect(testRow, 'expected a notification.test_enqueued audit row').toBeDefined();
+
+    // Metadata must not contain tokens, chat ids, secrets, base paths, or IPs.
+    const metaStr = JSON.stringify(testRow!.meta);
+    expect(metaStr).not.toContain('token');
+    expect(metaStr).not.toContain('chat_id');
+    expect(metaStr).not.toContain('sk-');
+    expect(metaStr).not.toContain('base');
+    expect(metaStr).not.toMatch(/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/);
+
+    await ctx.cleanup();
   });
 });

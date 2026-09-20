@@ -2,8 +2,10 @@ import type { FastifyInstance } from 'fastify';
 import { HttpError, requireFullSession } from '../plugins/auth.js';
 import type { AuthRuntime } from '../services/auth-runtime.js';
 import type { NotifyService } from '../services/notify.service.js';
+import { AuditEvent } from '../services/audit.service.js';
 import { TELEGRAM_SCOPE, telegramConfigStatus } from '../services/telegram-config.js';
 import { parseBody, queueIdParams } from '../utils/zod-schemas.js';
+import { clientIpForDisplay, userAgentForDisplay } from '../utils/client-ip.js';
 import type { NotificationStatusResponse, NotificationQueuedResponse } from '../../shared/types.js';
 
 /**
@@ -63,8 +65,15 @@ export default async function notificationRoutes(
     const result = notify.notify({ kind: 'test', at: new Date(runtime.clock.now()).toISOString() });
     if (result.queued === null) throw new HttpError(503, `notification queue is ${result.reason}`);
 
+    runtime.audit.write({
+      event: AuditEvent.NotificationTestEnqueued,
+      outcome: 'success',
+      actorIp: clientIpForDisplay(req),
+      userAgent: userAgentForDisplay(req),
+      meta: { kind: 'test' },
+    });
+
     const response: NotificationQueuedResponse = { queued: result.queued };
-    void req;
     return reply.code(202).send(response);
   });
 

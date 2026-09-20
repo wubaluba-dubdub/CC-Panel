@@ -9,10 +9,10 @@ import {
 } from '../helpers/auth-harness.js';
 
 /**
- * Build identity: a short commit SHA or a timestamp-based fallback.
+ * Build identity: a short commit SHA from a documented env var, or null.
  *
  * - Prefers a real commit SHA from env vars, shortened to 7 characters.
- * - Falls back to a build timestamp with an explicit `[unknown]` marker.
+ * - Null when no documented source is available (no timestamp fallback).
  * - Never crashes when every source is absent.
  * - Exposed ONLY behind authentication (on `GET /api/auth/me`).
  * - Never on /healthz, never in the pre-login shell, never in a response
@@ -21,21 +21,25 @@ import {
 
 describe('build identity', () => {
   describe('resolution', () => {
-    it('always produces a non-empty buildId', () => {
-      expect(BUILD_IDENTITY.buildId).toBeTruthy();
-      expect(typeof BUILD_IDENTITY.buildId).toBe('string');
+    it('buildId is either a string or null', () => {
+      expect(
+        typeof BUILD_IDENTITY.buildId === 'string' || BUILD_IDENTITY.buildId === null,
+      ).toBe(true);
     });
 
-    it('buildId is at most 16 characters', () => {
-      expect(BUILD_IDENTITY.buildId.length).toBeLessThanOrEqual(16);
+    it('when non-null, buildId is at most 7 characters', () => {
+      if (BUILD_IDENTITY.buildId !== null) {
+        expect(BUILD_IDENTITY.buildId.length).toBeLessThanOrEqual(7);
+      }
     });
 
-    it('source is either "env" or "fallback"', () => {
-      expect(BUILD_IDENTITY.source === 'env' || BUILD_IDENTITY.source === 'fallback').toBe(true);
+    it('source is either "env" or "none"', () => {
+      expect(BUILD_IDENTITY.source === 'env' || BUILD_IDENTITY.source === 'none').toBe(true);
     });
 
-    it('in test environment (no Railway vars), uses fallback', () => {
-      expect(BUILD_IDENTITY.source).toBe('fallback');
+    it('in test environment (no Railway vars), buildId is null', () => {
+      expect(BUILD_IDENTITY.buildId).toBeNull();
+      expect(BUILD_IDENTITY.source).toBe('none');
     });
   });
 
@@ -57,10 +61,9 @@ describe('build identity', () => {
         cookies: { [SESSION_COOKIE]: cookie },
       });
       expect(res.statusCode).toBe(200);
-      const body = JSON.parse(res.payload) as { buildId?: string };
-      expect(body.buildId).toBeDefined();
-      expect(typeof body.buildId).toBe('string');
-      expect(body.buildId!.length).toBeGreaterThan(0);
+      const body = JSON.parse(res.payload) as { buildId?: string | null };
+      // In test env, buildId is null. The field must be present in the response.
+      expect(body).toHaveProperty('buildId');
     });
 
     it('buildId is absent from unauthenticated responses', async () => {

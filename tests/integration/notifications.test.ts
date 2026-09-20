@@ -180,6 +180,23 @@ describe('POST /api/notifications/test', () => {
     });
     expect(row.json()).toMatchObject({ id: queued, kind: 'test', state: 'pending', attempts: 0 });
 
+    // The route must write a notification.test_enqueued audit row.
+    const audit = await ctx.inject({
+      method: 'GET',
+      url: ctx.url('/api/audit?event=notification.test_enqueued&limit=1'),
+      cookies: { [SESSION_COOKIE]: account.cookie },
+    });
+    const auditBody = JSON.parse(audit.payload) as {
+      entries: { event: string; meta: Record<string, unknown> }[];
+    };
+    expect(auditBody.entries.length).toBeGreaterThanOrEqual(1);
+    const entry = auditBody.entries[0]!;
+    expect(entry.event).toBe('notification.test_enqueued');
+    // Metadata must not contain tokens, chat ids, or secrets.
+    const metaStr = JSON.stringify(entry.meta);
+    expect(metaStr).not.toContain(TOKEN.slice(0, 10));
+    expect(metaStr).not.toContain(CHAT);
+
     // And it is not step-up gated: it discloses nothing, and requiring a fresh code to
     // check whether notifications work would push the operator toward not checking.
     const unknown = await ctx.inject({

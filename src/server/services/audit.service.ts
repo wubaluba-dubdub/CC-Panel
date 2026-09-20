@@ -39,6 +39,7 @@ export const AuditEvent = {
   NotificationSent: 'notification.sent',
   NotificationAbandoned: 'notification.abandoned',
   NotificationDropped: 'notification.dropped',
+  NotificationTestEnqueued: 'notification.test_enqueued',
   ResourceThresholdCrossed: 'resource.threshold_crossed',
   ResourceThresholdCleared: 'resource.threshold_cleared',
   ResourceOomKill: 'resource.oom_kill',
