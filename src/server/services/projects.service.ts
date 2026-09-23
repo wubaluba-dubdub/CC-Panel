@@ -11,6 +11,20 @@ const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$/;
 
 const MAX_SLUG_LENGTH = 40;
 
+/**
+ * Explicit projection for every repository SELECT.
+ *
+ * The seven M2.8 import columns (origin, origin_ref, origin_at,
+ * source_install_id, review_state, reviewed_at, artefacts_json) exist on the
+ * table but must never enter a SELECT projection, INSERT list, UPDATE list,
+ * RETURNING clause, or this row type: `SELECT *` would silently read them.
+ * A TypeScript field on {@link ProjectRow} is a schema declaration only when
+ * the projection actually returns it — so this type names exactly the columns
+ * above, and nothing else.
+ */
+const PROJECT_COLUMNS =
+  'id, uuid, slug, slug_normalized, isolated_settings, created_at, updated_at';
+
 export interface ProjectRow {
   id: number;
   uuid: string;
@@ -19,13 +33,6 @@ export interface ProjectRow {
   isolated_settings: number;
   created_at: string;
   updated_at: string;
-  origin: string | null;
-  origin_ref: string | null;
-  origin_at: string | null;
-  source_install_id: string | null;
-  review_state: string | null;
-  reviewed_at: string | null;
-  artefacts_json: string | null;
 }
 
 export interface ProjectRecord {
@@ -168,30 +175,32 @@ export class ProjectsRepository {
       }
     }
 
-    const row = this.#db.prepare('SELECT * FROM projects WHERE uuid = ?').get(uuid) as ProjectRow;
+    const row = this.#db
+      .prepare(`SELECT ${PROJECT_COLUMNS} FROM projects WHERE uuid = ?`)
+      .get(uuid) as ProjectRow;
     const record = toRecord(row);
     record.renamed = renamed;
     return { project: record, renamed };
   }
 
   getByUuid(uuid: string): ProjectRecord | null {
-    const row = this.#db.prepare('SELECT * FROM projects WHERE uuid = ?').get(uuid) as
-      | ProjectRow
-      | undefined;
+    const row = this.#db
+      .prepare(`SELECT ${PROJECT_COLUMNS} FROM projects WHERE uuid = ?`)
+      .get(uuid) as ProjectRow | undefined;
     return row ? toRecord(row) : null;
   }
 
   getBySlug(slug: string): ProjectRecord | null {
     const normalised = normalizeSlug(slug);
-    const row = this.#db.prepare('SELECT * FROM projects WHERE slug_normalized = ?').get(
-      normalised,
-    ) as ProjectRow | undefined;
+    const row = this.#db
+      .prepare(`SELECT ${PROJECT_COLUMNS} FROM projects WHERE slug_normalized = ?`)
+      .get(normalised) as ProjectRow | undefined;
     return row ? toRecord(row) : null;
   }
 
   list(): ProjectRecord[] {
     const rows = this.#db
-      .prepare('SELECT * FROM projects ORDER BY created_at ASC, id ASC')
+      .prepare(`SELECT ${PROJECT_COLUMNS} FROM projects ORDER BY created_at ASC, id ASC`)
       .all() as ProjectRow[];
     return rows.map(toRecord);
   }
@@ -247,7 +256,9 @@ export class ProjectsRepository {
       }
     }
 
-    const row = this.#db.prepare('SELECT * FROM projects WHERE uuid = ?').get(uuid) as ProjectRow;
+    const row = this.#db
+      .prepare(`SELECT ${PROJECT_COLUMNS} FROM projects WHERE uuid = ?`)
+      .get(uuid) as ProjectRow;
     const record = toRecord(row);
     record.renamed = renamed;
     return record;

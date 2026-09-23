@@ -10,6 +10,8 @@ import {
   AuditService,
   AuditEvent,
 } from '../../src/server/services/audit.service.js';
+import { copyDatabase } from '../../src/server/cli/db-file.js';
+import { ProjectsRepository } from '../../src/server/services/projects.service.js';
 
 const KEY = randomBytes(32).toString('base64');
 
@@ -75,6 +77,67 @@ function runMigrationsThrough(targetVersion: number): Database.Database {
   return d;
 }
 
+/** Highest applied schema version, or 0 when schema_migrations is empty. */
+function maxVersion(d: Database.Database): number {
+  const row = d.prepare('SELECT MAX(version) AS v FROM schema_migrations').get() as {
+    v: number | null;
+  };
+  return row.v ?? 0;
+}
+
+/** Row counts for the five tables the populated fixture must cover. Counts only — never contents. */
+function tableCounts(d: Database.Database): Record<string, number> {
+  const count = (table: string): number =>
+    (d.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get() as { c: number }).c;
+  return {
+    users: count('users'),
+    sessions: count('sessions'),
+    audit_log: count('audit_log'),
+    secrets: count('secrets'),
+    notification_queue: count('notification_queue'),
+  };
+}
+
+function hasProjectsTable(d: Database.Database): boolean {
+  const row = d
+    .prepare("SELECT COUNT(*) AS c FROM sqlite_master WHERE type = 'table' AND name = 'projects'")
+    .get() as { c: number };
+  return row.c > 0;
+}
+
+/** Representative non-secret rows in every table the P2 fixture requires. */
+function populateCoreRows(d: Database.Database): void {
+  d.prepare(
+    `INSERT INTO users (id, username, password_hash, created_at, updated_at)
+     VALUES (1, 'admin', 'fake-hash', datetime('now'), datetime('now'))`,
+  ).run();
+  d.prepare(
+    `INSERT INTO sessions (token_hash, created_at, last_seen_at, expires_at)
+     VALUES ('hash1', datetime('now'), datetime('now'), datetime('now', '+8 hours'))`,
+  ).run();
+  d.prepare(
+    `INSERT INTO sessions (token_hash, created_at, last_seen_at, expires_at)
+     VALUES ('hash2', datetime('now'), datetime('now'), datetime('now', '+8 hours'))`,
+  ).run();
+  d.prepare(
+    `INSERT INTO secrets (scope, name, payload, created_at, updated_at)
+     VALUES ('test', 'test_key', 'v1.fakesecret', datetime('now'), datetime('now'))`,
+  ).run();
+  d.prepare(
+    `INSERT INTO notification_queue (created_at, kind, event_json, next_attempt_at)
+     VALUES (datetime('now'), 'test', '{}', datetime('now'))`,
+  ).run();
+}
+
+/** Applies migration 012 and records version 12, the same way the real runner does. */
+function applyMigration012(d: Database.Database): void {
+  const sql = readMigration(12);
+  d.transaction(() => {
+    d.exec(sql);
+    d.prepare('INSERT INTO schema_migrations (version, name) VALUES (?, ?)').run(12, 'projects');
+  })();
+}
+
 /**
  * M2.2 — migration 012 applies cleanly to a populated 011 database.
  *
@@ -92,34 +155,10 @@ describe('M2.2 — migration 012 upgrade from 011', () => {
 
     // 1. Build a database at migration 011 with representative rows.
     db = runMigrationsThrough(11);
+    expect(maxVersion(db), 'fixture starts at schema version 11').toBe(11);
+    expect(hasProjectsTable(db), 'projects table absent before 012').toBe(false);
 
-    // Populate users (the single user row).
-    db.prepare(
-      `INSERT INTO users (id, username, password_hash, created_at, updated_at)
-       VALUES (1, 'admin', 'fake-hash', datetime('now'), datetime('now'))`,
-    ).run();
-
-    // Populate sessions.
-    db.prepare(
-      `INSERT INTO sessions (token_hash, created_at, last_seen_at, expires_at)
-       VALUES ('hash1', datetime('now'), datetime('now'), datetime('now', '+8 hours'))`,
-    ).run();
-    db.prepare(
-      `INSERT INTO sessions (token_hash, created_at, last_seen_at, expires_at)
-       VALUES ('hash2', datetime('now'), datetime('now'), datetime('now', '+8 hours'))`,
-    ).run();
-
-    // Populate secrets.
-    db.prepare(
-      `INSERT INTO secrets (scope, name, payload, created_at, updated_at)
-       VALUES ('test', 'test_key', 'v1.fakesecret', datetime('now'), datetime('now'))`,
-    ).run();
-
-    // Populate notification_queue.
-    db.prepare(
-      `INSERT INTO notification_queue (created_at, kind, event_json, next_attempt_at)
-       VALUES (datetime('now'), 'test', '{}', datetime('now'))`,
-    ).run();
+    populateCoreRows(db);
 
     // Populate audit_log through the audit service (to get proper chaining).
     const audit = new AuditService({ db, basePath: 'test-base' });
@@ -143,54 +182,71 @@ describe('M2.2 — migration 012 upgrade from 011', () => {
     const auditCount = beforeVerify.checked;
     expect(auditCount).toBeGreaterThanOrEqual(3);
 
-    // Snapshot existing rows for comparison after migration.
-    const usersBefore = db.prepare('SELECT * FROM users WHERE id = 1').get();
-    const sessionsBefore = db.prepare('SELECT * FROM sessions ORDER BY id').all();
-    const secretsBefore = db.prepare('SELECT * FROM secrets ORDER BY id').all();
-    const auditRowsBefore = db.prepare('SELECT * FROM audit_log ORDER BY id').all();
+    // Non-secret row counts before the upgrade. Exact for the four fixed
+    // fixtures; audit_log is however many the service chained.
+    const countsBefore = tableCounts(db);
+    expect(countsBefore).toEqual({
+      users: 1,
+      sessions: 2,
+      audit_log: auditCount,
+      secrets: 1,
+      notification_queue: 1,
+    });
+
+    // Full-row snapshots for equality after the upgrade. Contents are compared
+    // in-process only; nothing is logged and no secret value is printed.
+    const rowsBefore = {
+      users: db.prepare('SELECT * FROM users WHERE id = 1').get(),
+      sessions: db.prepare('SELECT * FROM sessions ORDER BY id').all(),
+      secrets: db.prepare('SELECT * FROM secrets ORDER BY id').all(),
+      auditRows: db.prepare('SELECT * FROM audit_log ORDER BY id').all(),
+      queue: db.prepare('SELECT * FROM notification_queue ORDER BY id').all(),
+    };
+    const firstAuditId = (rowsBefore.auditRows as { id: number }[])[0]!.id;
 
     // 2. Apply migration 012.
-    const sql012 = readMigration(12);
-    db.transaction(() => {
-      db!.exec(sql012);
-      db!.prepare('INSERT INTO schema_migrations (version, name) VALUES (?, ?)').run(
-        12,
-        'projects',
-      );
-    })();
+    applyMigration012(db);
+    expect(maxVersion(db), 'fixture advances to schema version 12').toBe(12);
 
     // 3. Verify: the audit chain still verifies over the same number of rows.
     const afterVerify = audit.verify();
     expect(afterVerify.ok).toBe(true);
     expect(afterVerify.checked).toBe(auditCount);
 
-    // 4. Verify: no existing row changed.
-    const usersAfter = db.prepare('SELECT * FROM users WHERE id = 1').get();
-    expect(usersAfter).toEqual(usersBefore);
+    // 4. Verify: no existing row changed, in any of the five required tables.
+    expect(tableCounts(db)).toEqual(countsBefore);
+    expect(db.prepare('SELECT * FROM users WHERE id = 1').get()).toEqual(rowsBefore.users);
+    expect(db.prepare('SELECT * FROM sessions ORDER BY id').all()).toEqual(rowsBefore.sessions);
+    expect(db.prepare('SELECT * FROM secrets ORDER BY id').all()).toEqual(rowsBefore.secrets);
+    expect(db.prepare('SELECT * FROM audit_log ORDER BY id').all()).toEqual(rowsBefore.auditRows);
+    expect(db.prepare('SELECT * FROM notification_queue ORDER BY id').all()).toEqual(
+      rowsBefore.queue,
+    );
 
-    const sessionsAfter = db.prepare('SELECT * FROM sessions ORDER BY id').all();
-    expect(sessionsAfter).toEqual(sessionsBefore);
-
-    const secretsAfter = db.prepare('SELECT * FROM secrets ORDER BY id').all();
-    expect(secretsAfter).toEqual(secretsBefore);
-
-    const auditRowsAfter = db.prepare('SELECT * FROM audit_log ORDER BY id').all();
-    expect(auditRowsAfter).toEqual(auditRowsBefore);
-
-    // 5. Verify: the append-only triggers still exist.
+    // 5. Verify: the append-only triggers still exist AND still reject.
+    // Names alone would pass with a trigger body that had been gutted.
     const triggers = db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'audit_%'")
       .all()
       .map((r) => (r as { name: string }).name);
     expect(triggers).toContain('audit_log_no_update');
     expect(triggers).toContain('audit_log_no_delete');
+    expect(() =>
+      db!.prepare("UPDATE audit_log SET outcome = 'failure' WHERE id = ?").run(firstAuditId),
+    ).toThrow(/append-only/);
+    expect(() => db!.prepare('DELETE FROM audit_log WHERE id = ?').run(firstAuditId)).toThrow(
+      /append-only/,
+    );
+    // The rejected writes left the row and the chain intact.
+    expect(tableCounts(db).audit_log).toBe(auditCount);
+    expect(audit.verify().ok).toBe(true);
 
     // 6. Verify: the projects table exists with the correct schema.
-    const tables = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
-      .all()
-      .map((r) => (r as { name: string }).name);
-    expect(tables).toContain('projects');
+    // slug_normalized is a UNIQUE backstop for ASCII case via SQLite LOWER()
+    // only — not NFC and not locale-aware case folding. The repository owns
+    // NFC + toLowerCase + the ASCII pattern; this column does not alone
+    // enforce the full validation contract.
+    expect(hasProjectsTable(db)).toBe(true);
 
     const columns = db.prepare("PRAGMA table_xinfo(projects)").all() as { name: string }[];
     const colNames = columns.map((c) => c.name);
@@ -219,46 +275,74 @@ describe('M2.2 — migration 012 upgrade from 011', () => {
     expect(versions).toContain(12);
   });
 
-  it('reports what a rollback sees', () => {
+  it('a restored pre-012 snapshot shows version 11 and no projects table', async () => {
+    // Not a down-migration: there is none. This preserves an independent
+    // pre-upgrade snapshot (through the same online backup API `npm run backup`
+    // uses), upgrades a separate working copy to 012, then opens the untouched
+    // snapshot to assert what a restore of that snapshot actually contains.
     initCrypto(KEY);
 
-    // There is no down-migration. The operator must restore from a backup
-    // taken before the upgrade. The pre-restore copy kept by `npm run restore`
-    // is sufficient because it captures the database file before migration 012
-    // ran, including the WAL sidecar.
-    //
-    // If the operator needs to go back manually:
-    // 1. Stop the panel.
-    // 2. Replace panel.db, panel.db-wal, and panel.db-shm with the pre-upgrade copies.
-    // 3. Restart.
-    //
-    // schema_migrations will still show version 12, but the projects table will
-    // not exist — which is fine because no code reads it yet (M2.2's repository
-    // is the only reader, and it will fail with "no such table: projects").
-    // A fresh `initDb` on the restored database re-applies migration 012.
-    //
-    // This test verifies that a restored database (pre-012) still verifies.
     db = runMigrationsThrough(11);
-
+    populateCoreRows(db);
     const audit = new AuditService({ db, basePath: 'test-base' });
-    audit.write({
-      event: AuditEvent.LoginSuccess,
-      outcome: 'success',
+    audit.write({ event: AuditEvent.LoginSuccess, outcome: 'success' });
+    audit.write({ event: AuditEvent.SessionCreated, outcome: 'success' });
+
+    const countsBefore = tableCounts(db);
+    expect(countsBefore).toEqual({
+      users: 1,
+      sessions: 2,
+      audit_log: 2,
+      secrets: 1,
+      notification_queue: 1,
     });
-    const verifyResult = audit.verify();
-    expect(verifyResult.ok).toBe(true);
-    expect(verifyResult.checked).toBe(1);
+    const chainBefore = audit.verify();
+    expect(chainBefore.ok).toBe(true);
+
+    // Logical consistent snapshot: the backup API reads through SQLite and
+    // writes a standalone database with committed WAL-visible rows folded in.
+    // It does NOT copy panel.db-wal or panel.db-shm sidecar files — those
+    // remain beside the live database and are not part of the snapshot.
+    const snapshotPath = join(dataDir!, 'pre-012-snapshot.db');
+    await copyDatabase(join(dataDir!, 'test.db'), snapshotPath);
+
+    // Upgrade the working copy only.
+    applyMigration012(db);
+    expect(maxVersion(db)).toBe(12);
+    expect(hasProjectsTable(db)).toBe(true);
+
+    // The untouched pre-012 snapshot, opened independently of the working copy.
+    const snap = new Database(snapshotPath, { readonly: true, fileMustExist: true });
+    try {
+      expect(maxVersion(snap), 'restored pre-012 snapshot highest version').toBe(11);
+      expect(hasProjectsTable(snap), 'projects table absent in pre-012 snapshot').toBe(false);
+      expect(tableCounts(snap), 'populated counts unchanged in the snapshot').toEqual(countsBefore);
+      const snapAudit = new AuditService({ db: snap, basePath: 'test-base' });
+      const snapChain = snapAudit.verify();
+      expect(snapChain.ok, 'audit chain verifies on the restored snapshot').toBe(true);
+      expect(snapChain.checked).toBe(chainBefore.checked);
+    } finally {
+      snap.close();
+    }
   });
 });
 
 /**
  * M2.2 — the seven import columns exist and nothing reads or writes them yet.
  *
- * The word "origin" appears in many non-column contexts (HTTP Origin header,
- * public-origin utility, etc.), so a naive word scan would false-positive. This
- * test instead asserts that no file under src/server (excluding migrations)
- * contains an INSERT, UPDATE, or SELECT that references the projects table's
- * import columns.
+ * Two complementary proofs:
+ * 1. A broad text scan over src/server for the six column names that are unique
+ *    to the import feature. `origin` is omitted there because it is a common
+ *    word (HTTP Origin handling) and would false-positive — it is covered by
+ *    proof 2 instead, in SQL context.
+ * 2. A focused assertion over the projects repository's *executable* SQL (every
+ *    string passed to `prepare` while the full API runs) plus the row mapper's
+ *    output keys, covering all seven identifiers including `origin`.
+ *
+ * A TypeScript field that names a column is a schema/type declaration, not a
+ * runtime read; only a value that arrives from a projection or is written
+ * through an INSERT/UPDATE list counts. Proof 2 therefore inspects SQL
+ * fragments and returned object keys, not interface declarations.
  */
 describe('M2.2 — import columns are declared and unused', () => {
   it('the seven columns exist in the projects table', () => {
@@ -280,16 +364,9 @@ describe('M2.2 — import columns are declared and unused', () => {
   });
 
   it('no file under src/server reads or writes the import columns', () => {
-    // The import columns are declared in the migration but unused as of this
-    // commit. No repository, service, or route should reference them in a SQL
-    // context. We scan for the specific column names that are unique to the
-    // import feature — not "origin", which is a common word — to avoid false
-    // positives from HTTP Origin handling.
-    //
-    // projects.service.ts is excluded because its ProjectRow interface declares
-    // the column names for type safety — this is a TypeScript type, not a SQL
-    // read or write. The scan targets files that would execute SQL against these
-    // columns.
+    // Supplementary word scan for the six unique identifiers. The repository
+    // interface is no longer excluded: ProjectRow no longer names the reserved
+    // columns, so a hit there would be a real reference, not a type declaration.
     const serverDir = join(ROOT, 'src', 'server');
     const uniqueColumns = [
       'origin_ref',
@@ -299,7 +376,6 @@ describe('M2.2 — import columns are declared and unused', () => {
       'reviewed_at',
       'artefacts_json',
     ];
-    const excludedFiles = new Set(['projects.service.ts']);
 
     const violations: string[] = [];
 
@@ -309,7 +385,7 @@ describe('M2.2 — import columns are declared and unused', () => {
         const path = join(dir, entry.name);
         if (entry.isDirectory()) {
           scanDir(path);
-        } else if (entry.name.endsWith('.ts') && !excludedFiles.has(entry.name)) {
+        } else if (entry.name.endsWith('.ts')) {
           const content = readFileSync(path, 'utf-8');
           for (const col of uniqueColumns) {
             const lines = content.split('\n');
@@ -342,6 +418,90 @@ describe('M2.2 — import columns are declared and unused', () => {
       codeHits,
       `import columns referenced in application code: ${codeHits.join(', ')}`,
     ).toEqual([]);
+  });
+
+  it('repository executable SQL and row mapper never touch the seven reserved columns', () => {
+    db = runMigrationsThrough(12);
+
+    // Capture every string the repository passes to prepare(), then exercise
+    // the full API so create/get/list/rename/delete collision paths all run.
+    const captured: string[] = [];
+    const realPrepare = db.prepare.bind(db);
+    Object.defineProperty(db, 'prepare', {
+      configurable: true,
+      writable: true,
+      value: (sql: string) => {
+        captured.push(sql);
+        return realPrepare(sql);
+      },
+    });
+    const repo = new ProjectsRepository({ db });
+
+    const first = repo.create({ slug: 'sql-proof' });
+    repo.create({ slug: 'sql-proof' });
+    repo.getByUuid(first.project.uuid);
+    repo.getBySlug('SQL-PROOF');
+    repo.list();
+    repo.rename(first.project.uuid, 'sql-proof-renamed');
+    const doomed = repo.create({ slug: 'to-delete' });
+    repo.delete(doomed.project.uuid);
+
+    expect(captured.length, 'the API exercise prepared SQL').toBeGreaterThan(0);
+
+    const reserved = [
+      'origin',
+      'origin_ref',
+      'origin_at',
+      'source_install_id',
+      'review_state',
+      'reviewed_at',
+      'artefacts_json',
+    ] as const;
+
+    /** Fragments where a reserved identifier would be a runtime read or write. */
+    function sqlFragments(sql: string): string[] {
+      const flat = sql.replace(/\s+/g, ' ').trim();
+      const frags: string[] = [];
+      const sel = /SELECT\s+([\s\S]+?)\s+FROM\s+/i.exec(flat);
+      if (sel) frags.push(sel[1]!);
+      const ins = /INSERT\s+INTO\s+[`"]?\w+[`"]?\s*\(([^)]+)\)/i.exec(flat);
+      if (ins) frags.push(ins[1]!);
+      const upd = /UPDATE\s+[`"]?\w+[`"]?\s+SET\s+([\s\S]+?)\s+WHERE\s+/i.exec(flat);
+      if (upd) frags.push(upd[1]!);
+      const ret = /RETURNING\s+([\s\S]+)$/i.exec(flat);
+      if (ret) frags.push(ret[1]!);
+      return frags;
+    }
+
+    const violations: string[] = [];
+    for (const sql of captured) {
+      // SELECT * would silently read every reserved column without naming one.
+      if (/\bSELECT\s+\*/i.test(sql)) violations.push(`SELECT * — ${sql}`);
+      for (const frag of sqlFragments(sql)) {
+        for (const col of reserved) {
+          if (new RegExp(`\\b${col}\\b`, 'i').test(frag)) {
+            violations.push(`${col} in SQL fragment of — ${sql}`);
+          }
+        }
+      }
+    }
+    expect(violations, violations.join(' | ')).toEqual([]);
+
+    // Row mapper: ProjectRecord keys are exactly the public shape — no spread
+    // of a full row can smuggle a reserved column onto the returned object.
+    const record = repo.getByUuid(first.project.uuid)!;
+    for (const col of reserved) {
+      expect(
+        Object.prototype.hasOwnProperty.call(record, col),
+        `row mapper exposed reserved column: ${col}`,
+      ).toBe(false);
+    }
+    const listed = repo.list();
+    for (const row of listed) {
+      for (const col of reserved) {
+        expect(Object.prototype.hasOwnProperty.call(row, col)).toBe(false);
+      }
+    }
   });
 });
 
