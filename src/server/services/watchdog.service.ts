@@ -433,6 +433,15 @@ export class Watchdog {
     return this.#timer !== null;
   }
 
+  /**
+   * The disk warning threshold this watchdog is configured with, as a whole
+   * percentage. The project-store disk guard reads this rather than keeping a
+   * second copy of the number — one threshold, one owner.
+   */
+  get diskThresholdPercent(): number {
+    return this.#diskPercent;
+  }
+
   // ── One sample ─────────────────────────────────────────────────────────────
 
   /** Never throws: it runs from a timer with nobody to catch it. */

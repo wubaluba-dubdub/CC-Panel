@@ -127,11 +127,19 @@ export class ProjectsRepository {
    * already at the limit, the suffix is appended by truncating the stem first.
    * If truncation would leave fewer than 2 characters, the creation is refused
    * rather than producing an invalid slug.
+   *
+   * `uuid` is optional so the project-store service can create the on-disk
+   * layout first (under a uuid it chose) and commit the row last. When omitted,
+   * a fresh `crypto.randomUUID()` is generated here.
    */
-  create(input: { slug: string; isolatedSettings?: boolean }): CreateProjectResult {
+  create(input: {
+    slug: string;
+    isolatedSettings?: boolean;
+    uuid?: string;
+  }): CreateProjectResult {
     const baseSlug = normalizeSlug(input.slug);
     const now = isoNow(this.#clock);
-    const uuid = randomUUID();
+    const uuid = input.uuid ?? randomUUID();
 
     // Try the base slug first, then -2, -3, ... until we find a free one.
     let slug = baseSlug;

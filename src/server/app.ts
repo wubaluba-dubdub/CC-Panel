@@ -35,6 +35,7 @@ import {
 } from './services/notify.service.js';
 import { ResourceSampler, type StartTimer } from './services/resources.service.js';
 import { RUN_DIR, Watchdog } from './services/watchdog.service.js';
+import { ProjectStoreService } from './services/project-store.service.js';
 import { readTelegramCredentials } from './services/telegram-config.js';
 import { TelegramTransport, type NotificationTransport } from './services/telegram.transport.js';
 import { seedAdminUser } from './services/user.service.js';
@@ -712,6 +713,26 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
     watchdog.bootCheck();
     if (!isTestEnv || config.watchdog?.autoStart === true) watchdog.start();
   }
+
+  // ── Project staging sweep ──────────────────────────────────────────────────
+  //
+  // Abandoned `.project-stage-*` siblings of `projects/` are removed at boot.
+  // Age-guarded so a concurrent creation is never swept; logs and returns an
+  // audit-worthy fact only when something was actually removed. The sweep
+  // fails loudly if `projects/` itself is missing (non-vacuous exemption) —
+  // a pass that read nothing is the failure mode this exists to prevent.
+  const projectStore = new ProjectStoreService({
+    dataDir,
+    db: runtime.db,
+    clock: runtime.clock,
+    disk: {
+      thresholdPercent: () => watchdog.diskThresholdPercent,
+    },
+    log: (event) => {
+      if (!isTestEnv) app.log.info(event, event.message);
+    },
+  });
+  projectStore.bootSweep();
 
   const proxyWarning = proxyBootWarning(env.PANEL_OUTBOUND_PROXY, env.NODE_ENV);
   if (proxyWarning !== null && !isTestEnv) app.log.warn(proxyWarning);

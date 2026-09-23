@@ -195,6 +195,17 @@ export class SecretsRepository {
   }
 
   /**
+   * Deletes every secret under one scope. Returns how many rows were removed.
+   *
+   * Project deletion needs this: `project:<uuid>` is the scope, and every
+   * credential in it must go with the project while the append-only audit log
+   * keeps its rows.
+   */
+  deleteScope(scope: string): number {
+    return this.#db.prepare('DELETE FROM secrets WHERE scope = ?').run(scope).changes;
+  }
+
+  /**
    * Rewrites every `v1` row under the `v2` `(scope, name)` AAD. Called once at boot.
    *
    * In code rather than in migration 009, because a migration is SQL and re-encryption
