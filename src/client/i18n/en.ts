@@ -209,7 +209,7 @@ export const en = {
   'audit.when': 'When',
   'audit.event': 'Event',
   'audit.outcome': 'Outcome',
-  'audit.client': 'Client',
+  'audit.client': '{browser} on {platform}',
   'audit.meta': 'Detail',
   'audit.metaRaw': 'The metadata, exactly as stored',
   'audit.filter': 'Event',

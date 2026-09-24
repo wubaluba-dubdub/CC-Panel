@@ -198,7 +198,7 @@ const fa: Dict = {
   'audit.when': 'زمان',
   'audit.event': 'رویداد',
   'audit.outcome': 'نتیجه',
-  'audit.client': 'کلاینت',
+  'audit.client': '{browser} در {platform}',
   'audit.meta': 'جزئیات',
   'audit.metaRaw': 'فراداده، دقیقاً همان‌طور که ذخیره شده است',
   'audit.filter': 'رویداد',

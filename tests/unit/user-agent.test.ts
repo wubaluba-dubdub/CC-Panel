@@ -5,6 +5,7 @@ import {
   UA_CAP,
   browserLabel,
   summariseClient,
+  summariseAuditClient,
 } from '../../src/client/lib/user-agent.js';
 
 /**
@@ -99,6 +100,14 @@ describe('the client summariser reads three facts', () => {
     // The one member that is a word rather than a name is left to the caller to translate.
     expect(browserLabel({ browser: 'Unknown', version: null, platform: 'Unknown' })).toBeNull();
     expect(browserLabel({ browser: 'Safari', version: null, platform: 'macOS' })).toBe('Safari');
+  });
+});
+
+describe('the audit client summary', () => {
+  it('contains only the user-agent summary, never actorIp', () => {
+    const summary = summariseAuditClient({ userAgent: 'Chrome/152.0 (Windows NT 10.0)' });
+    expect(summary).toEqual({ browser: 'Chrome', version: '152', platform: 'Windows' });
+    expect(Object.keys(summary)).toEqual(['browser', 'version', 'platform']);
   });
 });
 

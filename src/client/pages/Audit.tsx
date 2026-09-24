@@ -7,6 +7,7 @@ import { useLocale } from '../i18n/index.js';
 import { api } from '../lib/api.js';
 import { META_INLINE_PAIRS, metaPairs, rawMeta, type MetaPair } from '../lib/meta.js';
 import { AUDIT_TABLE, type AuditColumnKey } from '../lib/table.js';
+import { browserLabel, summariseAuditClient } from '../lib/user-agent.js';
 import type { AuditEntryView, AuditPageResponse, AuditVerifyResponse } from '../../shared/types.js';
 
 /**
@@ -87,6 +88,9 @@ export function Audit(): React.JSX.Element {
   const rows: DataRow<AuditColumnKey>[] = entries.map((entry) => {
     const pairs = metaPairs(entry.meta);
     const raw = rawMeta(entry.meta);
+    const client = summariseAuditClient({ userAgent: entry.userAgent });
+    const browser = browserLabel(client) ?? t('common.unknown');
+    const platform = client.platform === 'Unknown' ? t('common.unknown') : client.platform;
     return {
       id: entry.id,
       cells: {
@@ -119,6 +123,7 @@ export function Audit(): React.JSX.Element {
                 {pairs.length > META_INLINE_PAIRS ? (
                   <Pairs pairs={pairs.slice(META_INLINE_PAIRS)} />
                 ) : null}
+                <p className="hint">{t('audit.client', { browser, platform })}</p>
                 <p className="hint">{t('audit.metaRaw')}</p>
                 <MonoBlock>{raw}</MonoBlock>
                 <div className="row">

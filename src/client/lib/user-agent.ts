@@ -30,6 +30,8 @@
  * it does show are three substring checks each.
  */
 
+import type { AuditEntryView } from '../../shared/types.js';
+
 /** The longest input considered. A real user agent is under 200 characters. */
 export const UA_CAP = 256;
 
@@ -136,4 +138,11 @@ export function summariseClient(raw: string | null | undefined): ClientSummary {
 export function browserLabel(summary: ClientSummary): string | null {
   if (summary.browser === 'Unknown') return null;
   return summary.version === null ? summary.browser : `${summary.browser} ${summary.version}`;
+}
+
+/** Audit expander view, deliberately limited to the user-agent field. */
+export function summariseAuditClient(
+  entry: Pick<AuditEntryView, 'userAgent'>,
+): ClientSummary {
+  return summariseClient(entry.userAgent);
 }
