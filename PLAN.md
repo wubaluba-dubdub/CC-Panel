@@ -101,8 +101,8 @@ design section below, and M1.8's under §*Built in M1.8*
 │   │   │   ├── Security.tsx
 │   │   │   └── AuditLog.tsx
 │   │   └── styles/
-│   │       ├── globals.css       # tailwind v4 directives, theme tokens, animations
-│   │       └── fonts.css         # self-hosted Inter + JetBrains Mono @font-face
+│   │       ├── globals.css       # plain CSS design tokens, components, and motion
+│   │       └── fonts.css         # self-hosted Vazirmatn + JetBrains Mono @font-face
 │   └── shared/
 │       └── types.ts              # API contract types shared between server/client
 ├── tests/
@@ -126,7 +126,7 @@ design section below, and M1.8's under §*Built in M1.8*
 │       ├── rate-limit.test.ts
 │       └── secret-leak.test.ts   # sentinel secret sweep
 └── scripts/
-    └── generate-fonts.sh         # downloads Inter + JetBrains Mono woff2
+    └── generate-fonts.sh         # downloads Vazirmatn + JetBrains Mono woff2
 ```
 
 ## Dependencies
@@ -147,8 +147,6 @@ design section below, and M1.8's under §*Built in M1.8*
 - `typescript` ^5.7
 - `vite` ^6
 - `@vitejs/plugin-react`
-- `tailwindcss` ^4
-- `@tailwindcss/vite`
 - `vitest` ^4
 - `supertest`
 - `@types/better-sqlite3`
@@ -1873,8 +1871,8 @@ shape.
 The eight items as they always were, plus R3 built in from the first line rather than
 retrofitted:
 
-1. Tailwind v4 theme: colors, spacing, font stacks, animation keyframes in
-   `globals.css`. Self-host fonts via `fonts.css`.
+1. Plain CSS design tokens, components, and motion in `globals.css`; self-host
+   Vazirmatn and JetBrains Mono through `fonts.css`.
 2. Primitive components: Button, Input, Card, Dialog, Skeleton, Tooltip, Badge,
    Layout. All keyboard-accessible, focus-visible rings, ARIA.
 3. Client lib: api fetch wrapper (CSRF token, base path), auth context, toast
@@ -1948,12 +1946,11 @@ mechanisms below all exist to make one property true: direction is a *setting*, 
 rewrite.
 
 **Logical properties, from the first line.** Every component uses
-`margin-inline-start` / `padding-inline` / `inset-inline-start` / `text-align: start`, and in
-Tailwind v4 that means the logical utilities — `ms-` `me-` `ps-` `pe-` `start-` `end-`
-`text-start` `text-end` `border-s` `border-e` `rounded-s` `rounded-e` — never `ml-` `mr-`
-`pl-` `pr-` `left-` `right-` `text-left` `text-right` `border-l` `border-r`. Physical sides
-are permitted only where the thing has a physical side (a drop shadow's offset, an icon that
-means "down"), and each one is listed in an allowlist file with a reason.
+`margin-inline-start` / `padding-inline` / `inset-inline-start` / `text-align: start`; plain
+CSS declarations are scanned directly. Never use physical sides such as `margin-left`,
+`padding-right`, `left`, `right`, or `text-align: left`. Physical sides are permitted only
+where the thing has a physical side (a drop shadow's offset, an icon that means "down"), and
+each one is listed in an allowlist file with a reason.
 
 Enforced by **a static scan test in the same style as `cookie-discipline.test.ts`** — no new
 tooling, and the project already trusts that mechanism — over `src/client/**`, matching the
@@ -2043,14 +2040,13 @@ translated. Specified now, written in M2.1.
   only wrong-direction frame anyone ever sees is on a brand-new browser profile whose
   `Accept-Language` disagrees with the stored preference. That is the right trade.
 
-**Fonts.** Inter does not cover Persian. Pair it with **Vazirmatn** (SIL OFL 1.1, maintained,
-designed for UI, has a variable weight axis and a matching Latin companion). Alternative:
-Estedad. *Not* IRANSans — its licence does not permit redistribution, and this must be served
-from the panel because `font-src 'self'` has no CDN in it. Subset to Arabic, Arabic
-Supplement, Arabic Extended-A, Arabic Presentation Forms A/B and Persian punctuation; split by
-`unicode-range` so an English-only page never downloads it. Subsetting happens at development
-time and the `woff2` is committed, like the existing plan for Inter — the runtime image has no
-Python and is not getting one.
+**Fonts.** Use **Vazirmatn** (SIL OFL 1.1, maintained, designed for UI, with a variable weight
+axis and matching Latin companion) and JetBrains Mono. Do not ship Inter: Vazirmatn covers
+Persian and the Latin companion covers English. *Not* IRANSans — its licence does not permit
+redistribution, and fonts must be served from the panel because `font-src 'self'` has no CDN.
+Subset Arabic, Arabic Supplement, Arabic Extended-A, Arabic Presentation Forms A/B and Persian
+punctuation; split by `unicode-range` so an English-only page never downloads it. Subsetting
+happens at development time and the `woff2` is committed; the runtime image has no Python.
 
 **Formatting.** Timestamps are stored as ISO-8601 UTC and formatted through
 `Intl.DateTimeFormat` with the active locale, which gives an Iranian operator a Jalali date
