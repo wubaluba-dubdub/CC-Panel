@@ -13,7 +13,7 @@ import {
 import { startFakeTelegram, type FakeTelegram } from '../helpers/fake-telegram.js';
 import { getDb } from '../../src/server/db.js';
 import { mask } from '../../src/server/crypto.js';
-import { AuditEvent } from '../../src/server/services/audit.service.js';
+import { AuditEvent } from '../../src/shared/audit-events.js';
 import type { NotificationStatusResponse } from '../../src/shared/types.js';
 
 const BASE = 'notiftest-base-path-sentinel';

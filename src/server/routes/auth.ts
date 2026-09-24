@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { AuditEvent, FailureReason, type FailureReasonName } from '../services/audit.service.js';
+import { FailureReason, type FailureReasonName } from '../services/audit.service.js';
+import { AuditEvent } from '../../shared/audit-events.js';
 import { runAuthAttempt } from '../services/auth-attempt.js';
 import type { AuthRuntime } from '../services/auth-runtime.js';
 import {

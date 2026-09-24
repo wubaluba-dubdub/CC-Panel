@@ -7,7 +7,8 @@ import type {
   WatchdogDisarmedReason,
   WatchdogRuleStatus,
 } from '../../shared/types.js';
-import { AuditEvent, type AuditService } from './audit.service.js';
+import type { AuditService } from './audit.service.js';
+import { AuditEvent } from '../../shared/audit-events.js';
 import type { NotifyService } from './notify.service.js';
 import {
   AlertStateStore,

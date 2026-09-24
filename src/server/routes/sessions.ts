@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { AuditEvent } from '../services/audit.service.js';
+import { AuditEvent } from '../../shared/audit-events.js';
 import type { AuthRuntime } from '../services/auth-runtime.js';
 import { HttpError, requireFullSession } from '../plugins/auth.js';
 import { clientIpForDisplay, userAgentForDisplay } from '../utils/client-ip.js';

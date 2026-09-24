@@ -1,4 +1,4 @@
-import { AuditEvent } from '../services/audit.service.js';
+import { AuditEvent } from '../../shared/audit-events.js';
 import { BOT_TOKEN, CHAT_ID, TELEGRAM_SCOPE, telegramConfigStatus } from '../services/telegram-config.js';
 import { Report, describeSecret } from './report.js';
 import { hasFlag, isMain, openPanel, promptSecret } from './telegram-cli.js';

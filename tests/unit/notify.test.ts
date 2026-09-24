@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { closeDb, getDb, initDb } from '../../src/server/db.js';
 import { SecretString, initCrypto, resetCrypto } from '../../src/server/crypto.js';
-import { AuditEvent, AuditService } from '../../src/server/services/audit.service.js';
+import { AuditEvent } from '../../src/shared/audit-events.js';
+import { AuditService } from '../../src/server/services/audit.service.js';
 import {
   BACKOFF_BASE_MS,
   BACKOFF_CAP_MS,

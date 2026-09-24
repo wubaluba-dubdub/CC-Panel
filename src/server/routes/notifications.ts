@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { HttpError, requireFullSession } from '../plugins/auth.js';
 import type { AuthRuntime } from '../services/auth-runtime.js';
-import { AuditEvent } from '../services/audit.service.js';
+import { AuditEvent } from '../../shared/audit-events.js';
 import { clientIpForDisplay, userAgentForDisplay } from '../utils/client-ip.js';
 import type { NotifyService } from '../services/notify.service.js';
 import { TELEGRAM_SCOPE, telegramConfigStatus } from '../services/telegram-config.js';

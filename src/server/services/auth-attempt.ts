@@ -1,5 +1,5 @@
 import type { FastifyRequest } from 'fastify';
-import { AuditEvent } from './audit.service.js';
+import { AuditEvent } from '../../shared/audit-events.js';
 import { targetForAttempt } from './auth-delay.service.js';
 import type { AuthRuntime } from './auth-runtime.js';
 import { clientIpForDisplay, userAgentForDisplay } from '../utils/client-ip.js';

@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { AuditEvent } from '../services/audit.service.js';
+import { AuditEvent } from '../../shared/audit-events.js';
 import type { AuthRuntime } from '../services/auth-runtime.js';
 import { HttpError, requireStepUp } from '../plugins/auth.js';
 import { regenerateBasePath } from '../services/instance.service.js';

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { getDb } from '../../src/server/db.js';
-import { AuditEvent } from '../../src/server/services/audit.service.js';
+import { AuditEvent } from '../../src/shared/audit-events.js';
 import {
   ORIGIN_ABSENCE_THROTTLE_MS,
   isOriginAbsentOnStateChange,

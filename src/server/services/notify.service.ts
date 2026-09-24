@@ -3,9 +3,8 @@ import { getDb } from '../db.js';
 import { SecretString } from '../crypto.js';
 import { createBasePathElider, redactSecrets } from '../plugins/logger-redaction.js';
 import { type Clock, isoFrom, isoNow, systemClock } from '../utils/clock.js';
+import { AuditEvent } from '../../shared/audit-events.js';
 import {
-  AuditEvent,
-  type AuditEventName,
   type AuditRecord,
   type AuditService,
 } from './audit.service.js';
@@ -15,6 +14,7 @@ import { countedEventsFor, ruleFor, type NotifiedAuditEvent } from './notificati
 import { failureCategory, type NotificationTransport } from './telegram.transport.js';
 import type { TimerHandle } from './resources.service.js';
 import type { NotificationFailureCategory } from '../../shared/types.js';
+import type { AuditEventName } from '../../shared/audit-events.js';
 
 /**
  * The notification queue and its single worker.

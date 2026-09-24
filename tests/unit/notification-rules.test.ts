@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { closeDb, getDb, initDb } from '../../src/server/db.js';
 import { initCrypto, resetCrypto } from '../../src/server/crypto.js';
-import { AuditEvent, AuditService, FailureReason } from '../../src/server/services/audit.service.js';
+import { AuditEvent } from '../../src/shared/audit-events.js';
+import { AuditService, FailureReason } from '../../src/server/services/audit.service.js';
 import { NOTIFICATION_RULES, ruleFor } from '../../src/server/services/notification-rules.js';
 import { NotifyService } from '../../src/server/services/notify.service.js';
 import type {

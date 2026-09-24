@@ -9,7 +9,7 @@ import {
   STEP_UP_WINDOW_MS,
 } from '../../src/server/services/session.service.js';
 import { TOTP_PERIOD_SECONDS } from '../../src/server/services/totp.service.js';
-import { AuditEvent } from '../../src/server/services/audit.service.js';
+import { AuditEvent } from '../../src/shared/audit-events.js';
 import {
   SESSION_COOKIE,
   TEST_PASSWORD,

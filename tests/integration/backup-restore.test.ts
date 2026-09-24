@@ -7,7 +7,7 @@ import { initCrypto } from '../../src/server/crypto.js';
 import { backupDatabase } from '../../src/server/cli/backup.js';
 import { restoreDatabase } from '../../src/server/cli/restore.js';
 import { inspectDatabase } from '../../src/server/cli/db-file.js';
-import { AuditEvent } from '../../src/server/services/audit.service.js';
+import { AuditEvent } from '../../src/shared/audit-events.js';
 import {
   createAuthTestServer,
   enrollAccount,
