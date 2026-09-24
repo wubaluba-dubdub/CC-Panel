@@ -3,6 +3,7 @@ import type { Database } from 'better-sqlite3';
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -146,6 +147,36 @@ export interface SweepResult {
   removed: string[];
 }
 
+/** Closed reasons an immediate child of `projects/` is not a rowless residual. */
+export type ProjectDirIgnoredReason = 'not_uuid' | 'symlink' | 'not_directory';
+
+/** One considered entry that is not a rowless UUID directory. Name only, never a path. */
+export interface ProjectDirIgnored {
+  readonly name: string;
+  readonly reason: ProjectDirIgnoredReason;
+}
+
+/**
+ * Read-only discovery of deletion crash residuals under `projects/`.
+ * UUIDs and closed reason codes only — never absolute paths.
+ */
+export interface ProjectDirsDiagnostic {
+  /** Canonical-UUID directories with no database row. Deterministically sorted. */
+  readonly rowless: readonly string[];
+  /** Entries excluded from `rowless`, sorted by name. */
+  readonly ignored: readonly ProjectDirIgnored[];
+}
+
+/**
+ * Canonical lowercase UUID (what `crypto.randomUUID()` emits and what this
+ * service names directories). Rejects empty, `:`, `/`, `.`, `..`, NUL, and
+ * any non-canonical shape before the string is ever joined into an AAD.
+ */
+const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** Closed set of future project credentials. No arbitrary table/name input. */
+export type ProjectCredentialKind = 'api_key' | 'hook_token';
+
 /**
  * The per-project secret scope, `project:<uuid>`.
  *
@@ -165,6 +196,27 @@ function assertUuidSegment(uuid: string): void {
   if (uuid.includes('/') || uuid.includes('\0') || uuid === '.' || uuid === '..') {
     throw new Error('invalid project uuid segment');
   }
+}
+
+/**
+ * Future project-credential AAD. Defines and proves the contract only — this
+ * prompt stores neither credential.
+ *
+ * Exact forms (not interchangeable):
+ * - `api_key`     → `projects:<uuid>:api_key`
+ * - `hook_token`  → `secrets:project:<uuid>:hook_token`
+ *
+ * The UUID component is validated as canonical before joining, so an untrusted
+ * component containing `:` (or `/`, `.`, `..`, NUL, empty, or malformed) can
+ * never reach the AAD. `columnAad`'s global table/column rules are untouched.
+ */
+export function projectCredentialAad(kind: ProjectCredentialKind, uuid: string): string {
+  if (!CANONICAL_UUID.test(uuid)) {
+    throw new Error('project credential AAD component must be a canonical uuid');
+  }
+  if (kind === 'api_key') return `projects:${uuid}:api_key`;
+  if (kind === 'hook_token') return `secrets:project:${uuid}:hook_token`;
+  throw new Error('unknown project credential kind');
 }
 
 export interface ProjectStoreOptions {
@@ -376,11 +428,12 @@ export class ProjectStoreService {
    *
    * Order and crash residual:
    * - **after the database step**: row and `project:<uuid>` secrets are gone;
-   *   `projects/<uuid>/` still exists. Invisible in the UI; the next boot can
-   *   ignore it (it is inert bytes) or an operator can remove it. Chosen
-   *   because the panel's view of the world is the database — once the row is
-   *   gone the project is deleted from the operator's perspective, and a
-   *   crash cannot resurrect a half-deleted credential.
+   *   `projects/<uuid>/` still exists. Invisible in the UI and ignored by the
+   *   boot sweep (which only walks the staging prefix), but discoverable
+   *   deterministically via {@link ProjectStoreService.diagnoseProjectDirs}.
+   *   Chosen because the panel's view of the world is the database — once the
+   *   row is gone the project is deleted from the operator's perspective, and
+   *   a crash cannot resurrect a half-deleted credential.
    * - **after the filesystem step**: everything this prompt deletes is gone.
    *
    * Future refusal check: the "refuse while a session is attached" guard (M3,
@@ -424,6 +477,63 @@ export class ProjectStoreService {
     }
 
     return { rowDeleted, secretsDeleted, dirRemoved };
+  }
+
+  /**
+   * Read-only discovery of rowless directories under `projects/`.
+   *
+   * **What it sees:** immediate children of `projects/` only. A canonical-UUID
+   * name that `lstat`s to a real directory and has no repository row is
+   * residual (`reason`-free UUID in `rowless`).
+   *
+   * **What it does not see / never follows:** non-UUID names (classified
+   * `not_uuid`), symlinks (`symlink`, never followed — `lstat` only), and
+   * non-directory entries (`not_directory`). No recursive walk. No delete,
+   * rename, or write of any kind. Returns UUIDs and closed reason codes —
+   * never the data-root path.
+   *
+   * Deterministically sorted. Safe to call at any time; mutates neither the
+   * database nor the filesystem.
+   */
+  diagnoseProjectDirs(): ProjectDirsDiagnostic {
+    const rowless: string[] = [];
+    const ignored: ProjectDirIgnored[] = [];
+
+    let names: string[];
+    try {
+      names = readdirSync(this.#projectsDir);
+    } catch {
+      return { rowless: [], ignored: [] };
+    }
+
+    const known = new Set(this.#projects.list().map((p) => p.uuid));
+
+    for (const name of names) {
+      if (!CANONICAL_UUID.test(name)) {
+        ignored.push({ name, reason: 'not_uuid' });
+        continue;
+      }
+      let st;
+      try {
+        st = lstatSync(join(this.#projectsDir, name));
+      } catch {
+        ignored.push({ name, reason: 'not_directory' });
+        continue;
+      }
+      if (st.isSymbolicLink()) {
+        ignored.push({ name, reason: 'symlink' });
+        continue;
+      }
+      if (!st.isDirectory()) {
+        ignored.push({ name, reason: 'not_directory' });
+        continue;
+      }
+      if (!known.has(name)) rowless.push(name);
+    }
+
+    rowless.sort();
+    ignored.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    return { rowless, ignored };
   }
 
   /**

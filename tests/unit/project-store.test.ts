@@ -9,6 +9,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +23,7 @@ import {
   DiskGuardRefusedError,
   STAGING_MIN_AGE_MS,
   STAGING_PREFIX,
+  projectCredentialAad,
   projectScope,
   writeProjectJsonAtomic,
   type ProjectJson,
@@ -224,18 +226,22 @@ describe('M2.2 — boot sweep for abandoned staging', () => {
 
   it('removes staging older than the age guard and keeps younger staging', () => {
     const s = store();
+    // Fixtures required before the sweep: old staging, young staging, projects sentinel.
     const oldName = `${STAGING_PREFIX}old-one`;
     const youngName = `${STAGING_PREFIX}young-one`;
     makeStaging(oldName);
     makeStaging(youngName);
     s.ageStagingForTest(oldName, STAGING_MIN_AGE_MS + 1000);
     // youngName keeps its fresh mtime.
+    expect(existsSync(join(dataDir, 'projects'))).toBe(true);
 
     const result = s.bootSweep();
     expect(result.removed).toEqual([oldName]);
     expect(existsSync(join(dataDir, oldName))).toBe(false);
     expect(existsSync(join(dataDir, youngName))).toBe(true);
-    // Non-vacuous: the kept entry really existed and really survived.
+    // Sentinel fixture survived. Omitting projects/ from the fixture makes
+    // bootSweep throw, so this test fails rather than passing vacuously.
+    expect(existsSync(join(dataDir, 'projects'))).toBe(true);
     expect(readdirSync(dataDir)).toContain(youngName);
   });
 
@@ -333,6 +339,13 @@ describe('M2.2 — deletion order and crash residuals', () => {
     expect(existsSync(s.projectDir(uuid))).toBe(true);
     expect(existsSync(s.workspaceDir(uuid))).toBe(true);
     expect(existsSync(s.projectJsonPath(uuid))).toBe(true);
+
+    // The residual is deterministically discoverable (read-only diagnostic).
+    expect(s.diagnoseProjectDirs().rowless).toEqual([uuid]);
+
+    // Explicit cleanup; the diagnostic is clear afterwards.
+    rmSync(s.projectDir(uuid), { recursive: true, force: true });
+    expect(s.diagnoseProjectDirs().rowless).toEqual([]);
   });
 
   it('crash after the filesystem step leaves everything this prompt deletes gone', () => {
@@ -405,15 +418,55 @@ describe('M2.2 — secret scope helper', () => {
     expect(repo.list('global')).toHaveLength(1);
   });
 
-  it('AAD form for a project secret is secrets:project:<uuid>:<name>', async () => {
-    const { columnAad } = await import('../../src/server/crypto.js');
+  it('AAD forms are byte-identical to the two required project credential strings', () => {
     const uuid = '9f8e2c1a-0000-4000-8000-123456789abc';
-    expect(columnAad('secrets', projectScope(uuid), 'api_key')).toBe(
+    expect(projectCredentialAad('api_key', uuid)).toBe(`projects:${uuid}:api_key`);
+    expect(projectCredentialAad('hook_token', uuid)).toBe(`secrets:project:${uuid}:hook_token`);
+    // Exact bytes, not a normalized/case-folded form.
+    expect(projectCredentialAad('api_key', uuid)).toBe('projects:9f8e2c1a-0000-4000-8000-123456789abc:api_key');
+    expect(projectCredentialAad('hook_token', uuid)).toBe(
+      'secrets:project:9f8e2c1a-0000-4000-8000-123456789abc:hook_token',
+    );
+    expect(projectCredentialAad('api_key', uuid)).not.toBe(
       `secrets:project:${uuid}:api_key`,
     );
-    expect(columnAad('secrets', projectScope(uuid), 'hook_token')).toBe(
-      `secrets:project:${uuid}:hook_token`,
-    );
+  });
+
+  it('rejects empty, colon, slash, dot, dot-dot, NUL, and malformed UUID components', () => {
+    const bad = [
+      '',
+      'has:colon',
+      'has/slash',
+      '.',
+      '..',
+      'a\0b',
+      'not-a-uuid',
+      '9f8e2c1a000040008000123456789abc',
+      '9f8e2c1a-0000-4000-8000-123456789ab',
+      '9f8e2c1a-0000-4000-8000-123456789abc-extra',
+      'AAAAAAA-bbbb-cccc-dddd-eeeeeeeeeeee',
+    ];
+    for (const component of bad) {
+      expect(() => projectCredentialAad('api_key', component), component).toThrow(
+        /canonical uuid/,
+      );
+      expect(() => projectCredentialAad('hook_token', component), component).toThrow(
+        /canonical uuid/,
+      );
+    }
+  });
+
+  it('columnAad global table/column rule was not weakened', async () => {
+    const { columnAad } = await import('../../src/server/crypto.js');
+    // Still rejects ':' in table and in column (the name slot).
+    expect(() => columnAad('secrets', 'project:7', 'x')).not.toThrow();
+    expect(() => columnAad('secrets', 'project', '7:x')).toThrow(/must not contain/);
+    expect(() => columnAad('a:b', 'x', 'c')).toThrow(/must not contain/);
+    expect(() => columnAad('secrets', 'x', '')).toThrow(/must not be empty/);
+    expect(() => columnAad('', 'x', 'c')).toThrow(/must not be empty/);
+    // The project-credential helper never routes an untrusted component through
+    // columnAad's rowId slot; it validates first and uses fixed table/kind text.
+    expect(() => projectScope('7:x')).toThrow(/must not contain/);
   });
 });
 
@@ -562,15 +615,19 @@ describe('M2.2 — staging age guard', () => {
   it('is one minute, and the sweep respects it exactly at the boundary', () => {
     expect(STAGING_MIN_AGE_MS).toBe(60_000);
     const s = store();
+    // Sentinel fixture required before the sweep.
+    expect(existsSync(join(dataDir, 'projects'))).toBe(true);
     const name = `${STAGING_PREFIX}boundary`;
     mkdirSync(join(dataDir, name), { recursive: true });
     // Exactly at the boundary: age < MIN is kept, age >= MIN is swept.
     s.ageStagingForTest(name, STAGING_MIN_AGE_MS - 1);
     expect(s.bootSweep().removed).toEqual([]);
     expect(existsSync(join(dataDir, name))).toBe(true);
+    expect(existsSync(join(dataDir, 'projects'))).toBe(true);
     s.ageStagingForTest(name, STAGING_MIN_AGE_MS);
     expect(s.bootSweep().removed).toEqual([name]);
     expect(existsSync(join(dataDir, name))).toBe(false);
+    expect(existsSync(join(dataDir, 'projects'))).toBe(true);
   });
 });
 
@@ -605,5 +662,61 @@ describe('M2.2 — no symlinks in the layout', () => {
     expect(lstatSync(s.workspaceDir(project.uuid)).isSymbolicLink()).toBe(false);
     expect(lstatSync(s.claudeHomeDir(project.uuid)).isSymbolicLink()).toBe(false);
     expect(lstatSync(s.projectDir(project.uuid)).isSymbolicLink()).toBe(false);
+  });
+});
+
+// ─── Read-only rowless-directory discovery ──────────────────────────────────
+
+describe('M2.2 — diagnoseProjectDirs is a non-mutating discovery contract', () => {
+  it('classifies one DB-backed project, one rowless UUID, one non-UUID entry, and one symlink', () => {
+    const s = store();
+    const { project } = s.create({ slug: 'diagnostic-backed' });
+    const rowless = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const symlinkName = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    mkdirSync(s.projectDir(rowless), { recursive: true, mode: 0o700 });
+    mkdirSync(join(dataDir, 'projects', 'not-a-uuid'), { recursive: true, mode: 0o700 });
+    symlinkSync(s.projectDir(project.uuid), s.projectDir(symlinkName));
+
+    const dbBefore = (
+      getDb().prepare('SELECT COUNT(*) AS c FROM projects').get() as { c: number }
+    ).c;
+    const fsBefore = walk(dataDir);
+
+    const d = s.diagnoseProjectDirs();
+    expect(d.rowless).toEqual([rowless]);
+    expect(d.rowless).not.toContain(project.uuid);
+    expect(d.ignored).toEqual([
+      { name: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', reason: 'symlink' },
+      { name: 'not-a-uuid', reason: 'not_uuid' },
+    ]);
+    // Closed fields only: no absolute path, no data-root leak.
+    expect(JSON.stringify(d)).not.toContain(dataDir);
+    expect(JSON.stringify(d)).not.toContain('/projects/');
+    for (const entry of d.ignored) {
+      expect(entry.reason === 'not_uuid' || entry.reason === 'symlink' || entry.reason === 'not_directory').toBe(true);
+    }
+
+    // No mutation of DB or filesystem.
+    expect(walk(dataDir)).toEqual(fsBefore);
+    expect(
+      (getDb().prepare('SELECT COUNT(*) AS c FROM projects').get() as { c: number }).c,
+    ).toBe(dbBefore);
+
+    // Sorted deterministically: rowless is a single UUID; ignored by name.
+    expect([...d.rowless].sort()).toEqual(d.rowless);
+    expect([...d.ignored].map((e) => e.name)).toEqual(
+      [...d.ignored].map((e) => e.name).slice().sort(),
+    );
+  });
+
+  it('is empty (and still non-mutating) when projects/ holds only DB-backed directories', () => {
+    const s = store();
+    const { project } = s.create({ slug: 'only-backed' });
+    const fsBefore = walk(dataDir);
+    const d = s.diagnoseProjectDirs();
+    expect(d.rowless).toEqual([]);
+    expect(d.ignored).toEqual([]);
+    expect(walk(dataDir)).toEqual(fsBefore);
+    expect(new ProjectsRepository().getByUuid(project.uuid)).not.toBeNull();
   });
 });
