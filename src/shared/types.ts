@@ -340,6 +340,21 @@ export interface MetricsResponse extends ResourceSnapshot {
   watchdog: WatchdogBlock;
 }
 
+/** Telegram rejection reasons returned as machine-readable failure categories. */
+export type TelegramRejection =
+  | 'bad_token'
+  | 'unknown_chat'
+  | 'not_started'
+  | 'rate_limited'
+  | 'webhook_active'
+  | 'other';
+
+/** Serialized notification failure categories shared by the API and client. */
+export type NotificationFailureCategory =
+  | 'not_configured'
+  | `unreachable:${string}`
+  | `rejected:${TelegramRejection}`;
+
 /**
  * `GET /api/notifications/telegram`.
  *
@@ -363,7 +378,7 @@ export interface NotificationStatusResponse {
   dropped: { count: number; since: string | null };
   lastSuccessAt: string | null;
   /** A category and a time. Never Telegram's own text, which echoes what was sent. */
-  lastFailure: { at: string; category: string } | null;
+  lastFailure: { at: string; category: NotificationFailureCategory } | null;
 }
 
 /** `POST /api/notifications/test` — `202`, because delivery is never synchronous. */

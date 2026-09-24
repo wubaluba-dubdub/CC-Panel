@@ -14,6 +14,7 @@ import type { NotifyEvent, NotifyEventKind, NotifyLocale } from './notification-
 import { countedEventsFor, ruleFor, type NotifiedAuditEvent } from './notification-rules.js';
 import { failureCategory, type NotificationTransport } from './telegram.transport.js';
 import type { TimerHandle } from './resources.service.js';
+import type { NotificationFailureCategory } from '../../shared/types.js';
 
 /**
  * The notification queue and its single worker.
@@ -695,14 +696,16 @@ export class NotifyService {
   }
 
   /** The newest failure, as a category and a time. Never a response body. */
-  lastFailure(): { at: string; category: string } | null {
+  lastFailure(): { at: string; category: NotificationFailureCategory } | null {
     const row = this.#db
       .prepare(
         `SELECT created_at, last_error FROM notification_queue
           WHERE last_error IS NOT NULL ORDER BY id DESC LIMIT 1`,
       )
       .get() as { created_at: string; last_error: string } | undefined;
-    return row === undefined ? null : { at: row.created_at, category: row.last_error };
+    return row === undefined
+      ? null
+      : { at: row.created_at, category: row.last_error as NotificationFailureCategory };
   }
 }
 

@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { SecretString } from '../crypto.js';
+import type { NotificationFailureCategory, TelegramRejection } from '../../shared/types.js';
 import {
   OutboundUnreachableError,
   createOutboundFetch,
@@ -29,18 +30,7 @@ export const TELEGRAM_TEXT_LIMIT = 4096;
 /** How far back from the cut a newline is worth looking for, in code points. */
 const NEWLINE_SEARCH_WINDOW = 200;
 
-export type TelegramRejection =
-  /** 401. The token is wrong, or was revoked with /revoke in BotFather. */
-  | 'bad_token'
-  /** 400 `chat not found`. The id is wrong, or belongs to another bot's chat. */
-  | 'unknown_chat'
-  /** 403. The recipient has never pressed Start, or has blocked the bot. */
-  | 'not_started'
-  /** 429. Honour `parameters.retry_after`, which is authoritative. */
-  | 'rate_limited'
-  /** 409 from `getUpdates` while a webhook is set. Only discovery can see this. */
-  | 'webhook_active'
-  | 'other';
+export type { TelegramRejection } from '../../shared/types.js';
 
 export type TransportFailure =
   /** No bot token or no chat id stored. Not an error — a state. */
@@ -95,7 +85,7 @@ export interface NotificationTransport {
 }
 
 /** A single flat category, for `last_error` and for audit metadata. Never a body. */
-export function failureCategory(failure: TransportFailure): string {
+export function failureCategory(failure: TransportFailure): NotificationFailureCategory {
   switch (failure.kind) {
     case 'not_configured':
       return 'not_configured';
