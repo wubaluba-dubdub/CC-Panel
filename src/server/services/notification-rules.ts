@@ -1,4 +1,4 @@
-import { AuditEvent, type AuditEventName } from './audit.service.js';
+import { AuditEvent, type AuditEventName } from '../../shared/audit-events.js';
 
 /**
  * Which audit events are worth a message on the operator's phone, in one file.
@@ -116,6 +116,8 @@ export const NOTIFICATION_RULES = {
   [AuditEvent.NotificationSent]: null,
   [AuditEvent.NotificationAbandoned]: null,
   [AuditEvent.NotificationDropped]: null,
+  // A test-send request is logged locally; forwarding its audit row would test the sender recursively.
+  [AuditEvent.NotificationTestRequested]: null,
   // ── The watchdog's four, and they are silent *here* rather than unnotified ────
   //
   // Each of these already reaches the operator, and by a better route: the watchdog

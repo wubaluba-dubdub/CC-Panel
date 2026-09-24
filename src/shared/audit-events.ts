@@ -1,0 +1,31 @@
+/** Fixed audit event vocabulary shared by the server and client. */
+export const AuditEvent = {
+  SetupCompleted: 'setup.completed',
+  TwoFactorEnrollmentStarted: 'two_factor.enrollment_started',
+  LoginSuccess: 'login.success',
+  LoginFailure: 'login.failure',
+  TotpFailure: 'totp.failure',
+  RecoveryCodeUsed: 'recovery_code.used',
+  DelayApplied: 'auth.delay_applied',
+  SessionCreated: 'session.created',
+  SessionRevoked: 'session.revoked',
+  PasswordChanged: 'password.changed',
+  StepUpGranted: 'stepup.granted',
+  TwoFactorDisabled: 'two_factor.disabled',
+  RecoveryCodesRegenerated: 'recovery_codes.regenerated',
+  SecretRevealed: 'secret.revealed',
+  SecretChanged: 'secret.changed',
+  BasePathRegenerated: 'base_path.regenerated',
+  AuditTrimmed: 'audit.trimmed',
+  OriginAbsentAdmitted: 'origin.absent_admitted',
+  NotificationSent: 'notification.sent',
+  NotificationAbandoned: 'notification.abandoned',
+  NotificationDropped: 'notification.dropped',
+  NotificationTestRequested: 'notification.test_requested',
+  ResourceThresholdCrossed: 'resource.threshold_crossed',
+  ResourceThresholdCleared: 'resource.threshold_cleared',
+  ResourceOomKill: 'resource.oom_kill',
+  UncleanRestart: 'panel.unclean_restart',
+} as const;
+
+export type AuditEventName = (typeof AuditEvent)[keyof typeof AuditEvent];

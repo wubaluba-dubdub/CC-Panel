@@ -124,6 +124,8 @@ export interface ServerConfig {
    * passes this.
    */
   logTarget?: { write(chunk: string): void };
+  /** Test seam to observe routes as Fastify registers them. */
+  routeObserver?: (method: string, url: string) => void;
   /**
    * Injected time and sleep. The delay schedule tops out at thirty seconds, so
    * the suite drives both rather than waiting. Production uses the real ones.
@@ -523,6 +525,13 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   const clientDir = resolveClientDir(config.client?.dir);
   const shell = loadShell(clientDir, basePath);
   const shellBody = shell.html;
+
+  if (config.routeObserver !== undefined) {
+    app.addHook('onRoute', (route) => {
+      const methods = Array.isArray(route.method) ? route.method : [route.method];
+      for (const method of methods) config.routeObserver!(method, route.url);
+    });
+  }
 
   // ── Generic error responses ────────────────────────────────────────────────
   //

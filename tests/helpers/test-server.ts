@@ -126,6 +126,7 @@ export function makeTestEnv(overrides: EnvOverrides = {}): Env {
 export interface CreateTestServerOptions {
   beforeReady?: (app: FastifyInstance) => void;
   logTarget?: { write(chunk: string): void };
+  routeObserver?: (method: string, url: string) => void;
   clock?: Clock;
   sleep?: Sleep;
   authQueueLimit?: number;
@@ -206,6 +207,7 @@ export async function createTestServer(
   const app = await buildServer({
     env,
     ...(opts.logTarget ? { logTarget: opts.logTarget } : {}),
+    ...(opts.routeObserver ? { routeObserver: opts.routeObserver } : {}),
     ...(opts.clock ? { clock: opts.clock } : {}),
     ...(opts.sleep ? { sleep: opts.sleep } : {}),
     ...(opts.authQueueLimit !== undefined ? { authQueueLimit: opts.authQueueLimit } : {}),
