@@ -112,6 +112,8 @@ const EXPECTED_ROUTE_TREE =
   '        ├── api/notifications/telegram (GET, HEAD)\n' +
   '        ├── api/notifications/test (POST)\n' +
   '        ├── api/notifications/queue/:id (GET, HEAD)\n' +
+  '        ├── api/projects (GET, HEAD, POST)\n' +
+  '        │   └── /:uuid (GET, HEAD, PATCH, DELETE)\n' +
   '        └── __throw (GET, HEAD)\n';
 
 /**
@@ -245,6 +247,9 @@ describe('M1.3 — sentinel leak sweep', () => {
         `/${BASE}/api/metrics`,
         `/${BASE}/api/notifications/telegram`,
         `/${BASE}/api/notifications/queue/1`,
+        // A route with a path parameter, so the 404 body the uuid guard produces is swept
+        // like every other: it is a body, and it must carry no sentinel either.
+        `/${BASE}/api/projects/11111111-2222-3333-4444-555555555555`,
         `/${BASE}/does-not-exist`,
         '/',
         '/outside-the-base-path',

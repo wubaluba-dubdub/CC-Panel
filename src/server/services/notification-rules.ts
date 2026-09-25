@@ -54,6 +54,11 @@ export const NOTIFICATION_RULES = {
   [AuditEvent.TwoFactorDisabled]: { throttleKey: 'two_factor.disabled', throttleMs: 0 },
   [AuditEvent.RecoveryCodesRegenerated]: { throttleKey: 'recovery_codes', throttleMs: 0 },
   [AuditEvent.BasePathRegenerated]: { throttleKey: 'base_path', throttleMs: 0 },
+  // Deleting a project destroys a directory the panel cannot rebuild, so it is the one
+  // project lifecycle event worth waking the operator for. Unthrottled because a second
+  // one cannot arrive without a step-up, and a delete the operator did not perform is
+  // the whole story on one line.
+  [AuditEvent.ProjectDeleted]: { throttleKey: 'project.deleted', throttleMs: 0 },
 
   // ── Notified, throttled ──────────────────────────────────────────────────────
   //
@@ -120,6 +125,20 @@ export const NOTIFICATION_RULES = {
   // A test enqueue is operator-initiated feedback, not a security signal. The
   // queue row itself is the confirmation.
   [AuditEvent.NotificationTestEnqueued]: null,
+  // ── Project lifecycle: one message out of four, and the other three are silent ─
+  //
+  // Creating a project is deliberate work the operator is watching happen, and the
+  // response tells them the final slug including any `-2` suffix. A message would be a
+  // receipt for an action they just took.
+  [AuditEvent.ProjectCreated]: null,
+  // Same, and a rename cannot happen without them pressing save on the same screen.
+  [AuditEvent.ProjectRenamed]: null,
+  // The blind spot worth naming: an authenticated, CSRF-valid create that the disk guard
+  // turned away. Silent on Telegram because it is a refusal, not a compromise — the
+  // operator sees `insufficient_storage` in the response in the same second — and the
+  // row exists precisely so "why did that project not appear" is answerable an hour
+  // later. Messaging every refusal would also make a full disk a way to fill the queue.
+  [AuditEvent.ProjectCreateRefused]: null,
   // ── The watchdog's four, and they are silent *here* rather than unnotified ────
   //
   // Each of these already reaches the operator, and by a better route: the watchdog

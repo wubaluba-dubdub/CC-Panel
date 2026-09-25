@@ -88,6 +88,7 @@ describe('renderEvent', () => {
         suppressed: 14,
         windowMinutes: 15,
         reason: 'bad_credentials',
+        subject: null,
       },
     ];
 

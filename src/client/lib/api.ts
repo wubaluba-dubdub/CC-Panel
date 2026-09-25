@@ -1,4 +1,11 @@
-import type { ErrorCode, ErrorResponse } from '../../shared/types.js';
+import type {
+  CreateProjectRequest,
+  ErrorCode,
+  ErrorResponse,
+  ProjectDto,
+  ProjectListResponse,
+  UpdateProjectRequest,
+} from '../../shared/types.js';
 import { isErrorCode } from '../../shared/types.js';
 
 /**
@@ -242,3 +249,47 @@ export const api = {
   del: <T>(path: string, options?: RequestOptions): Promise<T> =>
     send<T>('DELETE', path, undefined, options),
 };
+
+/**
+ * The project routes, as functions rather than as string paths a screen has to build.
+ *
+ * Five of them, one per route, and every request and response type is the shared one the
+ * server serialises — so a screen cannot drift from the contract, and a screen cannot build a
+ * URL either: `basePath()` is still the only thing that knows the prefix. `uuid` is passed
+ * through `encodeURIComponent` not because a uuid needs it but because *every* path parameter
+ * goes through it, and the day one stops being a uuid the rule will already be in place.
+ *
+ * `deleteProject` answers `204` with no body, so it resolves to `undefined` rather than to an
+ * empty object a caller might `await` and then read a field off.
+ */
+export function listProjects(options?: RequestOptions): Promise<ProjectListResponse> {
+  return api.get<ProjectListResponse>('/api/projects', options);
+}
+
+export function getProject(uuid: string, options?: RequestOptions): Promise<ProjectDto> {
+  return api.get<ProjectDto>(`/api/projects/${encodeURIComponent(uuid)}`, options);
+}
+
+export function createProject(
+  body: CreateProjectRequest,
+  options?: RequestOptions,
+): Promise<ProjectDto> {
+  return api.post<ProjectDto>('/api/projects', body, options);
+}
+
+export function updateProject(
+  uuid: string,
+  body: UpdateProjectRequest,
+  options?: RequestOptions,
+): Promise<ProjectDto> {
+  return api.patch<ProjectDto>(`/api/projects/${encodeURIComponent(uuid)}`, body, options);
+}
+
+/**
+ * Irreversible, and the server answers `403 step_up_required` when the session has not
+ * re-confirmed in five minutes. Nothing here needs to special-case that: `send` prompts,
+ * retries once, and this resolves only after the deletion actually happened.
+ */
+export function deleteProject(uuid: string, options?: RequestOptions): Promise<void> {
+  return api.del<void>(`/api/projects/${encodeURIComponent(uuid)}`, options);
+}

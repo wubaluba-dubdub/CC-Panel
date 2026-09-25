@@ -385,6 +385,49 @@ export interface NotificationQueueRowResponse {
   sentAt: string | null;
 }
 
+// ── Projects (M2.2) ──────────────────────────────────────────────────────
+
+/**
+ * One project, as every route answers with it.
+ *
+ * This is `ProjectRecord` from `services/projects.service.ts` re-declared on the
+ * shared side of the contract: the seven M2.8 import columns exist on the table
+ * and are deliberately **not** here, so a route that tried to serialize them would
+ * not compile. Nothing in this shape is a filesystem path — the data root, the
+ * workspace directory and `claude-home` are derived from `uuid` server-side and
+ * never leave it.
+ *
+ * `renamed` is meaningful where a caller supplied a slug: on `POST` and `PATCH` it
+ * says the requested label collided and was suffixed, so the client can tell the
+ * operator their label changed. On a read it is always `false`.
+ */
+export interface ProjectDto {
+  id: number;
+  uuid: string;
+  slug: string;
+  renamed: boolean;
+  isolatedSettings: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** `GET /api/projects`. */
+export interface ProjectListResponse {
+  projects: ProjectDto[];
+}
+
+/** `POST /api/projects`. */
+export interface CreateProjectRequest {
+  slug: string;
+  isolatedSettings?: boolean;
+}
+
+/** `PATCH /api/projects/:uuid`. Both fields optional, at least one required. */
+export interface UpdateProjectRequest {
+  slug?: string;
+  isolatedSettings?: boolean;
+}
+
 /**
  * The machine-readable half of an error, from a **closed set**.
  *
@@ -437,6 +480,8 @@ export type ErrorCode =
   | 'not_found'
   /** The panel's state does not permit it — 2FA already off, base path pinned by the env. */
   | 'conflict'
+  /** The disk guard refused a create. Always 507, and never says how much room is left. */
+  | 'insufficient_storage'
   | 'too_large'
   | 'server_error';
 
@@ -465,6 +510,7 @@ export const ERROR_CODES = [
   'bad_request',
   'not_found',
   'conflict',
+  'insufficient_storage',
   'too_large',
   'server_error',
 ] as const satisfies readonly ErrorCode[];
@@ -518,6 +564,10 @@ export const AUDIT_EVENTS = [
   'resource.threshold_cleared',
   'resource.oom_kill',
   'panel.unclean_restart',
+  'project.created',
+  'project.renamed',
+  'project.deleted',
+  'project.create_refused',
 ] as const;
 
 /** Every audit event the panel can write. Derived from `AUDIT_EVENTS`. */

@@ -36,6 +36,7 @@ import {
 import { ResourceSampler, type StartTimer } from './services/resources.service.js';
 import { RUN_DIR, Watchdog } from './services/watchdog.service.js';
 import { ProjectStoreService } from './services/project-store.service.js';
+import { ProjectsRepository } from './services/projects.service.js';
 import { readTelegramCredentials } from './services/telegram-config.js';
 import { TelegramTransport, type NotificationTransport } from './services/telegram.transport.js';
 import { seedAdminUser } from './services/user.service.js';
@@ -114,6 +115,14 @@ declare module 'fastify' {
     notify: NotifyService;
     /** The always-on resource watcher. Present even when disabled, so tests can ask. */
     watchdog: Watchdog;
+    /**
+     * The project directory store — the filesystem half. Decorated as well as passed
+     * in, because a test that needs to force the disk guard patches the very object
+     * the routes will call.
+     */
+    projectStore: ProjectStoreService;
+    /** The project identity repository — the database half of the same pair. */
+    projects: ProjectsRepository;
   }
 }
 
@@ -468,6 +477,33 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   app.decorate('notify', notify);
   app.decorate('watchdog', watchdog);
 
+  // ── Projects: the directory store and the identity repository ──────────────
+  //
+  // Built here rather than beside the boot sweep below, because `apiRoutes` needs
+  // both when it registers — the routes are declared during boot and a service that
+  // did not exist yet could not be passed to them. `bootSweep()` stays late, after
+  // the boot guards: a deployment that dies in `seedAdminUser` must not have removed
+  // staging directories it had no chance to finish using.
+  const projects = new ProjectsRepository({ db: runtime.db, clock: runtime.clock });
+  const projectStore = new ProjectStoreService({
+    dataDir,
+    db: runtime.db,
+    clock: runtime.clock,
+    // One repository object shared with the routes below. The store would otherwise
+    // build its own over the same connection, which is correct but means "the
+    // database half" is two things.
+    projects,
+    disk: {
+      thresholdPercent: () => watchdog.diskThresholdPercent,
+    },
+    log: (event) => {
+      if (!isTestEnv) app.log.info(event, event.message);
+    },
+  });
+
+  app.decorate('projectStore', projectStore);
+  app.decorate('projects', projects);
+
   // Chain any audit row written before migration 008 existed, so `verify()` fails
   // only for tampering and not for history. No-op on every boot after the first.
   runtime.audit.initChain();
@@ -679,6 +715,8 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
     metrics,
     notify,
     watchdog,
+    projectStore,
+    projects,
     prefix: `/${basePath}`,
   });
 
@@ -721,17 +759,6 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   // audit-worthy fact only when something was actually removed. The sweep
   // fails loudly if `projects/` itself is missing (non-vacuous exemption) —
   // a pass that read nothing is the failure mode this exists to prevent.
-  const projectStore = new ProjectStoreService({
-    dataDir,
-    db: runtime.db,
-    clock: runtime.clock,
-    disk: {
-      thresholdPercent: () => watchdog.diskThresholdPercent,
-    },
-    log: (event) => {
-      if (!isTestEnv) app.log.info(event, event.message);
-    },
-  });
   projectStore.bootSweep();
 
   const proxyWarning = proxyBootWarning(env.PANEL_OUTBOUND_PROXY, env.NODE_ENV);

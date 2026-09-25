@@ -44,6 +44,10 @@ export const AuditEvent = {
   ResourceThresholdCleared: 'resource.threshold_cleared',
   ResourceOomKill: 'resource.oom_kill',
   UncleanRestart: 'panel.unclean_restart',
+  ProjectCreated: 'project.created',
+  ProjectRenamed: 'project.renamed',
+  ProjectDeleted: 'project.deleted',
+  ProjectCreateRefused: 'project.create_refused',
 } as const satisfies Record<string, AuditEventName>;
 
 export type { AuditEventName, AuditOutcome } from '../../shared/types.js';

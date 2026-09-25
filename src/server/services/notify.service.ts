@@ -304,6 +304,10 @@ export class NotifyService {
           : Math.max(0, this.#countSince(countedEventsFor(event), previous, record.ts) - 1);
 
       const reason = record.meta.reason;
+      // The subject is the audit row's `slug` when it has one — today only a project
+      // lifecycle row does — and null for every alert about the panel itself. Read as
+      // `unknown` rather than trusted: `meta` is whatever the write site put there.
+      const subject = record.meta.slug;
       this.notify(
         {
           kind: 'security_alert',
@@ -313,6 +317,7 @@ export class NotifyService {
           suppressed,
           windowMinutes: Math.round(rule.throttleMs / 60_000),
           reason: typeof reason === 'string' ? reason : null,
+          subject: typeof subject === 'string' ? subject : null,
         },
         { throttleKey: rule.throttleKey },
       );

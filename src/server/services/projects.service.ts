@@ -273,6 +273,46 @@ export class ProjectsRepository {
   }
 
   /**
+   * Applies a PATCH: a new slug, a new `isolated_settings`, or both.
+   *
+   * Deliberately database-only, and that is the whole point of the method existing
+   * rather than a `rename` plus a directory move. Identity — the workspace directory,
+   * `claude-home`, and every credential AAD (`projects:<uuid>:api_key`) — is keyed on
+   * `uuid`, which this never touches, so relabelling a project cannot invalidate a
+   * stored secret or orphan a checkout. `project.json` is not rewritten either: the
+   * row is the authority for the slug (the `slug_normalized` unique index is the
+   * constraint) and nothing reads that file back.
+   *
+   * Returns the stored row and the same `renamed` flag {@link rename} produces, so a
+   * caller can tell "the label I asked for was taken" from "my label stuck".
+   */
+  update(
+    uuid: string,
+    // `| undefined` on both, because `exactOptionalPropertyTypes` is on and the parsed
+    // request body carries explicit `undefined` for every field the caller omitted.
+    input: { slug?: string | undefined; isolatedSettings?: boolean | undefined },
+  ): { project: ProjectRecord; renamed: boolean } {
+    const existing = this.getByUuid(uuid);
+    if (!existing) throw new ProjectNotFoundError(uuid);
+
+    let renamed = false;
+    if (input.slug !== undefined) renamed = this.rename(uuid, input.slug).renamed;
+
+    if (input.isolatedSettings !== undefined) {
+      this.#db
+        .prepare('UPDATE projects SET isolated_settings = ?, updated_at = ? WHERE uuid = ?')
+        .run(input.isolatedSettings ? 1 : 0, isoNow(this.#clock), uuid);
+    }
+
+    const row = this.#db
+      .prepare(`SELECT ${PROJECT_COLUMNS} FROM projects WHERE uuid = ?`)
+      .get(uuid) as ProjectRow;
+    const record = toRecord(row);
+    record.renamed = renamed;
+    return { project: record, renamed };
+  }
+
+  /**
    * Deletes a project row. Returns true when a row was removed.
    *
    * No filesystem access — M2.3's service handles directory cleanup.

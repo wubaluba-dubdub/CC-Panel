@@ -108,6 +108,17 @@ export type NotifyEvent =
       readonly windowMinutes: number;
       /** A failure *category* from the audit row. Never an attempted credential. */
       readonly reason: string | null;
+      /**
+       * What the alert is *about*, when a bare headline does not name it.
+       *
+       * Null for every event whose subject is the panel itself (`login.success`,
+       * `password.changed`, …) and set for `project.deleted` to the project's slug —
+       * an operator-chosen label matching `[a-z0-9-]`, so it can never be a credential
+       * and never needs escaping. It still goes through the same scrub pass as every
+       * other string on the way in, because a scrub that skipped a field on a hunch
+       * about its shape is a scrub that stops working the day a shape changes.
+       */
+      readonly subject: string | null;
     }
   | { readonly kind: 'test'; readonly at: string };
 
@@ -126,6 +137,8 @@ interface Dict {
   securityTitle: string;
   resourceTitle: string;
   headline: Record<NotifiedAuditEvent, string>;
+  /** The subject line: which project a `project.deleted` alert is about. */
+  projectSubject(subject: string): string;
   outcome: Record<TurnOutcome, string>;
   resource: Record<'memory' | 'cpu' | 'disk', string>;
   resourceAbove(resource: string, percent: number): string;
@@ -174,7 +187,9 @@ const en: Dict = {
     'secret.revealed': 'a stored credential was read',
     'secret.changed': 'a stored credential was written',
     'audit.trimmed': 'the audit log reached its row limit and the oldest rows were removed',
+    'project.deleted': 'a project was deleted',
   },
+  projectSubject: (subject) => `project: ${subject}`,
   outcome: {
     finished: 'finished',
     finished_with_background: 'finished',
@@ -242,7 +257,9 @@ const fa: Dict = {
     'secret.revealed': 'یک اعتبارنامهٔ ذخیره‌شده خوانده شد',
     'secret.changed': 'یک اعتبارنامهٔ ذخیره‌شده نوشته شد',
     'audit.trimmed': 'گزارش رسیدگی به سقف خود رسید و قدیمی‌ترین ردیف‌ها پاک شدند',
+    'project.deleted': 'یک پروژه حذف شد',
   },
+  projectSubject: (subject) => `پروژه: ${subject}`,
   outcome: {
     finished: 'به پایان رسید',
     finished_with_background: 'به پایان رسید',
@@ -411,7 +428,13 @@ export function renderEvent(event: NotifyEvent, opts: RenderOptions): RenderedMe
     }
 
     case 'security_alert': {
-      lines.push(`${dict.securityTitle} — ${dict.headline[event.event]}`, dict.atTime(event.at));
+      lines.push(`${dict.securityTitle} — ${dict.headline[event.event]}`);
+      // Straight after the headline and before the timestamp: Telegram's preview shows
+      // the first two lines, and "which project?" is the fact a deletion needs there.
+      // Absent for every alert whose subject is the panel itself, so their shape is
+      // byte-identical to what it was before this field existed.
+      if (event.subject !== null) lines.push(dict.projectSubject(event.subject));
+      lines.push(dict.atTime(event.at));
       if (event.outcome === 'failure') lines.push(dict.outcomeFailed);
       if (event.reason !== null) lines.push(dict.failureReason(event.reason));
       if (event.suppressed > 0) {
@@ -446,7 +469,11 @@ export function mapEventStrings(
         message: event.message === null ? null : transform(event.message),
       };
     case 'security_alert':
-      return { ...event, reason: event.reason === null ? null : transform(event.reason) };
+      return {
+        ...event,
+        reason: event.reason === null ? null : transform(event.reason),
+        subject: event.subject === null ? null : transform(event.subject),
+      };
     case 'resource_alert':
     case 'oom_kill':
     case 'unclean_restart':

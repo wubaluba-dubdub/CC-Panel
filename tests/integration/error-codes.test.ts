@@ -190,6 +190,11 @@ describe('the code set is closed', () => {
       'plugins/rate-limit.ts',
       'routes/auth.ts',
       'routes/security.ts',
+      // A throw site, and the only one that can send `insufficient_storage`: the disk guard
+      // refusing a project creation is a 507, and a client has to be able to tell it from a
+      // 500 rather than read a reason phrase. Its generic path sends `server_error` for the
+      // same reason `app.ts` does — the real message quotes a path and an errno.
+      'routes/projects.ts',
       'utils/single-flight.ts',
       // Two files whose own vocabularies happen to collide with a code, and neither is this
       // enum. `audit.service.ts` has `bad_credentials` as a failure **reason category** on an

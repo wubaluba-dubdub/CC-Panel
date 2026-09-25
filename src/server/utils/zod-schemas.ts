@@ -97,6 +97,35 @@ export const localeBody = z.object({
 });
 
 /**
+ * The `POST /api/projects` body.
+ *
+ * Length and type only. The slug's *grammar* is `normalizeSlug`'s job and runs in the
+ * route, because a refusal audit row must carry a canonical slug — so an over-long slug
+ * and a syntactically impossible one take two different validators and produce the same
+ * byte-identical 400, which is what stops either being a probe for what the other
+ * accepts.
+ */
+export const projectCreateBody = z.object({
+  slug: z.string().min(1).max(128),
+  isolatedSettings: z.boolean().optional(),
+});
+
+/**
+ * The `PATCH /api/projects/:uuid` body: the two mutable columns and nothing else.
+ *
+ * At least one is required — a PATCH with no fields is a 400 rather than a no-op 200,
+ * so a client bug that sends an empty body is visible instead of looking like success.
+ */
+export const projectPatchBody = z
+  .object({
+    slug: z.string().min(1).max(128).optional(),
+    isolatedSettings: z.boolean().optional(),
+  })
+  .refine((body) => body.slug !== undefined || body.isolatedSettings !== undefined, {
+    message: 'at least one field is required',
+  });
+
+/**
  * Parses a request body, turning a schema failure into a 400 with the standard
  * reason phrase and nothing else.
  *

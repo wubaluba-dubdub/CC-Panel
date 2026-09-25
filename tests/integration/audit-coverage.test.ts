@@ -41,6 +41,13 @@ export const ROUTE_TO_AUDIT_EVENT: Readonly<Record<string, string>> = {
   'PUT /api/secrets': AuditEvent.SecretChanged,
   'POST /api/secrets/reveal': AuditEvent.SecretRevealed,
   'POST /api/notifications/test': AuditEvent.NotificationTestEnqueued,
+  // Create's primary event. It also writes `project.create_refused` when the disk guard
+  // says no, which is a *different* route outcome for the same URL and so is not the
+  // primary mapping — the mapping is asserted for presence, and the failure row is
+  // asserted in `project-routes.test.ts` where the refusal is actually forced.
+  'POST /api/projects': AuditEvent.ProjectCreated,
+  'PATCH /api/projects/:uuid': AuditEvent.ProjectRenamed,
+  'DELETE /api/projects/:uuid': AuditEvent.ProjectDeleted,
 };
 
 /**
@@ -72,6 +79,9 @@ const ALL_MUTATING_ROUTES: readonly { method: string; path: string }[] = [
   { method: 'POST', path: '/api/secrets/reveal' },
   { method: 'PATCH', path: '/api/settings/locale' },
   { method: 'POST', path: '/api/notifications/test' },
+  { method: 'POST', path: '/api/projects' },
+  { method: 'PATCH', path: '/api/projects/:uuid' },
+  { method: 'DELETE', path: '/api/projects/:uuid' },
 ];
 
 describe('audit coverage — every mutating route is audited or pinned', () => {

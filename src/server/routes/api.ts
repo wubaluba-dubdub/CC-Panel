@@ -4,12 +4,15 @@ import { requireCsrfToken } from '../plugins/csrf.js';
 import type { RateLimiter } from '../plugins/rate-limit.js';
 import type { AuthRuntime } from '../services/auth-runtime.js';
 import type { NotifyService } from '../services/notify.service.js';
+import type { ProjectStoreService } from '../services/project-store.service.js';
+import type { ProjectsRepository } from '../services/projects.service.js';
 import type { ResourceSampler } from '../services/resources.service.js';
 import type { Watchdog } from '../services/watchdog.service.js';
 import auditRoutes from './audit.js';
 import authRoutes from './auth.js';
 import metricsRoutes from './metrics.js';
 import notificationRoutes from './notifications.js';
+import projectRoutes from './projects.js';
 import securityRoutes from './security.js';
 import settingsRoutes from './settings.js';
 import sessionRoutes from './sessions.js';
@@ -30,6 +33,8 @@ export default async function apiRoutes(
     metrics: ResourceSampler;
     notify: NotifyService;
     watchdog: Watchdog;
+    projectStore: ProjectStoreService;
+    projects: ProjectsRepository;
   },
 ): Promise<void> {
   const { runtime, limiter } = opts;
@@ -77,4 +82,9 @@ export default async function apiRoutes(
   await app.register(auditRoutes, { runtime });
   await app.register(metricsRoutes, { metrics: opts.metrics, watchdog: opts.watchdog });
   await app.register(notificationRoutes, { runtime, notify: opts.notify });
+  await app.register(projectRoutes, {
+    runtime,
+    projects: opts.projects,
+    projectStore: opts.projectStore,
+  });
 }
