@@ -1,4 +1,6 @@
 import { randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { BODY_LIMIT_BYTES } from '../../src/server/app.js';
 import { getDb } from '../../src/server/db.js';
@@ -6,7 +8,7 @@ import { AuditEvent } from '../../src/server/services/audit.service.js';
 import { CSRF_HEADER, csrfTokenFor } from '../../src/server/services/csrf.service.js';
 import { NOTIFICATION_RULES } from '../../src/server/services/notification-rules.js';
 import { hashToken } from '../../src/server/services/session.service.js';
-import { AUDIT_EVENTS, type ProjectDto } from '../../src/shared/types.js';
+import { AUDIT_EVENTS, type AuditEventName, type ProjectDto } from '../../src/shared/types.js';
 import {
   CSRF_COOKIE,
   SESSION_COOKIE,
@@ -20,6 +22,7 @@ import {
   type EnrolledAccount,
 } from '../helpers/auth-harness.js';
 import { createLogCapture } from '../helpers/test-server.js';
+import { curl, listenLoopback } from '../helpers/curl.js';
 import { startFakeTelegram, type FakeTelegram } from '../helpers/fake-telegram.js';
 
 /**
@@ -90,6 +93,33 @@ async function createProject(slug = 'a-b-c'): Promise<ProjectDto> {
   });
   expect(res.statusCode, res.body).toBe(201);
   return res.json() as ProjectDto;
+}
+
+/**
+ * Makes `audit.write` throw for exactly one event — **after** the real append has
+ * run, so the row and any observer side effect are genuinely inside the transaction
+ * under test and have to be rolled back rather than merely never written.
+ *
+ * The patch is scoped to one event name because `plugins/origin-check.ts` also
+ * calls `audit.write` from an `onRequest` hook, and failing that would fail the
+ * request before the handler rather than the append inside it.
+ *
+ * Returns the restore function. Always call it in a `finally`.
+ */
+function failAuditAfter(event: AuditEventName): () => void {
+  const audit = ctx.app.auth.audit;
+  const original = audit.write.bind(audit);
+  audit.write = (entry): void => {
+    if (entry.event !== event) {
+      original(entry);
+      return;
+    }
+    original(entry);
+    throw new Error(`injected audit failure for ${event}`);
+  };
+  return () => {
+    audit.write = original;
+  };
 }
 
 describe('M2.2 P4 — the perimeter around the project routes', () => {
@@ -318,30 +348,102 @@ describe('M2.2 P4 — a uuid in the path is validated before anything else runs'
     expect(malformed.body).not.toContain('not-a-uuid');
   });
 
-  it('leaves a path segment past Fastify\u2019s maxParamLength to the framework, for every route', async () => {
-    // The honest boundary on the claim above. `maxParamLength` defaults to 100, so a
-    // longer `:uuid` never reaches this route at all — the framework answers 414 first,
-    // identically for the project routes and for every other route with a path
-    // parameter. Nothing about the indistinguishability above is doing the work here,
-    // and pretending otherwise would be claiming a property the framework owns.
-    ctx = await createAuthTestServer({ PANEL_BASE_PATH: BASE });
+  it('answers a segment past Fastify\u2019s maxParamLength with the ordinary unknown-project 404', async () => {
+    // `maxParamLength` defaults to 100, so a longer parameter never reaches the
+    // route above: find-my-way refuses it during traversal and Fastify answers
+    // through `frameworkErrors`, before `setErrorHandler`, before every hook and
+    // before routing resolves anything. Until this correction the framework wrote
+    // that answer itself — `414`, a body quoting the raw path (secret prefix
+    // included) and not one security header. The contract now is the panel's own:
+    // byte-identical to an absent uuid, on every route with a parameter, with the
+    // header set applied by the same function the `onSend` hook uses.
+    const logCapture = createLogCapture();
+    ctx = await createAuthTestServer({ PANEL_BASE_PATH: BASE }, { logTarget: logCapture.target });
     await enrol();
-    const long = 'a'.repeat(150);
 
+    // The reference answer, from the route itself.
+    const unknown = await ctx.inject({
+      method: 'GET',
+      url: ctx.url(`/api/projects/${ABSENT_UUID}`),
+      cookies: { [SESSION_COOKIE]: cookie() },
+    });
+    expect(unknown.statusCode).toBe(404);
+
+    const incoming = (): number =>
+      logCapture.lines().filter((line) => line.msg === 'incoming request').length;
+    const before = incoming();
+
+    const long = 'a'.repeat(150);
+    // Two routes, because the fix lives at the Fastify factory: covering only the
+    // route under review would not show that it is app-wide, and
+    // `/api/notifications/queue/:id` is a pre-existing parameter of a different
+    // resource entirely.
     for (const path of [`/api/projects/${long}`, `/api/notifications/queue/${long}`]) {
       const res = await ctx.inject({
         method: 'GET',
         url: ctx.url(path),
         cookies: { [SESSION_COOKIE]: cookie() },
       });
-      expect(res.statusCode, path).toBe(414);
-      // The body is deliberately not asserted. Fastify writes it with `res.writeHead`
-      // straight to the socket, bypassing `setErrorHandler`, so it is a library error
-      // body — carrying the raw path, the prefix included, and no security headers.
-      // That is a pre-existing perimeter gap this prompt did not open and is not
-      // allowed to close; pinning it here would make the eventual fix fail this suite.
-      // Reported in §17 of the prompt's report.
+      expect(res.statusCode, path).toBe(404);
+      expect(res.body, path).toBe(unknown.body);
+      expect(res.json(), path).toEqual({ error: 'Not Found', code: 'not_found' });
+      expect(res.headers['content-type'], path).toBe('application/json; charset=utf-8');
+      expect(res.headers['server'], path).toBeUndefined();
+      expect(res.headers['x-powered-by'], path).toBeUndefined();
+      // Anonymous, so it must not mint a session — the prompt's rule, and a place a
+      // "helpfully uniform" handler could start setting a cookie it has no reason to.
+      expect(res.headers['set-cookie'], path).toBeUndefined();
+      // The security headers are applied here rather than by a hook, because the
+      // synthetic reply Fastify builds carries a route context with `onSend: null`
+      // and therefore runs none. The complete byte-for-byte map, in both
+      // environments, is asserted in `perimeter.test.ts`.
+      expect(res.headers['x-content-type-options'], path).toBe('nosniff');
+      expect(res.headers['content-security-policy'], path).toContain("default-src 'none'");
     }
+
+    // **Nothing logged for the rejection at all.** `incomingRequest` fires before
+    // the handler and its `req` serialiser keeps everything after the elided prefix
+    // — i.e. the over-long segment — so `logController` suppresses it. This restores
+    // what Fastify did before `frameworkErrors` was set, rather than adding a line
+    // that would then have to be scrubbed.
+    expect(incoming(), 'a framework rejection logged an incoming request line').toBe(before);
+
+    // And the sweep: neither the requested path, the prefix, the segment, nor the
+    // framework's own wording — which quotes all three — in anything logged.
+    const logged = logCapture.text();
+    expect(logged.length, 'the logger captured nothing at all').toBeGreaterThan(0);
+    for (const needle of [
+      BASE,
+      long,
+      'exceeding the max param length',
+      'FST_ERR_MAX_PARAM_LENGTH',
+      'FST_ERR_BAD_URL',
+    ]) {
+      expect(logged.includes(needle), `log line leaked: ${needle}`).toBe(false);
+    }
+  });
+
+  it('stops at Node\u2019s own request-line limit, and claims nothing about bytes it never received', async () => {
+    // The honest outer boundary. `app.inject()` hands Fastify a synthetic request
+    // and never runs Node's HTTP parser, so only a real socket can show where the
+    // application's control actually begins: the parser refuses a request line plus
+    // headers beyond `--max-http-header-size` (16 KiB by default) with a 431 of its
+    // own, long before `routing()` — and therefore long before `frameworkErrors` —
+    // is reached. The contract above covers every path that *arrives*; this is the
+    // first one that does not.
+    ctx = await createAuthTestServer({ PANEL_BASE_PATH: BASE });
+    const root = await listenLoopback(ctx.app);
+
+    const beyond = await curl([`${root}/${BASE}/api/projects/${'a'.repeat(16 * 1024)}`]);
+    expect(beyond.status).toBe(431);
+
+    // And the longest input that does arrive still lands on the ordinary 404 over
+    // the wire, with no library wording in the body.
+    const reaching = await curl([`${root}/${BASE}/api/projects/${'a'.repeat(150)}`]);
+    expect(reaching.status).toBe(404);
+    expect(reaching.body).toBe('{"error":"Not Found","code":"not_found"}');
+    expect(reaching.body).not.toContain(BASE);
+    expect(reaching.body).not.toContain('max param length');
   });
 
   it('treats uuid case as irrelevant, and never 400s where 404 is the only answer', async () => {
@@ -503,8 +605,20 @@ describe('M2.2 P4 — the five routes', () => {
     expect(emptyPatch.statusCode).toBe(400);
     expect(emptyPatch.json()).toEqual({ error: 'Bad Request', code: 'bad_request' });
 
+    // An invalid slug is refused by the route's own grammar check, before the service
+    // is called at all — so it is the second half of "an empty or invalid PATCH writes
+    // no project event", and it fails for a different reason than the empty body does.
+    const badSlugPatch = await ctx.inject({
+      method: 'PATCH',
+      url: ctx.url(`/api/projects/${uuid}`),
+      cookies: { [SESSION_COOKIE]: cookie() },
+      payload: { slug: 'NOT A SLUG' },
+    });
+    expect(badSlugPatch.statusCode).toBe(400);
+    expect(badSlugPatch.json()).toEqual({ error: 'Bad Request', code: 'bad_request' });
+
     expect(await auditRows('project.created')).toHaveLength(1);
-    expect(await auditRows('project.renamed')).toHaveLength(0);
+    expect(await auditRows('project.updated')).toHaveLength(0);
     expect(await auditRows('project.deleted')).toHaveLength(0);
     expect(await auditRows('project.create_refused')).toHaveLength(0);
   });
@@ -538,22 +652,44 @@ describe('M2.2 P4 — what the audit row carries', () => {
     expect(rows[0]).toEqual({ uuid, slug: 'a-b-c' });
   });
 
-  it('keeps `project.renamed` self-describing when the only change was a settings flag', async () => {
+  it('writes exactly one `project.updated` row for each of the three PATCH forms', async () => {
     ctx = await createAuthTestServer({ PANEL_BASE_PATH: BASE });
     await enrol();
     const { uuid } = await createProject();
 
-    const patched = await ctx.inject({
-      method: 'PATCH',
-      url: ctx.url(`/api/projects/${uuid}`),
-      cookies: { [SESSION_COOKIE]: cookie() },
-      payload: { isolatedSettings: true },
-    });
-    expect(patched.statusCode).toBe(200);
-    expect((patched.json() as ProjectDto).slug).toBe('a-b-c');
+    const patch = async (payload: Record<string, unknown>): Promise<ProjectDto> => {
+      const res = await ctx.inject({
+        method: 'PATCH',
+        url: ctx.url(`/api/projects/${uuid}`),
+        cookies: { [SESSION_COOKIE]: cookie() },
+        payload,
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      return res.json() as ProjectDto;
+    };
 
-    const rows = await auditRows('project.renamed');
-    expect(rows).toHaveLength(1);
+    // The create wrote `project.created` and nothing else, so every row below is a PATCH.
+    expect(await auditRows('project.updated')).toHaveLength(0);
+
+    // ── Form 1: isolatedSettings only ────────────────────────────────────────
+    expect((await patch({ isolatedSettings: true })).slug).toBe('a-b-c');
+    expect(await auditRows('project.updated')).toHaveLength(1);
+
+    // ── Form 2: slug only ────────────────────────────────────────────────────
+    expect((await patch({ slug: 'd-e-f' })).slug).toBe('d-e-f');
+    expect(await auditRows('project.updated')).toHaveLength(2);
+
+    // ── Form 3: both fields ──────────────────────────────────────────────────
+    const both = await patch({ slug: 'g-h-i', isolatedSettings: false });
+    expect(both.slug).toBe('g-h-i');
+    expect(both.isolatedSettings).toBe(false);
+    // Exactly one row per successful mutation, so the route is not appending a
+    // second one after the service returns.
+    expect(await auditRows('project.updated')).toHaveLength(3);
+
+    const rows = await auditRows('project.updated');
+    // Newest first. Complete key set — a sixth key is where an address or a path
+    // would creep in, and an assertion of containment would not notice it.
     expect(Object.keys(rows[0]!).sort()).toEqual([
       'isolatedSettings',
       'previousSlug',
@@ -561,9 +697,25 @@ describe('M2.2 P4 — what the audit row carries', () => {
       'slug',
       'uuid',
     ]);
-    // The row is about the field that moved, and it says the label did not: `previousSlug`
-    // equal to `slug` is the whole difference between "renamed" and "reconfigured".
-    expect(rows[0]).toMatchObject({
+
+    // `renamed` is *whether the label moved*, so a settings-only update says false
+    // while both slug-bearing forms say true — including the one where the slug
+    // stuck. `previousSlug` is what makes each row self-describing on its own.
+    expect(rows[0]).toEqual({
+      uuid,
+      slug: 'g-h-i',
+      previousSlug: 'd-e-f',
+      isolatedSettings: false,
+      renamed: true,
+    });
+    expect(rows[1]).toEqual({
+      uuid,
+      slug: 'd-e-f',
+      previousSlug: 'a-b-c',
+      isolatedSettings: true,
+      renamed: true,
+    });
+    expect(rows[2]).toEqual({
       uuid,
       slug: 'a-b-c',
       previousSlug: 'a-b-c',
@@ -617,7 +769,7 @@ describe('M2.2 P4 — what the audit row carries', () => {
 describe('M2.2 P4 — the closed sets the routes draw on', () => {
   const PROJECT_EVENTS = [
     AuditEvent.ProjectCreated,
-    AuditEvent.ProjectRenamed,
+    AuditEvent.ProjectUpdated,
     AuditEvent.ProjectDeleted,
     AuditEvent.ProjectCreateRefused,
   ] as const;
@@ -644,7 +796,7 @@ describe('M2.2 P4 — the closed sets the routes draw on', () => {
 
     // The three silent ones are explicit `null`, not absent.
     expect(NOTIFICATION_RULES[AuditEvent.ProjectCreated]).toBeNull();
-    expect(NOTIFICATION_RULES[AuditEvent.ProjectRenamed]).toBeNull();
+    expect(NOTIFICATION_RULES[AuditEvent.ProjectUpdated]).toBeNull();
     expect(NOTIFICATION_RULES[AuditEvent.ProjectCreateRefused]).toBeNull();
     expect(NOTIFICATION_RULES[AuditEvent.ProjectDeleted]).toEqual({
       throttleKey: 'project.deleted',
@@ -785,5 +937,143 @@ describe('M2.2 P4 — the deletion message', () => {
     const event = JSON.parse(stored!.event_json) as Record<string, unknown>;
     expect(event).toMatchObject({ kind: 'security_alert', event: 'project.deleted', subject: 'a-b-c' });
     expect(stored!.event_json).not.toContain('parse_mode');
+  });
+});
+
+describe('M2.2 — a successful mutation and its audit row are one transaction', () => {
+  /** Rows in the notification queue carrying a given audit event name. */
+  function queuedFor(event: string): number {
+    const row = getDb()
+      .prepare('SELECT COUNT(*) AS n FROM notification_queue WHERE event_json LIKE ?')
+      .get(`%"${event}"%`) as { n: number };
+    return row.n;
+  }
+
+  it('rolls a create back and quarantines the promoted tree when the append throws', async () => {
+    ctx = await createAuthTestServer({ PANEL_BASE_PATH: BASE });
+    await enrol();
+
+    const restore = failAuditAfter(AuditEvent.ProjectCreated);
+    let res: Awaited<ReturnType<typeof ctx.inject>>;
+    try {
+      res = await ctx.inject({
+        method: 'POST',
+        url: ctx.url('/api/projects'),
+        cookies: { [SESSION_COOKIE]: cookie() },
+        payload: { slug: 'a-b-c' },
+      });
+    } finally {
+      restore();
+    }
+
+    // The generic safe server error, and nothing about the failure's origin.
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toEqual({ error: 'Internal Server Error', code: 'server_error' });
+
+    // No success row, and no refusal row either: the disk guard never refused, and
+    // `create_refused` means that and nothing else.
+    expect(await auditRows('project.created')).toHaveLength(0);
+    expect(await auditRows('project.create_refused')).toHaveLength(0);
+
+    const listed = await ctx.inject({
+      method: 'GET',
+      url: ctx.url('/api/projects'),
+      cookies: { [SESSION_COOKIE]: cookie() },
+    });
+    expect(listed.json()).toEqual({ projects: [] });
+
+    // The one residue the rollback cannot undo is the tree `rename(2)` already put
+    // under `projects/`. It follows the existing quarantine path rather than being
+    // left as a rowless directory, and the uuid it names is the one the route
+    // allocated — so nothing exists under `projects/` for a project with no row.
+    const orphans = ctx.app.projectStore.listOrphans();
+    expect(orphans).toHaveLength(1);
+    const orphan = orphans[0]!;
+    expect(orphan).toMatch(/^\.project-orphan-[0-9a-f-]{36}$/);
+    const uuid = orphan.slice('.project-orphan-'.length);
+    expect(existsSync(ctx.app.projectStore.projectDir(uuid))).toBe(false);
+    expect(existsSync(join(ctx.dataDir, orphan))).toBe(true);
+  });
+
+  it('rolls a patch back completely when the append throws', async () => {
+    ctx = await createAuthTestServer({ PANEL_BASE_PATH: BASE });
+    await enrol();
+    const { uuid } = await createProject();
+
+    const restore = failAuditAfter(AuditEvent.ProjectUpdated);
+    let res: Awaited<ReturnType<typeof ctx.inject>>;
+    try {
+      res = await ctx.inject({
+        method: 'PATCH',
+        url: ctx.url(`/api/projects/${uuid}`),
+        cookies: { [SESSION_COOKIE]: cookie() },
+        payload: { slug: 'd-e-f', isolatedSettings: true },
+      });
+    } finally {
+      restore();
+    }
+
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toEqual({ error: 'Internal Server Error', code: 'server_error' });
+    // The attempted value is not in the response either: a generic 500 is all this
+    // route is allowed to say, whether the database failed or the append did.
+    expect(res.body).not.toContain('d-e-f');
+
+    // Both fields exactly as they were — the update, not just the audit row, is gone.
+    const after = ctx.app.projects.getByUuid(uuid);
+    expect(after).not.toBeNull();
+    expect(after!.slug).toBe('a-b-c');
+    expect(after!.isolatedSettings).toBe(false);
+    expect(await auditRows('project.updated')).toHaveLength(0);
+  });
+
+  it('keeps secrets, row and directory when a delete append throws, and queues nothing', async () => {
+    ctx = await createAuthTestServer({ PANEL_BASE_PATH: BASE });
+    await enrol();
+
+    // A *successful* deletion first, so the queue assertion below is not vacuous:
+    // it proves one row got in and the failed one did not add a second.
+    const good = await createProject('e-f-g');
+    const kept = await createProject('h-i-j');
+    const keptScope = `project:${kept.uuid}`;
+    ctx.app.auth.secrets.set(keptScope, 'hook_token', 'value-under-test');
+
+    expect((await stepUp(ctx, cookie(), account!.secret)).statusCode).toBe(200);
+    const ok = await ctx.inject({
+      method: 'DELETE',
+      url: ctx.url(`/api/projects/${good.uuid}`),
+      cookies: { [SESSION_COOKIE]: cookie() },
+    });
+    expect(ok.statusCode).toBe(204);
+    expect(await auditRows('project.deleted')).toHaveLength(1);
+    expect(queuedFor('project.deleted')).toBe(1);
+
+    const restore = failAuditAfter(AuditEvent.ProjectDeleted);
+    let res: Awaited<ReturnType<typeof ctx.inject>>;
+    try {
+      res = await ctx.inject({
+        method: 'DELETE',
+        url: ctx.url(`/api/projects/${kept.uuid}`),
+        cookies: { [SESSION_COOKIE]: cookie() },
+      });
+    } finally {
+      restore();
+    }
+
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toEqual({ error: 'Internal Server Error', code: 'server_error' });
+
+    // All three database effects rolled back together — the row, and the secret
+    // scope that only that row gave meaning to.
+    expect(ctx.app.projects.getByUuid(kept.uuid)).not.toBeNull();
+    expect(ctx.app.auth.secrets.get(keptScope, 'hook_token')).not.toBeNull();
+    // The filesystem step never ran, because it is after the transaction.
+    expect(existsSync(ctx.app.projectStore.projectDir(kept.uuid))).toBe(true);
+
+    // Still one row from the successful deletion above, and still one queue entry:
+    // `AuditService.#append` fires the observer before this test's `throw`, so the
+    // queued row was written *inside* the transaction and had to go with it.
+    expect(await auditRows('project.deleted')).toHaveLength(1);
+    expect(queuedFor('project.deleted')).toBe(1);
   });
 });

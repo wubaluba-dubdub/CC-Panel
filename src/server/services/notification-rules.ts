@@ -131,8 +131,8 @@ export const NOTIFICATION_RULES = {
   // response tells them the final slug including any `-2` suffix. A message would be a
   // receipt for an action they just took.
   [AuditEvent.ProjectCreated]: null,
-  // Same, and a rename cannot happen without them pressing save on the same screen.
-  [AuditEvent.ProjectRenamed]: null,
+  // Same, and an update cannot happen without them pressing save on the same screen.
+  [AuditEvent.ProjectUpdated]: null,
   // The blind spot worth naming: an authenticated, CSRF-valid create that the disk guard
   // turned away. Silent on Telegram because it is a refusal, not a compromise — the
   // operator sees `insufficient_storage` in the response in the same second — and the

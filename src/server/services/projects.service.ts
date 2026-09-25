@@ -285,31 +285,51 @@ export class ProjectsRepository {
    *
    * Returns the stored row and the same `renamed` flag {@link rename} produces, so a
    * caller can tell "the label I asked for was taken" from "my label stuck".
+   *
+   * ── The row and its audit append are one transaction ────────────────────────
+   *
+   * `appendAudit` runs **inside** this method's transaction, before the commit, and
+   * that is the entire reason it is a parameter rather than the route writing the row
+   * afterwards: two sequential commits leave a window in which the update is durable
+   * and its audit row is not, and the audit log is the thing that has to be able to
+   * say what the panel did. If the append throws, better-sqlite3 rolls this
+   * transaction back and the exception leaves through here — so a failed append means
+   * **no change at all**, which is the only outcome the two cannot disagree about.
+   *
+   * Called with no argument (the repository's own tests, and anything that reads
+   * before it writes) the method behaves exactly as it did when it was
+   * mutation-only.
    */
   update(
     uuid: string,
     // `| undefined` on both, because `exactOptionalPropertyTypes` is on and the parsed
     // request body carries explicit `undefined` for every field the caller omitted.
     input: { slug?: string | undefined; isolatedSettings?: boolean | undefined },
+    appendAudit?: (result: { project: ProjectRecord; renamed: boolean }) => void,
   ): { project: ProjectRecord; renamed: boolean } {
-    const existing = this.getByUuid(uuid);
-    if (!existing) throw new ProjectNotFoundError(uuid);
+    return this.#db.transaction((): { project: ProjectRecord; renamed: boolean } => {
+      const existing = this.getByUuid(uuid);
+      if (!existing) throw new ProjectNotFoundError(uuid);
 
-    let renamed = false;
-    if (input.slug !== undefined) renamed = this.rename(uuid, input.slug).renamed;
+      let renamed = false;
+      if (input.slug !== undefined) renamed = this.rename(uuid, input.slug).renamed;
 
-    if (input.isolatedSettings !== undefined) {
-      this.#db
-        .prepare('UPDATE projects SET isolated_settings = ?, updated_at = ? WHERE uuid = ?')
-        .run(input.isolatedSettings ? 1 : 0, isoNow(this.#clock), uuid);
-    }
+      if (input.isolatedSettings !== undefined) {
+        this.#db
+          .prepare('UPDATE projects SET isolated_settings = ?, updated_at = ? WHERE uuid = ?')
+          .run(input.isolatedSettings ? 1 : 0, isoNow(this.#clock), uuid);
+      }
 
-    const row = this.#db
-      .prepare(`SELECT ${PROJECT_COLUMNS} FROM projects WHERE uuid = ?`)
-      .get(uuid) as ProjectRow;
-    const record = toRecord(row);
-    record.renamed = renamed;
-    return { project: record, renamed };
+      const row = this.#db
+        .prepare(`SELECT ${PROJECT_COLUMNS} FROM projects WHERE uuid = ?`)
+        .get(uuid) as ProjectRow;
+      const record = toRecord(row);
+      record.renamed = renamed;
+
+      const result = { project: record, renamed };
+      appendAudit?.(result);
+      return result;
+    })();
   }
 
   /**

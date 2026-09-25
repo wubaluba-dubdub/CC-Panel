@@ -537,10 +537,15 @@ parts that are decisions rather than code:
 ## Response Headers
 The single source of truth is `SECURITY_HEADERS` in
 `src/server/plugins/security-headers.ts`; `docs/SECURITY.md` carries the full
-table with rationale. `tests/integration/perimeter.test.ts` asserts the complete
-map byte-for-byte on five response shapes (200 HTML, 200 JS, 404, `/healthz`,
-500), so it fails if a value changes, a header vanishes, or an unexpected header
-appears.
+table with rationale. The function built on it, `applySecurityHeaders(reply, env)`,
+is what the plugin's `onSend` hook calls *and* what `frameworkErrors` in `app.ts`
+calls — because a path parameter past Fastify's `maxParamLength` is answered from
+the framework's own route context, whose `onSend` is `null`, so no hook runs and
+a second hand-written map would be the only thing keeping that response honest.
+`tests/integration/perimeter.test.ts` asserts the complete map byte-for-byte on
+six response shapes (200 HTML, 200 JS, 404, a framework-level rejection,
+`/healthz`, 500), so it fails if a value changes, a header vanishes, or an
+unexpected header appears.
 
 `X-XSS-Protection` is deliberately **not** sent — the auditor it controlled is
 gone from every shipping browser and its legacy filtering was itself exploitable.

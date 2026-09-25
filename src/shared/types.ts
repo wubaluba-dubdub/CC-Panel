@@ -565,7 +565,7 @@ export const AUDIT_EVENTS = [
   'resource.oom_kill',
   'panel.unclean_restart',
   'project.created',
-  'project.renamed',
+  'project.updated',
   'project.deleted',
   'project.create_refused',
 ] as const;

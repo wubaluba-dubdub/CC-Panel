@@ -45,7 +45,7 @@ export const AuditEvent = {
   ResourceOomKill: 'resource.oom_kill',
   UncleanRestart: 'panel.unclean_restart',
   ProjectCreated: 'project.created',
-  ProjectRenamed: 'project.renamed',
+  ProjectUpdated: 'project.updated',
   ProjectDeleted: 'project.deleted',
   ProjectCreateRefused: 'project.create_refused',
 } as const satisfies Record<string, AuditEventName>;

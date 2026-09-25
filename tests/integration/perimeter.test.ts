@@ -169,6 +169,46 @@ describe('M1.2 — Perimeter', () => {
       });
     });
 
+    it('sends exactly the expected headers on a framework-level rejection, dev and prod', async () => {
+      // The eighth shape, and the only response in the panel that does not pass
+      // through a hook. Fastify answers a path parameter past `maxParamLength` from
+      // its own internal route context, whose `onSend` is `null`, so no hook
+      // registered anywhere runs for it — the headers are applied by
+      // `applySecurityHeaders` called from `frameworkErrors` in `app.ts`.
+      // Asserted with the same literals as every other shape precisely because a
+      // second, hand-maintained header map is the failure mode this file exists to
+      // catch, and this is the second place one could appear.
+      const url = `/x/api/projects/${'a'.repeat(150)}`;
+
+      ctx = await createTestServer({ PANEL_BASE_PATH: 'x' });
+      const dev = await ctx.app.inject({ method: 'GET', url });
+      expect(dev.statusCode).toBe(404);
+      expect(stableHeaders(dev.headers)).toEqual({
+        'content-type': 'application/json; charset=utf-8',
+        ...SECURITY_HEADERS,
+      });
+      // Byte-identical body, not merely the same status — against an in-prefix
+      // path that reaches the ordinary not-found handler, which needs no session.
+      const ordinary = await ctx.app.inject({ method: 'GET', url: '/x/api/no-such-endpoint' });
+      expect(ordinary.statusCode).toBe(404);
+      expect(dev.body).toBe(ordinary.body);
+      expect(dev.headers['set-cookie']).toBeUndefined();
+
+      const prod = await createTestServer({
+        PANEL_BASE_PATH: 'x',
+        NODE_ENV: 'production',
+        PANEL_PUBLIC_URL: PROD_URL,
+      });
+      const prodRes = await prod.app.inject({ method: 'GET', url, headers: PROD_HOST });
+      expect(prodRes.statusCode).toBe(404);
+      expect(stableHeaders(prodRes.headers)).toEqual({
+        'content-type': 'application/json; charset=utf-8',
+        ...SECURITY_HEADERS,
+        'strict-transport-security': HSTS,
+      });
+      await prod.cleanup();
+    });
+
     it('sends exactly the expected headers on /healthz', async () => {
       ctx = await createTestServer({ PANEL_BASE_PATH: 'x' });
 

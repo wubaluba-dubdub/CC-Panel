@@ -46,7 +46,7 @@ export const ROUTE_TO_AUDIT_EVENT: Readonly<Record<string, string>> = {
   // primary mapping — the mapping is asserted for presence, and the failure row is
   // asserted in `project-routes.test.ts` where the refusal is actually forced.
   'POST /api/projects': AuditEvent.ProjectCreated,
-  'PATCH /api/projects/:uuid': AuditEvent.ProjectRenamed,
+  'PATCH /api/projects/:uuid': AuditEvent.ProjectUpdated,
   'DELETE /api/projects/:uuid': AuditEvent.ProjectDeleted,
 };
 

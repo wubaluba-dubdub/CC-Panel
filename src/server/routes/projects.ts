@@ -35,20 +35,33 @@ import type { ProjectDto, ProjectListResponse } from '../../shared/types.js';
  * `Origin` — runs before the handler, so this is only ever reached by a caller who
  * already passed them.
  *
- * ── What every mutation writes, and what it cannot guarantee ─────────────────
+ * ── What every mutation writes, and how it stays one unit ───────────────────
  *
  * Each successful mutation appends exactly one audit row; the disk-guard refusal
- * appends `project.create_refused`.
+ * appends `project.create_refused`. **The route never writes the success row
+ * itself.** It hands a callback to the service, and the service runs that callback
+ * inside the same better-sqlite3 transaction as the row it is committing:
  *
- * **The atomicity gap, stated rather than papered over:** a success row is written
- * *after* the service has committed, so a crash between the commit and the append
- * leaves a mutation with no audit row, and it cannot be closed from here.
- * `ProjectStoreService.create` interleaves filesystem work (staging, `rename(2)`,
- * quarantine) with the database transaction; spanning both in one transaction would
- * hold SQLite's write lock across those syscalls, and a rollback would leave the tree
- * renamed with no row — strictly worse than the gap it closes. `project.create_refused`
- * has no gap at all: the refusal is the first statement of `create()`, it mutates
- * nothing, and the row is written before the route answers.
+ * - `ProjectStoreService.create` — INSERT, then the append, then COMMIT. The
+ *   filesystem work (staging, `rename(2)`, quarantine) stays *before* that
+ *   transaction, because holding SQLite's write lock across recursive syscalls
+ *   would block every other writer; a failure inside the transaction is answered
+ *   by quarantining the already-promoted tree, which is the one piece of state the
+ *   rollback cannot undo.
+ * - `ProjectsRepository.update` — the update and the append, one transaction.
+ * - `ProjectStoreService.delete` — secret delete, row delete, append; the
+ *   filesystem delete stays after COMMIT, so a crash between the two leaves an
+ *   already-audited rowless directory that `diagnoseProjectDirs()` can name.
+ *
+ * The consequence worth stating: **a throw from the append rolls the mutation
+ * back**, so there is no crash window and no failure path that leaves a mutation
+ * without its required row, and none that leaves a row without the mutation. It
+ * also means `audit.write` throwing is indistinguishable, from the route's side,
+ * from the database failing — which is why both become the same generic 500.
+ *
+ * `project.create_refused` has no such requirement: the refusal is the first
+ * statement of `create()`, it mutates nothing, and the route appends the row
+ * before it throws the 507.
  *
  * ── Nothing here may say where anything is ───────────────────────────────────
  *
@@ -150,22 +163,24 @@ export default async function projectRoutes(
       const uuid = randomUUID();
 
       try {
-        const created = projectStore.create({
-          slug,
-          uuid,
-          ...(body.isolatedSettings !== undefined
-            ? { isolatedSettings: body.isolatedSettings }
-            : {}),
-        });
-
-        runtime.audit.write({
-          event: AuditEvent.ProjectCreated,
-          outcome: 'success',
-          ...who(req),
-          // `renamed` matters on create: the request's slug may have collided, and a
-          // row that records only the stored slug would hide that the label changed.
-          meta: { uuid, slug: created.project.slug, renamed: created.renamed },
-        });
+        const created = projectStore.create(
+          {
+            slug,
+            uuid,
+            ...(body.isolatedSettings !== undefined
+              ? { isolatedSettings: body.isolatedSettings }
+              : {}),
+          },
+          (result) =>
+            runtime.audit.write({
+              event: AuditEvent.ProjectCreated,
+              outcome: 'success',
+              ...who(req),
+              // `renamed` matters on create: the request's slug may have collided, and a
+              // row that records only the stored slug would hide that the label changed.
+              meta: { uuid, slug: result.project.slug, renamed: result.renamed },
+            }),
+        );
 
         reply.code(201);
         return created.project;
@@ -212,30 +227,32 @@ export default async function projectRoutes(
       const slug = body.slug === undefined ? undefined : slugOf(body.slug);
 
       try {
-        const updated = projects.update(uuid, {
-          ...(slug !== undefined ? { slug } : {}),
-          ...(body.isolatedSettings !== undefined
-            ? { isolatedSettings: body.isolatedSettings }
-            : {}),
-        });
-
-        // Written unconditionally, and `project.renamed` is the member that carries it:
-        // four events are permitted for this commit and none of them names "settings
-        // changed", while every mutation must leave a row. The metadata is what keeps
-        // the row honest when nothing was renamed — `previousSlug` equal to `slug` and
-        // `isolatedSettings` present say exactly which field moved.
-        runtime.audit.write({
-          event: AuditEvent.ProjectRenamed,
-          outcome: 'success',
-          ...who(req),
-          meta: {
-            uuid,
-            slug: updated.project.slug,
-            previousSlug: before.slug,
-            isolatedSettings: updated.project.isolatedSettings,
-            renamed: updated.renamed,
+        const updated = projects.update(
+          uuid,
+          {
+            ...(slug !== undefined ? { slug } : {}),
+            ...(body.isolatedSettings !== undefined
+              ? { isolatedSettings: body.isolatedSettings }
+              : {}),
           },
-        });
+          (result) =>
+            runtime.audit.write({
+              event: AuditEvent.ProjectUpdated,
+              outcome: 'success',
+              ...who(req),
+              meta: {
+                uuid,
+                slug: result.project.slug,
+                previousSlug: before.slug,
+                isolatedSettings: result.project.isolatedSettings,
+                // Whether the label actually moved — not the repository's `renamed`,
+                // which means "the slug I asked for was taken and got a suffix". A
+                // slug-only PATCH with a free slug changes the label while that flag
+                // stays false, and this row is what has to say which field moved.
+                renamed: result.project.slug !== before.slug,
+              },
+            }),
+        );
 
         return updated.project;
       } catch (err) {
@@ -261,19 +278,19 @@ export default async function projectRoutes(
       if (existing === null) throw notFound();
 
       try {
-        projectStore.delete(uuid);
+        projectStore.delete(uuid, () =>
+          runtime.audit.write({
+            event: AuditEvent.ProjectDeleted,
+            outcome: 'success',
+            ...who(req),
+            meta: { uuid, slug: existing.slug },
+          }),
+        );
       } catch (err) {
         // Lost a race with a concurrent delete: the row we just read is gone.
         if (err instanceof ProjectNotFoundError) throw notFound();
         throw failed(req.log, err);
       }
-
-      runtime.audit.write({
-        event: AuditEvent.ProjectDeleted,
-        outcome: 'success',
-        ...who(req),
-        meta: { uuid, slug: existing.slug },
-      });
 
       return reply.code(204).send();
     },

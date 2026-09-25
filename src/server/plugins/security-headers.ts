@@ -1,4 +1,4 @@
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 import fp from 'fastify-plugin';
 import type { Env } from '../env.js';
 
@@ -74,19 +74,36 @@ export const SECURITY_HEADERS: Readonly<Record<string, string>> = Object.freeze(
 });
 
 const securityHeadersPlugin: FastifyPluginAsync<SecurityHeadersOptions> = async (fastify, opts) => {
-  const isProduction = opts.env.NODE_ENV === 'production';
-
   fastify.addHook('onSend', async (_req, reply) => {
-    for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
-      reply.header(name, value);
-    }
-
-    // HSTS only in production
-    if (isProduction) {
-      reply.header('Strict-Transport-Security', HSTS);
-    }
+    applySecurityHeaders(reply, opts.env);
   });
 };
+
+/**
+ * The one place the map is written onto a reply.
+ *
+ * Exported because `frameworkErrors` in `app.ts` needs it. Fastify builds the
+ * reply for a framework-level rejection — an unparsable URL, a path parameter
+ * past `maxParamLength` — from its own internal route context, whose `onSend`
+ * is `null`, so **no hook registered anywhere in the panel ever runs for one of
+ * those responses**. Hand-adding the headers there would have given the panel
+ * two maps that drift the first time a header is added, which is exactly the
+ * failure `SECURITY_HEADERS`'s byte-for-byte test exists to catch; one function
+ * means the ordinary path and the framework path are the same code.
+ *
+ * Reads `env.NODE_ENV` on every call rather than closing over it, so a caller
+ * that is not the plugin cannot disagree about which environment it is in.
+ */
+export function applySecurityHeaders(reply: FastifyReply, env: Env): void {
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+    reply.header(name, value);
+  }
+
+  // HSTS only in production
+  if (env.NODE_ENV === 'production') {
+    reply.header('Strict-Transport-Security', HSTS);
+  }
+}
 
 export default fp(securityHeadersPlugin, {
   name: 'security-headers',

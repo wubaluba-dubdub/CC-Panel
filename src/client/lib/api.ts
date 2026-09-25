@@ -90,7 +90,13 @@ function basePath(): string {
   const base = window.__BASE__;
   if (typeof base !== 'string' || base === '') {
     // This is the failure that presents as a blank page: `bootstrap.js` did not run, or ran and
-    // was blocked by the CSP. Saying so is worth more than a stack of 404s.
+    // was blocked by the CSP. Saying so is worth more than a stack of 404s — **but only to
+    // whoever reads a stack trace.** The one call site sits inside `send`'s `try`, and its
+    // `catch` converts whatever is thrown here into the same generic `NetworkError` a dead
+    // server produces, so this message never reaches the screen and never reaches `onError`.
+    // That is deliberate and unchanged: a missing `window.__BASE__` means the bundle is
+    // unserviceable, and a client that cannot build a URL has nothing useful to say about
+    // *why*. Keep the message; do not expect it to surface.
     throw new Error('panel: window.__BASE__ is missing — bootstrap.js did not run');
   }
   return base;

@@ -1,4 +1,11 @@
-import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
+import Fastify, {
+  LogController,
+  type FastifyError,
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+  type FastifyServerOptions,
+} from 'fastify';
 import fastifyCookie from '@fastify/cookie';
 import { mkdirSync, existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -7,7 +14,7 @@ import { STATUS_CODES } from 'node:http';
 import type { Env } from './env.js';
 import { initDb, closeDb } from './db.js';
 import { initCrypto, resetCrypto } from './crypto.js';
-import securityHeadersPlugin from './plugins/security-headers.js';
+import securityHeadersPlugin, { applySecurityHeaders } from './plugins/security-headers.js';
 import basePathPlugin, {
   createBasePathGate,
   loadShell,
@@ -99,6 +106,43 @@ export function errorCodeForStatus(status: number): ErrorCode {
     default:
       return status >= 500 ? 'server_error' : 'bad_request';
   }
+}
+
+/**
+ * The JSON body every *generic* error response carries: the status's standard reason
+ * phrase plus a code from the closed set.
+ *
+ * One function rather than three hand-written literals, because `frameworkErrors`
+ * below has to produce a body byte-identical to the ordinary unknown-resource 404 and
+ * the only way to guarantee that is for both to be the same expression.
+ */
+function genericErrorBody(status: number): string {
+  return JSON.stringify({ error: STATUS_CODES[status] ?? 'Error', code: errorCodeForStatus(status) });
+}
+
+/**
+ * The status a **framework-level** rejection answers with.
+ *
+ * Fastify reaches `frameworkErrors` for exactly three conditions — an unparsable URL
+ * (`FST_ERR_BAD_URL`), a path parameter past `maxParamLength`
+ * (`FST_ERR_MAX_PARAM_LENGTH`), and a failed async constraint
+ * (`FST_ERR_ASYNC_CONSTRAINT`) — and each carries its own `statusCode` on the error
+ * object. Two rules apply:
+ *
+ * - **`FST_ERR_MAX_PARAM_LENGTH` is forced to 404.** Fastify's own answer is `414`,
+ *   and a `414` is a *louder* answer than the panel gives for "no such project" to
+ *   what is, from outside, the same question: "I asked for this path and it is not
+ *   there". The route layer already decided that a malformed uuid and an absent uuid
+ *   must be one response (`routes/projects.ts`); an over-long segment is the same
+ *   distinction arriving from one layer further out, and `414` would reopen it.
+ * - Everything else keeps the status Fastify declared, so the body shape never has
+ *   to invent a code for a library error.
+ */
+function frameworkErrorStatus(err: { code?: unknown; statusCode?: unknown }): number {
+  if (err.code === 'FST_ERR_MAX_PARAM_LENGTH') return 404;
+  return typeof err.statusCode === 'number' && err.statusCode >= 400 && err.statusCode <= 599
+    ? err.statusCode
+    : 500;
 }
 
 declare module 'fastify' {
@@ -346,6 +390,62 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
 
   const app = Fastify({
     ...loggerOptions,
+    // ── Framework-level rejections ────────────────────────────────────────────
+    //
+    // Three conditions are answered by Fastify *before* `setErrorHandler`, before
+    // every hook, and before routing ever resolves a route: an unparsable URL, a
+    // path parameter past `maxParamLength`, and a failed async constraint. Left
+    // alone, `fastify.js` writes each one straight to the socket with
+    // `res.writeHead` and a body built from the error object — which quotes the
+    // path it rejected, secret base path included — on a response carrying not one
+    // security header, because the synthetic reply those sites build comes from
+    // `routeEventContext`, whose `onSend` is `null` and therefore runs no hook
+    // registered anywhere in this file.
+    //
+    // Closing it here rather than per route is the only shape that closes it: the
+    // rejections have no route context to hang a `preValidation` or a `setNotFoundHandler`
+    // on, and raising `maxParamLength` would only move the same leak above the new
+    // ceiling. Two properties of this handler matter and are tested in
+    // `tests/integration/perimeter.test.ts` and `project-routes.test.ts`:
+    //
+    // - the body is built by `genericErrorBody`, so a `maxParamLength` rejection is
+    //   byte-identical to the panel's ordinary unknown-resource 404;
+    // - `applySecurityHeaders` is the same function the `onSend` hook calls, so the
+    //   header map cannot be maintained twice.
+    //
+    // The `err.message` is never read. It quotes the path.
+    frameworkErrors: (
+      err: FastifyError,
+      _req: FastifyRequest,
+      reply: FastifyReply,
+    ): void => {
+      const status = frameworkErrorStatus(err);
+      applySecurityHeaders(reply, env);
+      reply.code(status).header('Content-Type', 'application/json').send(genericErrorBody(status));
+    },
+    // The matching half of the same fix, on the logging side.
+    //
+    // Fastify emits `incomingRequest` for a framework rejection *before* the handler
+    // above runs, and the `req` serialiser keeps everything after the base path — so
+    // that line carries the over-long segment itself, which the response body is
+    // about to say nothing about. Suppressing it restores exactly what Fastify did
+    // before `frameworkErrors` was set (no line at all), and the alternative — a
+    // post-processed line — would be a second thing that has to know which parts of
+    // a URL are secret.
+    //
+    // The discriminator is `routeOptions.handler`. It is `undefined` only on the
+    // framework's own `routeEventContext`; a matched route's context and the 404
+    // context both carry a handler, so ordinary requests keep their
+    // `incoming request` / `request completed` lines — which
+    // `tests/integration/base-path-logging.test.ts` asserts by name. `is404` is
+    // *not* usable for this: `routeEventContext` has `config: {}`, so `is404` is
+    // true for a framework rejection and true for a real 404 alike.
+    logController: new LogController({
+      disableRequestLogging: (req) => {
+        const { handler } = req.routeOptions as { handler?: unknown };
+        return handler === undefined;
+      },
+    }),
     trustProxy: env.PANEL_TRUST_PROXY,
     bodyLimit: BODY_LIMIT_BYTES,
     requestTimeout: REQUEST_TIMEOUT_MS,
@@ -620,7 +720,9 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
   // scope's hooks — which would charge every unknown `/api/` path against the anonymous
   // bucket instead of the session one — and not a `/*` route, because a wildcard has to be
   // ordered against every real route rather than being what runs when none matched.
-  const generic404Body = JSON.stringify({ error: 'Not Found', code: 'not_found' });
+  // Exactly the body `frameworkErrors` builds for a `maxParamLength` rejection: one
+  // expression, so the two can never drift apart.
+  const generic404Body = genericErrorBody(404);
   app.setNotFoundHandler((req, reply) => {
     if (
       shellBody !== null &&

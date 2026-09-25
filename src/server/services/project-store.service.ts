@@ -15,12 +15,14 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { getDb } from '../db.js';
 import type { DiskReading } from './resources.service.js';
 import { readDisk } from './resources.service.js';
 import {
   ProjectsRepository,
   ProjectNotFoundError,
   normalizeSlug,
+  type CreateProjectResult,
   type ProjectRecord,
 } from './projects.service.js';
 import { SecretsRepository } from './secrets.service.js';
@@ -40,13 +42,18 @@ import { type Clock, isoFrom, systemClock } from '../utils/clock.js';
  * for a project (and, worse, for a promoted one). And `rename(2)` stays atomic
  * only on one filesystem — a sibling under the same parent guarantees that.
  *
- * ── Audit is returned, not written ──────────────────────────────────────────
+ * ── Audit is appended *inside* this service's transaction ───────────────────
  *
- * Prompt 4 registers the audit events and notification rules. This prompt's
- * service therefore returns the facts a route layer will audit (or, for the
- * boot sweep, hands them to an injected log sink). Registering an event here
- * would require touching `AUDIT_EVENTS` and `notification-rules.ts` in the
- * wrong commit.
+ * This module still does not choose which event to write — the route decides
+ * that, and `AUDIT_EVENTS` / `notification-rules.ts` are not touched from here.
+ * What the P4 review correction changed is *when*: {@link ProjectStoreService.create}
+ * and {@link ProjectStoreService.delete} take an optional `appendAudit` callback and
+ * run it inside the same better-sqlite3 transaction as the row they are about to
+ * commit, so a successful mutation and its success row are one atomic unit rather
+ * than two sequential commits with a window between them. The callback throwing
+ * rolls the whole transaction back, which is why the failure paths below treat it
+ * exactly as they treat a failed INSERT. Omitted, the service writes the row and
+ * nothing else — the shape the repository's own tests ask for.
  */
 
 /** Directory-mode bits for every directory this service creates. */
@@ -255,6 +262,17 @@ export class ProjectStoreService {
   readonly #dataDir: string;
   readonly #projectsDir: string;
   readonly #clock: Clock;
+  /**
+   * The one connection this service opens transactions on.
+   *
+   * Resolved exactly as {@link ProjectsRepository} and {@link SecretsRepository}
+   * resolve theirs — the injected `db`, else the process-wide singleton — so all
+   * three are the same `Database` in production (app.ts passes one) and in the
+   * suite (which calls `initDb` first). That identity is what makes a transaction
+   * opened here cover a `secrets` delete and a `projects` delete as well as the
+   * audit append.
+   */
+  readonly #db: Database;
   readonly #projects: ProjectsRepository;
   readonly #secrets: SecretsRepository | null;
   readonly #disk: ProjectStoreOptions['disk'];
@@ -269,6 +287,7 @@ export class ProjectStoreService {
     this.#projectsDir = join(opts.dataDir, 'projects');
     this.#clock = opts.clock ?? systemClock;
     const db = opts.db;
+    this.#db = db ?? getDb();
     this.#projects = opts.projects ?? new ProjectsRepository({ ...(db ? { db } : {}), clock: this.#clock });
     this.#secrets = opts.secrets ?? new SecretsRepository({ ...(db ? { db } : {}), clock: this.#clock });
     this.#disk = opts.disk;
@@ -328,24 +347,41 @@ export class ProjectStoreService {
 
   /**
    * Creates a project: staging sibling → rename into `projects/<uuid>` →
-   * database transaction commits last.
+   * database transaction commits last, with the audit append inside it.
+   *
+   * The filesystem half is deliberately **outside** that transaction: staging and
+   * the `rename(2)` promotion are slow, fallible syscalls and a recursive
+   * quarantine, and holding SQLite's write lock across them would block every other
+   * writer in the panel for the duration. So the order is fixed — promote first,
+   * then one transaction that inserts the row and appends `project.created` — and a
+   * failure in the *transaction* (including one raised by `appendAudit`) is
+   * answered by quarantining the already-promoted tree, which is the only residue
+   * the database can no longer account for.
+   *
+   * `appendAudit` runs between the INSERT and the COMMIT. It throws → the row rolls
+   * back with it → the catch below quarantines the tree and the method reports a
+   * `database` failure, so neither a success response nor a `project.created` row
+   * survives. Omitted, only the row is written.
    *
    * Failure behaviour (stated in the report):
    * - staging fails → nothing on disk, nothing in the database;
    * - rename fails  → staging removed, nothing in the database;
-   * - database commit fails → the promoted directory is **quarantined** to
-   *   `<data>/.project-orphan-<uuid>` and a log line names the quarantine
-   *   (uuid only, never the base path). Quarantine rather than revert: a
+   * - database commit or audit append fails → the promoted directory is
+   *   **quarantined** to `<data>/.project-orphan-<uuid>` and a log line names the
+   *   quarantine (uuid only, never the base path). Quarantine rather than revert: a
    *   rename-back can itself fail (ENOSPC, a concurrent actor), leaving a
    *   half-known state; moving the tree aside is one atomic rename that always
    *   leaves `projects/` free of rowless directories, and the operator finds
    *   orphans by listing `.*project-orphan-*` beside `projects/`.
    */
-  create(input: {
-    slug: string;
-    isolatedSettings?: boolean;
-    uuid?: string;
-  }): CreateResult {
+  create(
+    input: {
+      slug: string;
+      isolatedSettings?: boolean;
+      uuid?: string;
+    },
+    appendAudit?: (result: CreateProjectResult) => void,
+  ): CreateResult {
     const guard = this.checkDisk();
     if (!guard.allowed) throw new DiskGuardRefusedError();
 
@@ -384,16 +420,29 @@ export class ProjectStoreService {
       throw new ProjectStoreError('rename', 'rename into place failed', { cause: err });
     }
 
-    // ── 3. Database transaction commits LAST ────────────────────────────────
+    // ── 3. Database transaction commits LAST, audit append inside it ─────────
+    //
+    // One transaction, two statements: the INSERT and whatever `appendAudit` does.
+    // Nesting is real, not assumed — `AuditService.#append` opens its own
+    // `db.transaction`, and better-sqlite3 turns a transaction opened while
+    // `db.inTransaction` is already true into `SAVEPOINT` / `RELEASE` (with
+    // `ROLLBACK TO` on a throw), so the audit row and the chain update commit or
+    // roll back with this one. The observer `#append` fires afterwards runs inside
+    // this transaction too, which is what makes a queued notification roll back
+    // with the row that produced it.
     try {
       if (this.#failDatabase) throw new Error('injected database failure');
-      const result = this.#projects.create({
-        slug,
-        uuid,
-        ...(input.isolatedSettings !== undefined
-          ? { isolatedSettings: input.isolatedSettings }
-          : {}),
-      });
+      const result = this.#db.transaction(() => {
+        const created = this.#projects.create({
+          slug,
+          uuid,
+          ...(input.isolatedSettings !== undefined
+            ? { isolatedSettings: input.isolatedSettings }
+            : {}),
+        });
+        appendAudit?.(created);
+        return created;
+      })();
       return { project: result.project, renamed: result.renamed };
     } catch (err) {
       // Quarantine the promoted tree. One rename; never a recursive delete of a
@@ -423,24 +472,34 @@ export class ProjectStoreService {
   }
 
   /**
-   * Deletes a project: database transaction first (row + secrets), then the
-   * filesystem. Audit rows are append-only and are never touched.
+   * Deletes a project: one database transaction (secrets + row + audit append),
+   * then the filesystem. Audit rows are append-only and are never touched.
    *
    * Order and crash residual:
-   * - **after the database step**: row and `project:<uuid>` secrets are gone;
-   *   `projects/<uuid>/` still exists. Invisible in the UI and ignored by the
-   *   boot sweep (which only walks the staging prefix), but discoverable
+   * - **after the database transaction**: `project:<uuid>` secrets, the row and the
+   *   `project.deleted` success row are all gone (or all present) — there is no
+   *   state in which one of the three exists without the others — and
+   *   `projects/<uuid>/` still exists. Invisible in the UI and ignored by the boot
+   *   sweep (which only walks the staging prefix), but discoverable
    *   deterministically via {@link ProjectStoreService.diagnoseProjectDirs}.
-   *   Chosen because the panel's view of the world is the database — once the
-   *   row is gone the project is deleted from the operator's perspective, and
-   *   a crash cannot resurrect a half-deleted credential.
+   *   Chosen because the panel's view of the world is the database — once the row
+   *   is gone the project is deleted from the operator's perspective, and a crash
+   *   cannot resurrect a half-deleted credential.
    * - **after the filesystem step**: everything this prompt deletes is gone.
+   *
+   * `appendAudit` runs last inside that transaction, so a throw from it rolls the
+   * secret delete and the row delete back with it: the project, its directory and
+   * its notification queue row all remain, and nothing about the deletion looks
+   * half-done. Omitted, only the two deletes happen.
    *
    * Future refusal check: the "refuse while a session is attached" guard (M3,
    * terminals) must run at the top of this method, **before** the database
    * transaction — before any mutation. There is nothing to refuse for yet.
    */
-  delete(uuid: string): { rowDeleted: boolean; secretsDeleted: number; dirRemoved: boolean } {
+  delete(
+    uuid: string,
+    appendAudit?: () => void,
+  ): { rowDeleted: boolean; secretsDeleted: number; dirRemoved: boolean } {
     const existing = this.#projects.getByUuid(uuid);
     if (!existing) throw new ProjectNotFoundError(uuid);
 
@@ -451,13 +510,15 @@ export class ProjectStoreService {
     let rowDeleted = false;
 
     // Step 1: database. Secrets first, then the row — both synchronous
-    // better-sqlite3 calls. A crash between them leaves a rowless secret
-    // under a scope nothing references; a retry of delete finishes it.
-    // Deleting the row second means a crash after secrets leaves the project
-    // still visible (with no credentials) rather than invisible with live
-    // credentials, which is the safer residual.
-    secretsDeleted = this.#secrets ? this.#secrets.deleteScope(scope) : 0;
-    rowDeleted = this.#projects.delete(uuid);
+    // better-sqlite3 calls — then the audit append, all inside one transaction. The
+    // order inside it still matters for a *retry*: deleting secrets before the row
+    // means an aborted attempt leaves a row with no credentials rather than a
+    // credential with no row, which is the safer of the two states to be caught in.
+    this.#db.transaction(() => {
+      secretsDeleted = this.#secrets ? this.#secrets.deleteScope(scope) : 0;
+      rowDeleted = this.#projects.delete(uuid);
+      appendAudit?.();
+    })();
 
     if (this.#crashAfter === 'db') {
       throw new ProjectStoreError('delete', 'simulated crash after database step');
