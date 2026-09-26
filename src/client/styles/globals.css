@@ -1159,6 +1159,26 @@ col.col-uuid {
     }
   }
 
+  /* The exit state, applied by `Dialog` while the exit plays.
+   *
+   * `[open]` **stays set** for the whole of it. That is what keeps the element in the top layer
+   * natively, and it is why this is `.dialog[open].dialog-closing` rather than a rule that drops
+   * `[open]`: dropping it would take the `display`/`overlay` transition out of the picture and
+   * hand `close()` back the frame it used to steal. The dialog is closed by `transitionend` on
+   * `transform` — one property, so the `--t-standard` dialog clock and the `--t-fast` backdrop
+   * clock cannot disagree about when the exit is finished.
+   *
+   * Specificity does the work here and not order alone: `[open]` above matches too, and without
+   * the third class the open dialog would keep `opacity: 1` and simply never move. */
+  .dialog[open].dialog-closing {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+
+  .dialog[open].dialog-closing::backdrop {
+    opacity: 0;
+  }
+
   @keyframes screen-in {
     from {
       opacity: 0;

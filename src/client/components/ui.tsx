@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useLocale } from '../i18n/index.js';
+import { isOutsideBox } from '../lib/backdrop.js';
 
 /**
  * The primitives. In one file, because each is a handful of lines and the point of having them
@@ -242,6 +243,33 @@ export function CopyButton({ value, label }: { value: string; label?: ReactNode 
   );
 }
 
+/** Where a `<dialog>` is in its own lifecycle. The class, the listeners and `close()` all read it. */
+type DialogPhase = 'closed' | 'open' | 'closing';
+
+/**
+ * The property whose `transitionend` means the exit has finished.
+ *
+ * `transform` and not `opacity`, for a reason that is invisible until it is wrong: `::backdrop`
+ * transitions `opacity` too, and a transition on a pseudo-element dispatches to the element it
+ * belongs to — so a listener matching `opacity` alone would fire on the backdrop's shorter
+ * `--t-fast` clock, before the dialog itself had finished moving, and `close()` would cut the
+ * last frames of the exit off. `transform` is declared on the dialog only, and the handler
+ * filters `event.target` as well.
+ */
+const EXIT_PROPERTY = 'transform';
+
+/**
+ * Read once, when a close is requested: does the exit have to wait for anything?
+ *
+ * The same condition the stylesheet's `@media (prefers-reduced-motion: no-preference)` guard
+ * tests, written the other way round. If the two ever disagreed the dialog would close
+ * immediately while the CSS waited, or wait for a transition that was never applied — the
+ * second of which leaves a dialog stuck open with no listener and no timer to save it.
+ */
+function exitIsImmediate(): boolean {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
 /**
  * A modal, on the platform's own `<dialog>`.
  *
@@ -249,6 +277,37 @@ export function CopyButton({ value, label }: { value: string; label?: ReactNode 
  * for free — all four of which a hand-rolled modal gets wrong at least once. `onClose` fires
  * for Escape as well as for a button, so a dismissal cannot leave the caller waiting forever on
  * a promise.
+ *
+ * ── One controlled close path ──────────────────────────────────────────────
+ *
+ * Nothing here calls `HTMLDialogElement.close()` because a trigger asked it to. Every trigger —
+ * Escape, Cmd/Ctrl+K, a backdrop click, a Cancel button, a parent flipping `open` — moves the
+ * state machine to `closing`, which is what applies `.dialog-closing` and lets the exit run with
+ * the dialog still in the top layer. `close()` happens in exactly one place, `finishClose()`, on
+ * the `transitionend`/`transitioncancel` of the property the exit is measured by. Closing
+ * synchronously inside an event handler is the defect this replaces: `display` flips on the frame
+ * the class would have been applied, and the exit plays behind the page or not at all.
+ *
+ * - **`cancel` is always `preventDefault()`-ed.** Escape must not reach the platform's own close
+ *   and bypass the path above. For `dismissable={false}` the request is simply not acted on,
+ *   which is how the one-time recovery-code disclosure keeps its content.
+ * - **There is no timer.** The exit is bounded by the transition itself, and `transitioncancel`
+ *   covers the ways it can be interrupted. A `setTimeout` whose duration lived in TypeScript
+ *   would be a second, disagreeing source of truth for how long the exit takes — and one that
+ *   fires after a re-open and closes a dialog the operator is looking at.
+ * - **Reduced motion is a branch, not a fallback.** `matchMedia` is read once when the close is
+ *   requested; with motion reduced the dialog closes immediately, because there is no transition
+ *   to wait for. It is the same condition the stylesheet's `prefers-reduced-motion:
+ *   no-preference` guard tests, so the two cannot disagree about what just happened.
+ *
+ * Focus: the opener is captured in the same synchronous block as `showModal()`, and restored
+ * after the dialog has actually closed — never before, because the document is still inert
+ * until then. `restoreFocus={false}` is the command palette telling us a command has just
+ * navigated or signed out: stealing focus back would be the dialog undoing the command.
+ *
+ * What no test here can see: that a browser animated anything, or that focus moved. The suite
+ * asserts the wiring — one `showModal()`, one `close()`, `preventDefault` on `cancel`, the
+ * backdrop predicate — and the behaviour itself is `docs/SECURITY.md` §*Manual browser checks*.
  */
 export function Dialog({
   open,
@@ -257,6 +316,7 @@ export function Dialog({
   children,
   dismissable = true,
   onBackdrop,
+  restoreFocus = true,
 }: {
   open: boolean;
   onClose: () => void;
@@ -265,35 +325,129 @@ export function Dialog({
   /** False for a disclosure the operator must acknowledge — Escape is disabled with it. */
   dismissable?: boolean;
   /**
-   * Called when the click lands on the dialog element itself rather than on anything inside it
-   * — which is how a click on the backdrop is delivered, and also how a click on the dialog's
-   * own padding is. The command palette closes on it; the confirmation dialogs do not, so a
-   * stray click beside "Delete permanently" cannot be how a delete is abandoned or taken.
+   * Called only when the click is on the dialog element itself **and** on a point outside its
+   * border box — a click on the dialog's own padding is delivered to the same element with the
+   * same target, so the target test alone is not sufficient (`lib/backdrop.ts`). The command
+   * palette closes on it; the confirmation dialogs do not pass it at all, so a stray click
+   * beside "Delete permanently" cannot be how a delete is abandoned or taken.
    */
   onBackdrop?: () => void;
+  /**
+   * False when the caller has already put focus where the operator's action sent it. Read when
+   * the close *lands*, not when it is requested, so the value written in the same commit as
+   * `open={false}` is the one that counts.
+   */
+  restoreFocus?: boolean;
 }): ReactNode {
   const ref = useRef<HTMLDialogElement>(null);
+  const [phase, setPhaseState] = useState<DialogPhase>('closed');
+  /**
+   * The same value as `phase`, readable from a handler that closes over an older render. Close
+   * requests arrive from native listeners and from a parent's state update, and a second request
+   * while one is already in flight must be a no-op rather than a second exit.
+   */
+  const phaseRef = useRef<DialogPhase>('closed');
+  /** The element that had focus when `showModal()` was about to move it. */
+  const opener = useRef<HTMLElement | null>(null);
+  /** Read through a ref so the value written alongside `open={false}` is the one used. */
+  const restoreRequested = useRef(restoreFocus);
+
+  const setPhase = useCallback((next: DialogPhase): void => {
+    phaseRef.current = next;
+    setPhaseState(next);
+  }, []);
+
+  const beginClose = useCallback((): void => {
+    if (phaseRef.current !== 'open') return;
+    setPhase('closing');
+  }, [setPhase]);
+
+  /** The one place `close()` is called, and the one place focus is put back. */
+  const finishClose = useCallback((): void => {
+    if (phaseRef.current !== 'closing') return;
+    const dialog = ref.current;
+    setPhase('closed');
+    // Fires the native `close` event, which hands `onClose` to a caller still waiting on it
+    // when the request came from Escape rather than from its own `open` prop going false.
+    if (dialog !== null && dialog.open) dialog.close();
+    if (!restoreRequested.current) return;
+    const target = opener.current;
+    opener.current = null;
+    // `document.body` is connected but is not something that can hold focus, so it counts as
+    // "there was no opener" rather than as an element that was restored — which is what puts
+    // the caret in `<main>` instead of leaving it on `<body>` where the next Tab starts over.
+    if (target !== null && target !== document.body && target.isConnected) target.focus();
+    else document.getElementById('main')?.focus();
+  }, [setPhase]);
+
+  useEffect(() => {
+    restoreRequested.current = restoreFocus;
+  }, [restoreFocus]);
 
   useEffect(() => {
     const dialog = ref.current;
     if (dialog === null) return;
-    if (open && !dialog.open) dialog.showModal();
-    if (!open && dialog.open) dialog.close();
-  }, [open]);
+    if (open) {
+      // Re-opened while the exit was still playing: drop the closing state and stay open, or
+      // the next frame would be an `open` dialog with the exit class still on it.
+      if (phaseRef.current === 'closing') {
+        setPhase('open');
+        return;
+      }
+      if (dialog.open) return;
+      // Immediately before `showModal()`, because that is what moves focus — anything earlier
+      // would record whatever had focus before the operator's own click landed.
+      opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      dialog.showModal();
+      setPhase('open');
+      return;
+    }
+    beginClose();
+  }, [open, beginClose, setPhase]);
+
+  useEffect(() => {
+    if (phase !== 'closing') return;
+    const dialog = ref.current;
+    if (dialog === null) return;
+    if (exitIsImmediate()) {
+      finishClose();
+      return;
+    }
+    const onExitEnd = (event: TransitionEvent): void => {
+      if (event.target !== dialog) return;
+      if (event.propertyName !== EXIT_PROPERTY) return;
+      finishClose();
+    };
+    dialog.addEventListener('transitionend', onExitEnd);
+    dialog.addEventListener('transitioncancel', onExitEnd);
+    return () => {
+      dialog.removeEventListener('transitionend', onExitEnd);
+      dialog.removeEventListener('transitioncancel', onExitEnd);
+    };
+  }, [phase, finishClose]);
 
   return (
     <dialog
       ref={ref}
-      className="dialog"
+      className={phase === 'closing' ? 'dialog dialog-closing' : 'dialog'}
       aria-label={typeof title === 'string' ? title : undefined}
       onClick={(event) => {
-        if (onBackdrop !== undefined && event.target === event.currentTarget) onBackdrop();
+        if (onBackdrop === undefined) return;
+        // Necessary, and not sufficient: a click on the dialog's own padding is delivered to
+        // the dialog element too, so the coordinates are what tell the two apart.
+        if (event.target !== event.currentTarget) return;
+        const rect = event.currentTarget.getBoundingClientRect();
+        const box = { minX: rect.left, minY: rect.top, maxX: rect.right, maxY: rect.bottom };
+        if (!isOutsideBox(event.clientX, event.clientY, box)) return;
+        onBackdrop();
       }}
       onCancel={(event) => {
-        // Escape. Refused for a one-time disclosure — the recovery codes are shown once, and a
-        // stray keypress must not be how they are lost.
-        if (!dismissable) event.preventDefault();
-        else onClose();
+        // Escape. Always intercepted: letting it reach the platform's own close would bypass the
+        // controlled path above, which is the whole point of the state machine. Refused outright
+        // for a one-time disclosure — the recovery codes are shown once, and a stray keypress
+        // must not be how they are lost.
+        event.preventDefault();
+        if (dismissable) beginClose();
       }}
       onClose={() => {
         if (open) onClose();

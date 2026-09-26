@@ -2,7 +2,7 @@
 
 **Design only. Nothing in this document is built.** It specifies the mechanism that
 satisfies R1 (a complete panel backup the operator takes on demand) and R2 (uploading
-that file into a *different* panel reproduces the first one). Built in M2.6; the
+that file into a *different* panel reproduces the first one). Built in M2.4; the
 decisions here are recorded before M2.1 because [§4](#4-portable-identity) changes the
 Phase 2 schema and the directory layout, and both are cheaper to get right than to
 migrate.
@@ -42,7 +42,7 @@ decision in this document follows from that one:
 
 ### It is not `npm run backup`
 
-| | `npm run backup` / `restore` (M1.6) | Portable export / import (M2.6) |
+| | `npm run backup` / `restore` (M1.6) | Portable export / import (M2.4) |
 | :--- | :--- | :--- |
 | what it copies | `panel.db`, page-for-page, through SQLite's online backup API | a logical document: settings, projects, credentials, optionally workspace files |
 | readable by | **only** the panel whose `PANEL_MASTER_KEY` wrote it | any panel, given the export passphrase |
@@ -192,7 +192,7 @@ The hook credentials do not transfer ([§2](#2-what-transfers-and-what-does-not)
 every project it creates the import must mint a fresh per-project hook token, ensure the
 panel-wide shared secret exists, and **regenerate** that project's
 `claude-home/settings.json` from the imported source documents plus the new credentials —
-see M2.4 in [`PLAN.md`](../PLAN.md), where that file is a build artefact rather than a
+see M2.6 in [`PLAN.md`](../PLAN.md), where that file is a build artefact rather than a
 document. An import that carried the file verbatim would install another panel's hook URL
 and another panel's token, and the first turn would report to nowhere.
 

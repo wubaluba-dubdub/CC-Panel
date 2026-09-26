@@ -52,7 +52,7 @@ and it is strictly better against an attacker who can rotate addresses.
 ├── global/
 │   └── claude-home/           # reserved for future: CLAUDE_CONFIG_DIR
 ├── projects/                  # reserved for future: per-project directories
-├── exports/                   # reserved for M2.6: portable exports, with incoming/
+├── exports/                   # reserved for M2.4: portable exports, with incoming/
 ├── run/
 │   └── panel.run              # the watchdog's run marker — present means running
 └── logs/                      # reserved for future: log files (if any)
@@ -1147,8 +1147,8 @@ what the plan calls for.
   M1.8, built in M2.8. Two arrival paths (ZIP upload, git clone) with genuinely different
   threat profiles and **one** pipeline from staging onward, enforced by a static scan. Two of
   its decisions land earlier than M2.8 and are the reason it was designed now: migration 012's
-  provenance and review columns on `projects` (M2.1 took 011), and four changes to M2.4's
-  settings model. One of those was a correction to M2.4's claim that the operator cannot break
+  provenance and review columns on `projects` (M2.1 took 011), and four changes to M2.6's
+  settings model. One of those was a correction to M2.6's claim that the operator cannot break
   the turn-complete notification by hand — **and M2.1 refined the correction**: `claude
   --settings` *layers*, and `hooks` is array-valued and **merges across scopes**, so a
   workspace `hooks.Stop` is concatenated with the panel's rather than replacing it. Both fire.
@@ -1321,15 +1321,15 @@ React key. Disabled tabs on the project screen say which milestone builds them.
 See `PLAN.md` §*M2 — Phase 2* for the milestone map and the blocking decisions,
 §*Decisions taken after M2.0* for the twelve answers each milestone has to respect, and
 §*Decisions taken in M1.8* for six more. In order: the application shell with direction built
-in (M2.1), projects with portable identity (M2.2), the file browser (M2.3), settings documents
-and provider credentials (M2.4), the Telegram configuration UI — whose transport now exists
-(M2.5) — portable export and import (M2.6), the resource widget (M2.7), which has its
+in (M2.1), projects with portable identity (M2.2), the file browser (M2.3), portable export
+and import (M2.4), the Telegram configuration UI — whose transport now exists (M2.5) —
+settings documents and provider credentials (M2.6), the resource widget (M2.7), which has its
 endpoint, its poll budget and now `Watchdog.status()` already, and importing an unfinished
 project (M2.8, R8 — `docs/IMPORT.md`). Phase 3 remains the terminal, the pty, the Claude Code
 integration and the inbound hook endpoint M1.7 deliberately left out.
 
 **Two of R8's decisions are not M2.8's to make.** Migration 011's provenance and review
-columns on `projects` land with M2.2, and four changes to the settings model land with M2.4 —
+columns on `projects` land with M2.2, and four changes to the settings model land with M2.6 —
 `docs/IMPORT.md` §10 and §11. Both are cheap now and either an `ALTER` against live operator
 data or a change to every settings screen later.
 

@@ -19,7 +19,7 @@ is under it, and everything is addressed by a path relative to it.
 
 `claude-home/` sits **beside** the workspace, not inside it, and that is on purpose: the
 per-project `CLAUDE_CONFIG_DIR` holds the generated `settings.json` with a plaintext API key
-in it (M2.4 in [`PLAN.md`](../PLAN.md) §*Storage and leak surface*), so keeping it outside
+in it (M2.6 in [`PLAN.md`](../PLAN.md) §*Storage and leak surface*), so keeping it outside
 the root means containment already excludes the stored credentials without a second rule to
 remember. It is also outside the operator's git repository, which is the other half of the
 same decision.

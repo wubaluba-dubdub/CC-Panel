@@ -329,12 +329,8 @@ export default async function authRoutes(
     const session = req.session!;
     const user = runtime.users.find() ?? unreachable('no user');
 
-    const stage =
-      session.authLevel === 'full' ? 'authenticated' : runtime.totp.isEnabled() ? 'totp' : 'setup';
-
-    const response: MeResponse = {
+    const common = {
       username: user.username,
-      stage,
       totpEnabled: runtime.totp.isEnabled(),
       stepUpActive: runtime.sessions.hasStepUp(session),
       stepUpUntil: session.stepUpUntil,
@@ -344,8 +340,17 @@ export default async function authRoutes(
       // is a stored answer to override it with.
       locale: user.locale,
       session: toSessionSummary(session, session.id),
-      buildId: BUILD_IDENTITY.buildId,
     };
+
+    // The build id rides on a full session and on nothing else. A `pre` session is reachable
+    // with a stolen password alone, so the field is **absent** from that body rather than null
+    // in it: a key that is missing and a key that says null are the same fact to a reader who
+    // trusts the type, and different bytes to a test that does not. `MeResponse` is the
+    // discriminated union that makes the omission a compile error to forget.
+    const response: MeResponse =
+      session.authLevel === 'full'
+        ? { ...common, stage: 'authenticated', buildId: BUILD_IDENTITY.buildId }
+        : { ...common, stage: runtime.totp.isEnabled() ? 'totp' : 'setup' };
     return response;
   });
 

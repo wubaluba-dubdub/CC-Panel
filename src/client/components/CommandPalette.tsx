@@ -15,13 +15,18 @@ import type { ProjectDto } from '../../shared/types.js';
  * palette outside every clipping context on the page.
  *
  * ── Enter and exit ──────────────────────────────────────────────────────────
- * Open: the keydown captures `document.activeElement` **before** `showModal()` moves focus, then
- * the input is focused on the next commit. Close: `cancel` (Escape) and the backdrop click both
- * take the same controlled path — `onClose` sets state, and the `Dialog` effect calls `close()`
- * on the following commit, which is what lets the `display`/`overlay` transition play rather
- * than being cut off by a synchronous `close()` in the event handler. Focus is then returned to
- * the element that opened it, unless a command has just navigated somewhere: focus is already
- * where the operator's action sent it, and stealing it back would be the palette undoing itself.
+ * Open: `open` goes true, and the `Dialog` records the opener in the same block as its
+ * `showModal()` — which is the only moment that is still before focus moves. Close: every
+ * trigger (Escape, Cmd/Ctrl+K, the backdrop, the list) goes through the same two-step path —
+ * `setOpen(false)`, and then the `Dialog`'s own state machine, which applies `.dialog-closing`,
+ * waits for the exit and calls `close()` once. Nothing here calls `close()`, and the palette
+ * stays in the top layer until the exit has finished.
+ *
+ * Focus returns to whatever opened the palette, unless a command has just run: `executed` is
+ * what makes `restoreFocus` false for that one close, because a command that navigated or signed
+ * out has already decided where focus belongs and the palette must not undo it. Focus itself is
+ * the `Dialog`'s to give back — it captured the opener, and it falls back to `<main>` when
+ * there is nothing left to return to.
  *
  * ── What it may hold ────────────────────────────────────────────────────────
  * Slugs and dictionary strings. No uuid is listed (the address is one click away on the row),
@@ -44,11 +49,8 @@ export function CommandPalette({
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-  /** The element that had focus when the palette opened. */
-  const opener = useRef<HTMLElement | null>(null);
   /** True once a command has run, so the focus restore does not fight the navigation. */
   const executed = useRef(false);
-  const mounted = useRef(false);
 
   const commands: Command[] = useMemo(() => {
     const language = locale === 'en' ? 'fa' : 'en';
@@ -113,8 +115,6 @@ export function CommandPalette({
         setOpen(false);
         return;
       }
-      const current = document.activeElement;
-      opener.current = current instanceof HTMLElement ? current : null;
       executed.current = false;
       setQuery('');
       setActive(0);
@@ -125,20 +125,9 @@ export function CommandPalette({
   }, [open]);
 
   useEffect(() => {
-    if (open) {
-      mounted.current = true;
-      inputRef.current?.focus();
-      return;
-    }
-    if (!mounted.current) return;
-    mounted.current = false;
-    if (executed.current) {
-      executed.current = false;
-      return;
-    }
-    const target = opener.current;
-    if (target !== null && target !== document.body && document.contains(target)) target.focus();
-    else document.getElementById('main')?.focus();
+    // Only the open half. The close half — and the focus that follows it — is the `Dialog`'s
+    // state machine, which waits for the exit before touching focus at all.
+    if (open) inputRef.current?.focus();
   }, [open]);
 
   const run = (command: Command): void => {
@@ -166,6 +155,7 @@ export function CommandPalette({
       open={open}
       onClose={() => setOpen(false)}
       onBackdrop={() => setOpen(false)}
+      restoreFocus={!executed.current}
       title={t('palette.title')}
     >
       <label className="visually-hidden" htmlFor="palette-input">

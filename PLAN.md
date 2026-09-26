@@ -201,13 +201,13 @@ the requirement that caused it. Designs answering them carry the tag.
 
 | | The requirement, as stated | Designed in |
 | :--- | :--- | :--- |
-| **R1** | Manual, complete backup of the panel, taken by the operator on demand. | [`docs/PORTABILITY.md`](docs/PORTABILITY.md) → M2.6 |
-| **R2** | Uploading that same backup into a *different* panel reproduces the first panel completely: all panel settings, and all projects usable in the new panel. *"all information of that panel transfers to the other panel completely."* | [`docs/PORTABILITY.md`](docs/PORTABILITY.md) → M2.6 |
+| **R1** | Manual, complete backup of the panel, taken by the operator on demand. | [`docs/PORTABILITY.md`](docs/PORTABILITY.md) → M2.4 |
+| **R2** | Uploading that same backup into a *different* panel reproduces the first panel completely: all panel settings, and all projects usable in the new panel. *"all information of that panel transfers to the other panel completely."* | [`docs/PORTABILITY.md`](docs/PORTABILITY.md) → M2.4 |
 | **R3** | The panel is bilingual (Persian and English). | M2.1 below |
 | **R4** | For each project: browse its files, download any file, edit any file in the panel, and upload new files. | [`docs/FILES.md`](docs/FILES.md) → M2.3 |
-| **R5** | Per-project Claude Code `settings.json`, set separately, dedicatedly, and by hand. | M2.4 below |
+| **R5** | Per-project Claude Code `settings.json`, set separately, dedicatedly, and by hand. | M2.6 below |
 | **R6** | Telegram token and the rest of the Telegram settings configurable from the UI, with a "test the bot" action. | M1.7 §*Interface* → M2.5 |
-| **R7** | `api_key` and `api_base_url` configurable per project from the UI, in addition to `settings.json`. Plus a global section for `api_key`, `api_base_url` and a hand-edited `settings.json`, whose values are the default for every project that has not been given its own. | M2.4 below |
+| **R7** | `api_key` and `api_base_url` configurable per project from the UI, in addition to `settings.json`. Plus a global section for `api_key`, `api_base_url` and a hand-edited `settings.json`, whose values are the default for every project that has not been given its own. | M2.6 below |
 | **R8** | Upload an unfinished project — built with Claude Code or with any other tool — and have the panel take it over. *"If the project was built with Claude Code, the panel should detect that and use that project's Claude Code configuration as the panel's configuration for it."* Both arrival paths are wanted: a ZIP upload **and** a clone from a git URL. An uploaded project's git history is kept, with hook execution neutralised. | [`docs/IMPORT.md`](docs/IMPORT.md) → M2.8 |
 
 ### Earlier requirements stand unchanged
@@ -263,10 +263,10 @@ second, competing design for anything already specified.
   different way (ZIP only, external attributes never read, every entry written as a regular
   file with a fixed mode) and names what is left over. The containment function
   ([`docs/FILES.md`](docs/FILES.md) §2) is reused and **a second one is not acceptable**.
-- **R8 × R5/R7's settings model.** M2.4 was designed around sources the panel owns. R8
+- **R8 × R5/R7's settings model.** M2.6 was designed around sources the panel owns. R8
   introduces one it does not — a workspace file that *outranks* the panel's own — and
-  [`docs/IMPORT.md`](docs/IMPORT.md) §11 lists the four changes M2.4 must make for it,
-  including a correction: M2.4's claim that *"the operator cannot break the turn-complete
+  [`docs/IMPORT.md`](docs/IMPORT.md) §11 lists the four changes M2.6 must make for it,
+  including a correction: M2.6's claim that *"the operator cannot break the turn-complete
   notification by hand"* is false, because `hooks.Stop` in a workspace `.claude/settings.json`
   outranks the user-level file the panel generates.
 - **R8 × M2.2's table.** The provenance and review columns must be in migration `012` from the
@@ -361,7 +361,7 @@ where they contradict it:
 
 And two that are settled rather than open:
 
-11. **CodeMirror 6 for the `settings.json` editor, no web worker (M2.4).** Decided, not an
+11. **CodeMirror 6 for the `settings.json` editor, no web worker (M2.6).** Decided, not an
     option to weigh later. The CSP has no `worker-src` and therefore falls back to
     `default-src 'none'`, so a worker-based editor does not load — and the fix is not to
     add `worker-src`: a worker is a second script context, and the reason to want one is
@@ -394,8 +394,8 @@ Numbered on from the M1.8 list below, which they continue rather than replace.
     separate endpoint would have been a second response shape, a second poll to budget, and a
     second line in `EXPECTED_ROUTE_TREE`, for a payload the widget reads on exactly the same
     schedule as the figures it sits beside.
-22. **`claude --settings` layers; it does not replace (M2.4, documentation only).** Verified
-    against the current settings documentation on 2026-09-05 and recorded in §M2.4 and
+22. **`claude --settings` layers; it does not replace (M2.6, documentation only).** Verified
+    against the current settings documentation on 2026-09-05 and recorded in §M2.6 and
     [`docs/IMPORT.md` §11.4](docs/IMPORT.md). The consequence that matters is not the
     reassuring half — it is that `hooks`, `mcpServers` and `permissions.allow` **merge**, so an
     uploaded workspace file's hook is *concatenated* with the panel's rather than outranked by
@@ -503,9 +503,11 @@ Numbered on from the list above. 32–37 are the UI half; the server half's deci
     focusable too, and a roving index that swallows Left/Right takes navigation away from it —
     written down in `docs/UI.md` §5 so the next reader does not "fix" it.
 35. **The command palette is the `<Dialog>` primitive with one new prop (M2.2).** `onBackdrop`
-    fires only when `event.target === event.currentTarget`, so a click on the dialog's own
-    padding cannot close a half-typed query; focus is restored to the opener, except after a
-    command runs, when the screen is changing and the control is about to unmount. No class may
+    fires when the click reached the dialog element itself **and** its coordinates fall outside
+    the dialog's border box (`src/client/lib/backdrop.ts`) — target equality alone is not enough,
+    because the padding is targeted by the dialog too — so a click on the padding cannot close a
+    half-typed query; focus is restored to the opener, except after a command runs, when the
+    screen is changing and the control is about to unmount. No class may
     be named `overlay`/`modal`/`popup`/`palette`/`dropdown`, because the scan that enforces
     "every overlay is a `<dialog>`" looks for overlay-shaped class names — the palette uses
     `.command-*`.
@@ -1839,19 +1841,20 @@ this section used to hold is now M2.1's content, unchanged in scope.
 | **M2.1** | Application shell, design system, and **direction** | R3 | M2.0 | — |
 | **M2.2** | Projects: UUID identity, `/data/projects/<uuid>/`, CRUD | R2, foundation for R4/R5/R7 | M2.0 | **yes**, for its decisions only ([§below](#the-decisions-that-block-m21)) |
 | **M2.3** | The file browser | R4 | M2.2 | no |
-| **M2.4** | `settings.json` documents and provider credentials | R5, R7 | M2.2 | partly — the error-code enum only |
+| **M2.6** | `settings.json` documents and provider credentials | R5, R7 | M2.2 | partly — the error-code enum only |
 | **M2.5** | Telegram configuration UI | R6 | **M1.7**, M2.1 | no |
-| **M2.6** | Portable export and import | R1, R2 | M2.2, M2.4, M1.7 (audit events → rules) | no |
+| **M2.4** | Portable export and import | R1, R2 | M2.2, M1.7 (audit events → rules) | no |
 | **M2.7** | The resource widget over the endpoint already designed | earlier requirement | M2.1, `resources.service.ts` | no |
-| **M2.8** | Importing an unfinished project: ZIP upload and git clone | R8 | M2.2, M2.3, M2.4, M2.6, `git` in the image | no — but **two of its decisions block M2.2 and M2.4** |
+| **M2.8** | Importing an unfinished project: ZIP upload and git clone | R8 | M2.2, M2.3, M2.4, M2.6, `git` in the image | no — but **two of its decisions block M2.2 and M2.6** |
 
 Two ordering facts worth naming rather than discovering:
 
 - **M2.5 cannot ship before M1.7.** The UI configures a transport that does not exist; a
   "test the bot" button with nothing behind it is worse than no button.
-- **M2.6 is last on purpose.** An export can only carry what exists, so building it before
-  M2.4 would mean writing the document format twice.
-- **M2.8 comes after M2.6, not beside it.** M2.6 builds the staging-and-swap pipeline and M2.8
+- **The document format is fixed before the transport is built.** An export can only carry
+  what exists, so [`docs/PORTABILITY.md`](docs/PORTABILITY.md) settles the envelope, M2.4
+  builds against it, and M2.6 adds the settings fields to a shape that does not change.
+- **M2.8 comes after M2.4, not beside it.** M2.4 builds the staging-and-swap pipeline and M2.8
   adds a second arrival path to it. Building both at once is how
   [`docs/IMPORT.md`](docs/IMPORT.md) §2's *one scanner, one classifier, one promoter* rule gets
   negotiated away under schedule pressure — and the path that ends up missing a check is
@@ -1898,8 +1901,8 @@ And two that R8 added on 2026-09-05, both blocking a milestone rather than M2.1:
    imported, and it is read by the projects list, the spawn confirmation and the export dialog.
    A `NOT NULL` column added later has to invent a value for every existing row, which is how a
    provenance field ends up meaning "created here, probably".
-7. **Four settings-model changes, with M2.4.** [`docs/IMPORT.md`](docs/IMPORT.md) §11:
-   `.claude/settings.local.json` is in the precedence chain and not in M2.4's model;
+7. **Four settings-model changes, with M2.6.** [`docs/IMPORT.md`](docs/IMPORT.md) §11:
+   `.claude/settings.local.json` is in the precedence chain and not in M2.6's model;
    `.mcp.json` is a separate root file and not in it either; per-key provenance needs
    `workspace` and `workspace_local` as **sources** rather than as a "shadowed by" modifier;
    and `hooks.Stop` cannot be panel-owned through the user-level file, so the panel's
@@ -2122,7 +2125,7 @@ secret is bound to `secrets:project:<uuid>:<name>` under M1.7's `v2` payload ver
 
 Also here, because it is cheap now: `slug` (unique after NFC normalisation and case folding),
 `display_name`, `description`, `git_remote`, `created_at`/`updated_at` as **ISO-8601**
-(`isoFrom`, not `datetime('now')` — see the note under M2.4 §*storage*), and the per-project
+(`isoFrom`, not `datetime('now')` — see the note under M2.6 §*storage*), and the per-project
 hook token from M1.7.
 
 **And R8's provenance and review columns, which are not optional here.**
@@ -2141,12 +2144,12 @@ that a number is claimed by the commit that lands.
 #### M2.3 — the file browser
 
 Specified in [`docs/FILES.md`](docs/FILES.md). The containment function
-(`utils/contain-path.ts`) is shared with the import path, so it lands here and M2.6 uses it
+(`utils/contain-path.ts`) is shared with the import path, so it lands here and M2.4 uses it
 rather than growing a second one.
 
 **Commit:** `feat(m2.3): the project file browser`
 
-#### M2.4 — `settings.json` documents and provider credentials (R5, R7)
+#### M2.6 — `settings.json` documents and provider credentials (R5, R7)
 
 ##### The file the panel writes is generated, not edited
 
@@ -2158,7 +2161,7 @@ nothing, which for a beginner is an unfindable bug.
 
 ##### `--settings` layers, and the reassuring half is not the important half
 
-Confirmed on **2026-09-05** (documentation plus the surrounding issue history), because M2.4's
+Confirmed on **2026-09-05** (documentation plus the surrounding issue history), because M2.6's
 generator depends on it and finding out late is expensive. **The chain is a merge, not a
 selection.** For a scalar key, the highest-precedence file that defines it supplies the value;
 **arrays are concatenated and de-duplicated across scopes**; objects are deep-merged.
@@ -2192,7 +2195,7 @@ Four consequences, and they point in different directions:
 reason than either side of the argument had. A workspace `hooks.Stop` cannot *remove* the
 panel's, because hooks concatenate — both fire. So the turn-complete notification survives a
 hostile workspace file. What it does not survive is **the panel not passing `--settings` at
-all**. The verification requirement stands and is M2.4's: before the generator is written,
+all**. The verification requirement stands and is M2.6's: before the generator is written,
 confirm the behaviour against a temporary config dir with a deliberately conflicting
 `hooks.Stop` in a scratch workspace, and **record the observed behaviour and the Claude Code
 version next to the claim.**
@@ -2398,12 +2401,12 @@ one-click restore. Since invalid JSON is refused at save time, this is the safet
 valid-but-wrong document: a `permissions.deny` that blocks the tool the agent needs, an `env`
 key that points at the wrong gateway.
 
-**Commit:** `feat(m2.4): settings documents and provider credentials`
+**Commit:** `feat(m2.6): settings documents and provider credentials`
 
-#### M2.6 — portable export and import
+#### M2.4 — portable export and import
 
 Specified in [`docs/PORTABILITY.md`](docs/PORTABILITY.md).
-**Commit:** `feat(m2.6): portable export and import`
+**Commit:** `feat(m2.4): portable export and import`
 
 #### M2.8 — importing an unfinished project (R8)
 

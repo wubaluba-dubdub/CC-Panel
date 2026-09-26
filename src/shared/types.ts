@@ -53,9 +53,14 @@ export interface SessionSummary {
   current: boolean;
 }
 
-export interface MeResponse {
+/**
+ * The half of `GET /api/auth/me` that every live session carries, whatever stage it has reached.
+ *
+ * `buildId` is deliberately **not** here. See `MeResponse`: it is absent from a `pre` session at
+ * the type level, not merely omitted at the value level.
+ */
+export interface MeBase {
   username: string;
-  stage: LoginStage;
   totpEnabled: boolean;
   stepUpActive: boolean;
   stepUpUntil: string | null;
@@ -70,9 +75,44 @@ export interface MeResponse {
    */
   locale: 'en' | 'fa' | null;
   session: SessionSummary;
-  /** A 7-character commit SHA from a documented env var, or null when no source is available. Exposed only behind authentication. */
+}
+
+/**
+ * `GET /api/auth/me` for a **fully authenticated** session — the only shape that carries the
+ * build id.
+ */
+export interface AuthenticatedMe extends MeBase {
+  stage: 'authenticated';
+  /**
+   * A 7-character commit SHA from a documented env var, or null when no source is available.
+   *
+   * On no response until both factors have been satisfied. It is not a display decision: the
+   * value identifies the commit this build was made from, and a `pre` session is one a stolen
+   * password alone can reach.
+   */
   buildId: string | null;
 }
+
+/**
+ * `GET /api/auth/me` after the password and before the second factor — password accepted,
+ * enrolment pending (`setup`), or code pending (`totp`).
+ *
+ * No `buildId` member at all rather than `buildId?: string`. An optional field reads as
+ * "sometimes present, so check it", which turns a contract into a habit, and a field that is
+ * not in the type cannot be forgotten out of the route body by accident of refactoring.
+ */
+export interface PendingMe extends MeBase {
+  stage: Exclude<LoginStage, 'authenticated'>;
+}
+
+/**
+ * `GET /api/auth/me`, as a **discriminated union on `stage`**.
+ *
+ * A client narrows on `stage === 'authenticated'` before it may read `buildId`, which is
+ * exactly what `App.tsx` does before handing the value to `Shell`. See `docs/SECURITY.md`
+ * for the byte-level rule this encodes.
+ */
+export type MeResponse = AuthenticatedMe | PendingMe;
 
 /** `PATCH /api/settings/locale`. */
 export interface LocaleResponse {

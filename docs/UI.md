@@ -131,7 +131,7 @@ form-action 'self'
 | `style-src 'self'`, no `unsafe-inline` | No `<style>` element, no `style` attribute in served markup, no `setAttribute('style', …)`, no `style.cssText`. **No runtime CSS-in-JS** — the whole styled-components/emotion family is unusable regardless of nonce support, because a nonce would have to be per-response and the panel does no server-side rendering. |
 | `font-src 'self'` | Fonts are same-origin files. `assetsInlineLimit: 0`, because an inlined font is a `data:` URL and this directive has no `data:` in it. |
 | `img-src 'self' data:` | A `data:` image *would* be allowed. It is still not used, and `tests/integration/build.test.ts` asserts that the emitted stylesheet contains no `data:` URL and that every `url()` in it is relative — one rule, which also keeps a font from being inlined. The select's chevron is a CSS triangle for that reason. |
-| `worker-src` absent → `default-src 'none'` | **No web workers.** This is why CodeMirror 6 is the decided editor for M2.4 and Monaco is not. Do not add `worker-src` to make an editor work. |
+| `worker-src` absent → `default-src 'none'` | **No web workers.** This is why CodeMirror 6 is the decided editor for M2.6 and Monaco is not. Do not add `worker-src` to make an editor work. |
 | `connect-src 'self'` | `fetch` to the panel's own origin only. Covers a same-origin WebSocket in modern browsers; Phase 3 verifies that in a real browser before adding `wss:`. |
 | `base-uri 'none'` | `<base href>` is unavailable, which is what makes the base path a runtime templating problem (§3). |
 | `frame-ancestors 'none'` | The panel cannot be framed. |
@@ -328,7 +328,7 @@ logical spelling at all — `@media (inline-size: …)` is a container query, no
 
 The complete list of what must be an island:
 
-> the terminal (Phase 3); any code or JSON editor (M2.4); file paths; the file browser's
+> the terminal (Phase 3); any code or JSON editor (M2.6); file paths; the file browser's
 > breadcrumb (M2.3); the base path; tokens, hashes, commit ids and recovery codes; the TOTP
 > secret and its `otpauth://` URI; log output and audit metadata; **every memory, CPU and
 > disk reading**; durations and byte counts; a user-agent string; a session or queue id.
@@ -557,8 +557,10 @@ toggles it; it is the first thing in this panel with a keyboard shortcut of its 
 - **It is the `<Dialog>` primitive, not a special case.** A palette that is a positioned
   descendant of a card is drawn under the card's clipped edge — §5's containment rule decides
   this, which is why the overlay section above anticipates it. The palette adds one prop to the
-  primitive: `onBackdrop`, which fires only when `event.target === event.currentTarget`, so a
-  click on the dialog's own padding does not close a half-typed query.
+  primitive: `onBackdrop`, which fires when the click is delivered to the dialog element
+  itself **and** its coordinates fall outside the dialog's border box
+  (`src/client/lib/backdrop.ts`) — target equality alone is not enough, because the padding is
+  targeted by the dialog too. So a click on the padding does not close a half-typed query.
 - **No class may be named `overlay`, `modal`, `popup`, `palette` or `dropdown`.** The scan that
   enforces "every overlay is a `<dialog>`" looks for overlay-*shaped* class names, so a
   correctly-built palette must not carry one anyway; the palette uses `.command-*` and the tabs

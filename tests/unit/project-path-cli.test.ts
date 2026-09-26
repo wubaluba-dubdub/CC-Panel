@@ -235,4 +235,23 @@ describe('M2.2 — project:path', () => {
     // The path is built from the validated uuid, after the lookup, never before.
     expect(source).toMatch(/CANONICAL_UUID\.test\(project\.uuid\)/);
   });
+
+  it('runs the built artifact from npm, never source TypeScript and never a dev runner', () => {
+    // The production image prunes dev dependencies and `COPY --from=builder /app/dist ./dist`,
+    // so a script that reaches back into `node_modules/tsx` or into `src/` works on a
+    // development checkout and dies in the container the operator actually ships. This is the
+    // contract at the two strings that decide it; `tests/integration/build.test.ts` proves the
+    // named artifact is emitted by a clean build and that the very same argv runs.
+    const pkg = JSON.parse(
+      readFileSync(join(import.meta.dirname, '../../package.json'), 'utf8'),
+    ) as { scripts: Record<string, string> };
+    const script = pkg.scripts['project:path'];
+
+    expect(script).toBe('node --env-file-if-exists=.env dist/server/cli/project-path.js');
+    expect(script).not.toMatch(/tsx/);
+    expect(script).not.toMatch(/src\//);
+    expect(script).not.toMatch(/\.ts\b/);
+    // The entry point the runtime image carries, spelled exactly as the build emits it.
+    expect(script).toContain('dist/server/cli/project-path.js');
+  });
 });

@@ -598,15 +598,20 @@ Ordered, again, by what would be most damaging to discover late.
     `<main>`, so the next Tab is still inside the content.
 43. **A click on the backdrop closes the palette; a click inside it never does.** Click the dim
     area outside the dialog and it must close. Then open it again and click the dialog's own
-    padding — the gap between the input and the dialog's border — and it must **stay** open.
-    The distinction is `event.target === event.currentTarget`, and a palette that closes on a
-    click inside its own box makes typing a query impossible the moment the pointer strays.
+    padding — the gap between the input and the dialog's border — and it must **stay** open;
+    so must a click on the input, on the list, and on any option. The distinction needs both
+    halves: the click must reach the dialog element itself, **and** its coordinates must fall
+    outside the dialog's border box. Target equality alone is not enough, because the padding
+    is targeted by the dialog as well — and a palette that closes on a click inside its own
+    box makes typing a query impossible the moment the pointer strays.
 44. **The palette leaves the page rather than vanishing.** Close it with reduced motion *off* and
-    watch the exit: the dialog must fade and shrink away, not disappear on the frame it was
-    removed. With `prefers-reduced-motion: reduce` it must go immediately, with no information
-    lost — the rules are paired (`display` and `overlay` are both discrete, both transitioned),
-    and a palette that exits under reduced motion while other dialogs do not is an unpaired
-    selector.
+    watch the exit: the dialog must fade and shrink away, and disappear only once it has. With
+    `prefers-reduced-motion: reduce` it must go immediately, with no information lost — the
+    rules are paired (`display` and `overlay` are both discrete, both transitioned), and a
+    palette that exits under reduced motion while other dialogs do not is an unpaired selector.
+    The same path serves Escape, Cmd/Ctrl+K, a Cancel button and a backdrop click, so any
+    dialog in the panel vanishing on the frame it was dismissed means `close()` was reached
+    before the transition finished.
 45. **A screen reader announces the palette as a dialog, and each result as an option.** With
     VoiceOver or NVDA: the dialog must be announced by its title, the input must be reachable as
     a combobox, the results as a listbox of options, and the highlighted result must follow the

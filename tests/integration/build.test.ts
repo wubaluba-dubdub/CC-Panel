@@ -1,9 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { renderBootstrapScript } from '../../src/server/plugins/base-path.js';
 import { resolveBuildIdentity } from '../../src/server/utils/build-info.js';
+import { closeDb, getDb, initDb } from '../../src/server/db.js';
+import { ProjectsRepository } from '../../src/server/services/projects.service.js';
+import { PROJECT_PATH_FAILURE } from '../../src/server/cli/project-path.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const DIST = join(ROOT, 'dist');
@@ -113,6 +117,81 @@ describe('Part 1 — the build runs, and emits what the image runs', () => {
       );
     }
   });
+
+  it('emits the project:path artifact and runs it from the package script argv', () => {
+    // The operator command used to be `node … node_modules/tsx … src/server/cli/project-path.ts`,
+    // which works on a checkout and fails in the runtime image: that image prunes dev
+    // dependencies and copies `dist/`, so `tsx` is not there and neither is the source tree.
+    // Both halves are asserted — the script that decides it, and the artifact the script names
+    // actually running — because reading `package.json` alone is how a script that names a file
+    // nobody emits gets reported as done.
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8')) as {
+      scripts: Record<string, string>;
+    };
+    const script = pkg.scripts['project:path']!;
+    expect(script).toBe('node --env-file-if-exists=.env dist/server/cli/project-path.js');
+    expect(script).not.toMatch(/tsx|\.ts\b|src\//);
+
+    const artifact = join(DIST, 'server', 'cli', 'project-path.js');
+    expect(existsSync(artifact), 'dist/server/cli/project-path.js was not emitted').toBe(true);
+    // Loadable rather than merely present: an empty or truncated file satisfies existsSync.
+    expect(readFileSync(artifact, 'utf-8')).toContain('runProjectPath');
+
+    // The same argv, against a temporary database. `PANEL_DATA_DIR` and `PANEL_MASTER_KEY` are
+    // set explicitly on the child, and Node does not let `--env-file` override a variable that
+    // is already set — so the file's host data directory is read and ignored, and the child can
+    // only have opened the temporary one.
+    const dataDir = mkdtempSync(join(tmpdir(), 'panel-project-path-'));
+    const uuid = '3f6a1d20-9b41-4c7e-8d2a-5e1f0b7c9a44';
+    try {
+      initDb(join(dataDir, 'panel.db'));
+      new ProjectsRepository({ db: getDb() }).create({ slug: 'alpha-project', uuid });
+      closeDb();
+
+      const argv = script.slice('node '.length).split(' ');
+      const env = {
+        ...process.env,
+        PANEL_DATA_DIR: dataDir,
+        PANEL_MASTER_KEY: Buffer.from('b'.repeat(32)).toString('base64'),
+      };
+      const run = (slug: string): { status: number; stdout: string; stderr: string } => {
+        try {
+          const stdout = execFileSync(process.execPath, [...argv, slug], {
+            cwd: ROOT,
+            encoding: 'utf-8',
+            env,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            timeout: 30_000,
+          });
+          return { status: 0, stdout, stderr: '' };
+        } catch (error) {
+          const err = error as { status?: number; stdout?: string; stderr?: string };
+          return { status: err.status ?? -1, stdout: err.stdout ?? '', stderr: err.stderr ?? '' };
+        }
+      };
+
+      const ok = run('alpha-project');
+      expect(ok.status).toBe(0);
+      expect(ok.stderr).toBe('');
+      expect(ok.stdout).toBe(`${join(dataDir, 'projects', uuid, 'workspace')}\n`);
+
+      const unknown = run('does-not-exist');
+      expect(unknown.status).toBe(1);
+      expect(unknown.stdout).toBe('');
+      expect(unknown.stderr).toBe(`${PROJECT_PATH_FAILURE}\n`);
+      expect(unknown.stderr).not.toContain('alpha-project');
+
+      // The configured directory is honoured rather than defaulted: with the temporary
+      // database removed the command fails instead of falling back to a host or `/data` path.
+      rmSync(join(dataDir, 'panel.db'));
+      const noDb = run('alpha-project');
+      expect(noDb.status).toBe(1);
+      expect(noDb.stderr).toBe(`${PROJECT_PATH_FAILURE}\n`);
+      expect(`${noDb.stdout}${noDb.stderr}`).not.toContain('/data');
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  }, 60_000);
 
   it('builds both halves, and the client entry point is where Vite is pointed', () => {
     // M1.5 deleted `vite.config.ts` because `vite build` was in this script a milestone

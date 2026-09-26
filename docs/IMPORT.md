@@ -20,7 +20,7 @@ and the swap), whose defences this reuses and whose one structural advantage it 
 The panel gives each project its own `CLAUDE_CONFIG_DIR` (`claude-home`), so the
 `settings.json` the panel generates is that project's **user-level** file — the *lowest*
 level of Claude Code's precedence chain. Highest first, as recorded in
-[`PLAN.md`](../PLAN.md) §M2.4:
+[`PLAN.md`](../PLAN.md) §M2.6:
 
 | | Source | Who owns it |
 | :--- | :--- | :--- |
@@ -45,7 +45,7 @@ existed at all.
 ### 1.1 One refinement, because the reframe is not quite unconditional
 
 Some of what a workspace file supplies is gated on Claude Code's **folder-trust** prompt —
-[`PLAN.md`](../PLAN.md) §M2.4 records that `env` values arriving from project or local
+[`PLAN.md`](../PLAN.md) §M2.6 records that `env` values arriving from project or local
 settings are gated on folder trust, and credential-shaped ones additionally on an approval
 dialog, while the user-level file the panel writes is not. So "it takes effect" is, for part
 of the surface, "it takes effect once somebody says yes".
@@ -69,7 +69,7 @@ telling the operator *what is in the file* before anything runs.
 Adoption is not needed for effect, but it is needed for two other things, and they are the
 operator's actual requirement:
 
-1. **The panel's own view has to be true.** M2.4 shows the effective merge with per-key
+1. **The panel's own view has to be true.** M2.6 shows the effective merge with per-key
    provenance. A key that exists only in the workspace has to appear there as coming *from
    the workspace*, or the screen is a lie about what the agent will do.
 2. **What the operator asked for is that the panel own the configuration.** So the safe
@@ -360,7 +360,7 @@ switch would be one decision standing in for six.
 ### 5.1 INERT — adopt, and it is the only class that is automatic
 
 These change what the model does, not what runs. Adopting them is the requirement: they are
-lifted into the panel's per-project `settings.json` document, where M2.4's editor owns them,
+lifted into the panel's per-project `settings.json` document, where M2.6's editor owns them,
 and they appear in the effective merge with provenance `project`.
 
 `model` deserves one note because it is the one that costs money: an uploaded project pinning
@@ -738,7 +738,7 @@ lands with R8's own migration.**
 | :--- | :--- | :--- |
 | `origin` | `TEXT NOT NULL CHECK (origin IN ('created','imported_archive','cloned','imported_export'))` | how the project came to exist. No default that hides it: a column added later would have to guess, and every pre-existing row would claim to have been created here |
 | `origin_ref` | `TEXT` | the archive's SHA-256, or the clone URL (safe to store, because §4.1 refuses a userinfo-bearing one). Null for `created` |
-| `origin_at` | `TEXT` | ISO-8601, via `isoFrom` and never `datetime('now')` — the M2.4 note about the unmarked SQLite format applies |
+| `origin_at` | `TEXT` | ISO-8601, via `isoFrom` and never `datetime('now')` — the M2.6 note about the unmarked SQLite format applies |
 | `source_install_id` | `TEXT` | for `imported_export`, [`PORTABILITY.md` §2](./PORTABILITY.md#2-what-transfers-and-what-does-not)'s `sourceInstallId`. Not a secret, and the only way to tie two panels' logs together |
 | `review_state` | `TEXT NOT NULL DEFAULT 'not_required' CHECK (review_state IN ('not_required','pending','reviewed'))` | **the load-bearing one.** A project whose uploaded artefacts have not been reviewed must be distinguishable from one that has, permanently, and the projects list must be able to show it. A panel-created project is `not_required` — which is a different fact from `reviewed` and must not be spelled the same |
 | `reviewed_at` | `TEXT` | when, so a review from before the last import is visibly stale |
@@ -766,15 +766,15 @@ R8 (adding a table is free), which is exactly why it is on this side of the line
 
 ## 11. What the settings model must accommodate
 
-M2.4's model is three hand-edited documents plus one generated artefact, and it was designed
+M2.6's model is three hand-edited documents plus one generated artefact, and it was designed
 around sources **the panel owns**. R8 introduces a source it does not: a file inside the
 workspace, higher-precedence than the panel's own, possibly written by a stranger.
 
-Most of what is needed is already there — M2.4 already says the panel must compute the
+Most of what is needed is already there — M2.6 already says the panel must compute the
 effective merge and *warn by name when a workspace file shadows a key the panel set*. Four
 things are missing, and the last one is a contradiction rather than a gap.
 
-### 11.1 `.claude/settings.local.json` is not in M2.4's model at all
+### 11.1 `.claude/settings.local.json` is not in M2.6's model at all
 
 It ranks **above** `.claude/settings.json`. So the effective merge reads *two* workspace files,
 the shadowing warning has to name which of the two won, and the rewrite in
@@ -786,13 +786,13 @@ never by clone.
 ### 11.2 `.mcp.json` is a separate file, and the model has no room for it
 
 It is at the project root, not under `.claude/`, and it is not part of `settings.json`. So
-M2.4's "effective settings" view has a hole **exactly where the executable class lives**.
+M2.6's "effective settings" view has a hole **exactly where the executable class lives**.
 Either the view covers it as a source of its own, or the panel's settings screen shows a
 complete picture that omits the servers Claude Code will start.
 
 ### 11.3 Provenance needs a fourth *source*, not a modifier
 
-M2.4 gives per-key provenance as `global` / `project` / `panel` / *shadowed by
+M2.6 gives per-key provenance as `global` / `project` / `panel` / *shadowed by
 `workspace/.claude/settings.json`*. The last is written as a modifier, and it cannot be: a key
 that exists **only** in the workspace file has no panel-side provenance at all, and rendering
 it as "not set" is precisely the failure mode — the screen would say the panel sets no
@@ -801,11 +801,11 @@ it as "not set" is precisely the failure mode — the screen would say the panel
 So the provenance enum becomes a source — `global | project | panel | workspace |
 workspace_local | mcp_json` — plus a separate `shadows: [...]` list naming what it beat. Cheap
 now; a change to every row of every settings screen later. **This is the single most expensive
-thing to discover after M2.4 is built**, which is why it is in this document and not in R8's.
+thing to discover after M2.6 is built**, which is why it is in this document and not in R8's.
 
-### 11.4 `hooks.Stop` — M2.4 claims something that is not true
+### 11.4 `hooks.Stop` — M2.6 claims something that is not true
 
-M2.4 says:
+M2.6 says:
 
 > `hooks.Stop` is panel-owned and is written last, overwriting whatever either document said —
 > the operator cannot break the turn-complete notification by hand.
@@ -830,7 +830,7 @@ Three ways out, and the third is the one to take:
    in the long run.
 3. **Pass the panel's non-negotiable keys with `claude --settings <file>`**, which is level 2
    and outranks both workspace files. Then the panel's Stop hook cannot be displaced by
-   anything in the tree, and M2.4's claim becomes true instead of aspirational. The user-level
+   anything in the tree, and M2.6's claim becomes true instead of aspirational. The user-level
    file keeps carrying the operator's own defaults, where being overridable is correct.
 
 **Recommendation: (3), with (1) as well, and (2) is already the R8 default.** The cost is one
@@ -839,7 +839,7 @@ genuinely owns stops depending on the contents of a directory anybody can write.
 
 **Answered on 2026-09-05: it layers.** The question this section left open — whether
 `--settings` merges with the lower levels or replaces them — was resolved against the current
-settings documentation and the surrounding issue history, because M2.4's generator depends on
+settings documentation and the surrounding issue history, because M2.6's generator depends on
 it. **The chain is a merge, not a selection:** for a scalar key the highest-precedence file
 that defines it supplies the value, **arrays are concatenated and de-duplicated across
 scopes**, and objects are deep-merged. The documented exceptions that do *not* merge are
@@ -873,7 +873,7 @@ v2.1.242). Rely on the merge for convenience; never as the reason a class is saf
 same rule as [§1.1](#11-one-refinement-because-the-reframe-is-not-quite-unconditional)'s: folder
 trust must not be why something is treated as inert.
 
-**The empirical check stays a requirement on M2.4**, narrowed to what is worth confirming
+**The empirical check stays a requirement on M2.6**, narrowed to what is worth confirming
 rather than what is now known: run the generator against a temporary config dir with a
 deliberately conflicting `hooks.Stop` in a scratch workspace, confirm **both** hooks fire, and
 **record the observed behaviour and the Claude Code version beside the claim** — because the
@@ -932,11 +932,11 @@ that the operator *read* the report — reads are not audited anywhere in this p
 | :--- | :--- |
 | **M2.2** | the projects table, the UUID, `/data/projects/<uuid>/`, **and §10's columns** |
 | **M2.3** | `utils/contain-path.ts`. Reusing it is mandatory |
-| **M2.4** | the settings model, **including §11's four changes**, and the credential store the quarantine prompt offers |
-| **M2.6** | the staging-and-swap pipeline, the `incoming/` sweep, the caps, the dry-run/fingerprint shape |
+| **M2.4** | the staging-and-swap pipeline, the `incoming/` sweep, the caps, the dry-run/fingerprint shape |
+| **M2.6** | the settings model, **including §11's four changes**, and the credential store the quarantine prompt offers |
 | the image | `git` in the runtime stage ([§4.6](#46-git-is-not-in-the-image)), which Phase 3 needs anyway |
 
-After M2.6 rather than beside it, for one reason: M2.6 builds the pipeline and R8 adds a second
+After M2.4 rather than beside it, for one reason: M2.4 builds the pipeline and R8 adds a second
 arrival path to it. Building both at once is how the "one scanner, one promoter" rule in
 [§2](#2-two-arrival-paths-one-pipeline) gets negotiated away under schedule pressure.
 
@@ -944,7 +944,7 @@ arrival path to it. Building both at once is how the "one scanner, one promoter"
 
 - **§10's columns must land with M2.2.** Not "should" — this is the whole reason R8 is designed
   now, and a column added afterwards is an ALTER against live operator data.
-- **§11's four settings-model changes must land with M2.4**, and §11.4's `--settings`
+- **§11's four settings-model changes must land with M2.6**, and §11.4's `--settings`
   verification before its generator is written.
 - **`git` in the image** can land with either M2.8 or Phase 3, whichever is first.
 - **The classifier's key table** — the six classes and the known-key list — is a constant file

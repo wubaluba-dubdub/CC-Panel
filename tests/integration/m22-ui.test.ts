@@ -201,11 +201,19 @@ describe('M2.2 — the command palette is a dialog and leaks nothing', () => {
       .map((file) => relativeToClient(file));
     expect(renderers).toEqual(['components/ui.tsx']);
     // Both close paths, and both through the same controlled setter rather than a `close()` in
-    // an event handler — which is what lets the exit transition run.
+    // an event handler — which is what lets the exit transition run. `restoreFocus` is how a
+    // command that has just navigated or signed out keeps the palette from undoing it.
     const body = client('components/CommandPalette.tsx');
     expect(body).toContain('onBackdrop=');
     expect(body).toContain('onClose={() => setOpen(false)}');
+    expect(body).toContain('restoreFocus={!executed.current}');
     expect(body).toContain('!event.metaKey && !event.ctrlKey');
+    // Focus is the `Dialog`'s to give back now: it records the opener in the same block as its
+    // `showModal()`. The palette must not hold a second copy of that decision.
+    expect(body).not.toContain('document.activeElement');
+    expect(body).not.toContain('getElementById');
+    expect(body).not.toContain('opener.current');
+    expect(body).not.toContain('.close()');
   });
 
   it('binds both modifier keys and names nothing secret', () => {
@@ -220,6 +228,117 @@ describe('M2.2 — the command palette is a dialog and leaks nothing', () => {
     // user-controlled string into an address.
     expect(client('components/CommandPalette.tsx')).toContain('projectPath(project.uuid)');
     expect(client('pages/Projects.tsx')).toContain('projectPath(project.uuid)');
+  });
+});
+
+describe('M2.2 — every close trigger uses one controlled path', () => {
+  const body = client('components/ui.tsx');
+  /** The `Dialog` component alone, so a rule is not satisfied by an unrelated helper in the file. */
+  const dialog = body.slice(
+    body.indexOf('export function Dialog('),
+    body.indexOf('export function Status('),
+  );
+
+  /** The source of one JSX handler, from its opening brace to the line that closes it. */
+  function handler(signature: string): string {
+    const start = dialog.indexOf(signature);
+    expect(start, `${signature} was not found in Dialog`).toBeGreaterThan(-1);
+    const end = dialog.indexOf('\n      }}', start);
+    expect(end, `${signature} has no closing line`).toBeGreaterThan(start);
+    return dialog.slice(start, end);
+  }
+
+  it('intercepts the platform cancel event rather than letting Escape close the dialog', () => {
+    // What this sees: the source of the `onCancel` handler, comments stripped — `preventDefault`
+    // present, and the handler reaching for the state machine instead of `close()`. What it does
+    // not see: that a browser delivered Escape, that anything animated, or that focus moved.
+    // Those are `docs/SECURITY.md` §*Manual browser checks*.
+    const cancel = handler('onCancel={(event) => {');
+    expect(cancel).toContain('event.preventDefault()');
+    expect(cancel).toContain('if (dismissable) beginClose();');
+    expect(cancel).not.toContain('.close(');
+    expect(cancel).not.toContain('onClose(');
+  });
+
+  it('calls showModal once and close once, and close only from the finished exit', () => {
+    // The whole state machine in two counts. A second `close()` anywhere in the component would
+    // be a path that skipped the exit; a second `showModal()` would be a second open with no
+    // matching close. `close()` in `finishClose` is the only one, and it follows the
+    // `transitionend`/`transitioncancel` listener rather than preceding it.
+    expect(dialog.split('dialog.showModal();')).toHaveLength(2);
+    expect(dialog.split('dialog.close()')).toHaveLength(2);
+    expect(body).toContain("const EXIT_PROPERTY = 'transform'");
+    expect(dialog).toContain("event.propertyName !== EXIT_PROPERTY");
+    const finish = dialog.indexOf('const finishClose = useCallback(');
+    const closeCall = dialog.indexOf('dialog.close()');
+    expect(finish).toBeGreaterThan(-1);
+    expect(closeCall).toBeGreaterThan(finish);
+    // Bounded by the transition itself: no timer and no duration written in TypeScript, so
+    // there is no second source of truth for how long the exit takes.
+    expect(dialog).not.toMatch(/setTimeout|setInterval/);
+    expect(dialog).not.toMatch(/\b\d+(?:\.\d+)?m?s\b/);
+    // Listeners are removed on the way out of the `closing` state, including on unmount.
+    expect(dialog).toContain("addEventListener('transitionend'");
+    expect(dialog).toContain("addEventListener('transitioncancel'");
+    expect(dialog).toContain("removeEventListener('transitionend'");
+    expect(dialog).toContain("removeEventListener('transitioncancel'");
+  });
+
+  it('has an explicit reduced-motion branch that is the stylesheet guard read the other way', () => {
+    // The branch lives in the module body — the helper the `closing` effect calls.
+    expect(body).toContain("window.matchMedia('(prefers-reduced-motion: reduce)')");
+    expect(dialog).toContain('if (exitIsImmediate())');
+    expect(dialog).toContain('finishClose();');
+    // And the class the branch exists to avoid waiting for.
+    const css = client('styles/globals.css');
+    expect(css).toContain('.dialog[open].dialog-closing {');
+    expect(css).toContain('.dialog[open].dialog-closing::backdrop {');
+    // Placed after `.dialog[open]` in the sheet and at a higher specificity than it, or the
+    // open dialog would keep `opacity: 1` and the exit would not move at all.
+    expect(css.indexOf('.dialog[open].dialog-closing {')).toBeGreaterThan(css.indexOf('.dialog[open] {'));
+  });
+
+  it('records the opener before showModal and puts focus back only after close', () => {
+    const show = dialog.indexOf('dialog.showModal();');
+    const record = dialog.indexOf('opener.current = document.activeElement');
+    expect(record).toBeGreaterThan(-1);
+    // Immediately before, in the same synchronous block — `showModal()` is what moves focus, so
+    // anything later records where focus already went.
+    expect(record).toBeLessThan(show);
+    const close = dialog.indexOf('dialog.close()');
+    const restore = dialog.indexOf('target.focus()');
+    expect(restore).toBeGreaterThan(close);
+    // The two answers the prompt asks for: the opener when it still exists, `<main>` otherwise.
+    expect(dialog).toContain('target.isConnected');
+    expect(dialog).toContain("document.getElementById('main')");
+    // And the caller's own veto, read when the close lands rather than when it is requested.
+    expect(dialog).toContain('restoreRequested.current');
+  });
+
+  it('asks the coordinates as well as the target before it will close on a backdrop click', () => {
+    // The target test is necessary — it is what keeps a click on the input, the list or a button
+    // from ever reaching this handler — and it is not sufficient, because the dialog's own
+    // padding is delivered to the same element with the same target. `tests/unit/
+    // dialog-backdrop.test.ts` proves the two disagree; this proves the handler consults both.
+    const click = handler('onClick={(event) => {');
+    expect(click).toContain('if (event.target !== event.currentTarget) return;');
+    expect(click).toContain('getBoundingClientRect()');
+    expect(click).toContain('isOutsideBox(');
+    // The predicate is on the only path that reaches `onBackdrop()`, so a regression back to
+    // target equality alone fails here rather than in a browser.
+    expect(click.indexOf('isOutsideBox(')).toBeLessThan(click.indexOf('onBackdrop();'));
+    expect(click).not.toMatch(/event\.target === event\.currentTarget\)\s*\{?\s*onBackdrop/);
+    // `onBackdrop` is optional: a confirmation dialog does not pass it, so a stray click beside
+    // "Delete permanently" cannot be how a delete is abandoned.
+    expect(body).toContain('if (onBackdrop === undefined) return;');
+  });
+
+  it('is idempotent: a second close request while one is in flight is a no-op', () => {
+    expect(dialog).toContain("if (phaseRef.current !== 'open') return;");
+    expect(dialog).toContain("if (phaseRef.current !== 'closing') return;");
+    // Re-opening mid-exit drops the closing state rather than leaving the class on an open
+    // dialog, which is the one path that would otherwise strand the exit listeners.
+    expect(dialog).toContain("if (phaseRef.current === 'closing') {");
   });
 });
 

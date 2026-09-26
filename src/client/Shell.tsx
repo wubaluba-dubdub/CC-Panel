@@ -12,7 +12,7 @@ import { Projects } from './pages/Projects.js';
 import { Secrets } from './pages/Secrets.js';
 import { Security } from './pages/Security.js';
 import { Sessions } from './pages/Sessions.js';
-import type { MeResponse, ProjectDto } from '../shared/types.js';
+import type { AuthenticatedMe, ProjectDto } from '../shared/types.js';
 
 /**
  * The shell: navigation, the signed-in identity, sign out, the language switch, the project
@@ -34,7 +34,7 @@ export function Shell({
   onSignedOut,
   refresh,
 }: {
-  me: MeResponse;
+  me: AuthenticatedMe;
   onSignedOut: () => void;
   refresh: () => Promise<void>;
 }): React.JSX.Element {
@@ -107,8 +107,10 @@ export function Shell({
         </nav>
         <div className="identity">
           <span>{t('app.signedInAs', { username: me.username })}</span>
-          {/* The build id, only here: `MeResponse` carries it behind a full or pre session, and
-              nothing in the pre-login shell, in `bootstrap.js` or in any static asset holds it. */}
+          {/* The build id, only here. `AuthenticatedMe` is the shape this component is handed —
+              `App.tsx` narrows on `stage === 'authenticated'` before it passes anything — and
+              `MeResponse` for a `pre` session has no `buildId` member to forget to delete. The
+              pre-login shell, `bootstrap.js` and every static asset hold neither. */}
           {me.buildId === null ? null : (
             <span className="hint">{t('app.buildId', { id: <Ltr>{me.buildId}</Ltr> })}</span>
           )}
@@ -194,7 +196,7 @@ function Screen({
   route: Route;
   refresh: () => Promise<void>;
   navigate: (path: string) => void;
-  me: MeResponse;
+  me: AuthenticatedMe;
   onSignOut: () => void;
   projects: readonly ProjectDto[] | null;
   listFailed: boolean;
