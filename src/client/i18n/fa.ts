@@ -20,6 +20,8 @@ const fa: Dict = {
   'app.name': 'پنل کنترل',
   'app.signOut': 'خروج',
   'app.signedInAs': 'وارد شده با {username}',
+  'app.buildId': 'ساخت {id}',
+  'nav.projects': 'پروژه‌ها',
   'nav.overview': 'نمای کلی',
   'nav.sessions': 'نشست‌ها',
   'nav.security': 'امنیت',
@@ -173,6 +175,64 @@ const fa: Dict = {
   'secrets.saved': 'ذخیره شد.',
   'secrets.empty': 'هنوز هیچ کلیدی ذخیره نشده است.',
 
+  // ── Projects ─────────────────────────────────────────────────────────────
+  'projects.title': 'پروژه‌ها',
+  'projects.explain':
+    'هر پروژه فضای کاری‌ای است با هویت و احرازگذارهای خودش. نام، برچسب است: شناسه‌ای که زیرش می‌نشیند هرگز تغییر نمی‌کند، پس تغییر نام نه پوشه‌ای را جابه‌جا می‌کند و نه چیزی را از کار می‌اندازد.',
+  'projects.caption': 'پروژه‌ها با شناسه‌ها، تاریخ‌ها و وضعیت تنظیماتشان',
+  'projects.empty': 'هنوز پروژه‌ای نیست. اولین پروژه را بسازید.',
+  'projects.colSlug': 'نام',
+  'projects.colUuid': 'شناسه',
+  'projects.colCreated': 'ایجاد شده',
+  'projects.colSettings': 'تنظیمات',
+  'projects.isolated': 'ایزوله',
+  'projects.shared': 'مشترک',
+  'projects.slugLabel': 'نام',
+  'projects.slugHint': 'دو تا چهل حرف، رقم یا خط تیره. این برچسب است، نه نشانی.',
+  'projects.isolatedLabel': 'تنظیمات این پروژه جدا نگه داشته شود',
+  'projects.isolatedHint': 'ایزوله یعنی پروژه تنظیمات خودش را دارد، نه پیش‌فرض مشترک.',
+  'projects.create': 'ایجاد پروژه',
+  'projects.open': 'باز کردن',
+  'projects.rename': 'تغییر نام',
+  'projects.save': 'ذخیره',
+  'projects.delete': 'حذف',
+  'projects.deleteTitle': '{slug} حذف شود؟',
+  'projects.deleteWarn':
+    'این کار پوشهٔ پروژه را روی حجم نابود می‌کند: فضای کاری‌اش، خانهٔ کلودش و هر احرازگذاری را که برایش ذخیره شده است. بازگشت‌پذیر نیست.',
+  'projects.deleteConfirm': 'حذف قطعی',
+  'projects.created': '{slug} ساخته شد.',
+  'projects.createdAdjusted': 'نام {requested} گرفته شده بود، پس پروژه با نام {slug} ساخته شد.',
+  'projects.slugSaved': 'نام به {slug} تغییر کرد.',
+  'projects.slugAdjusted': 'نام {requested} گرفته شده بود، پس پروژه اکنون {slug} نام دارد.',
+  'projects.settingsSaved': 'ذخیره شد.',
+  'projects.deleted': '{slug} حذف شد.',
+
+  // ── One project ──────────────────────────────────────────────────────────
+  'project.notFound': 'هیچ پروژه‌ای با این شناسه نیست.',
+  'project.tabs': 'بخش‌های پروژه',
+  'project.tabSummary': 'خلاصه',
+  'project.tabFiles': 'پرونده‌ها — {milestone}',
+  'project.tabPortability': 'قابل حمل بودن — {milestone}',
+  'project.tabTelegram': 'تلگرام — {milestone}',
+  'project.tabSettings': 'تنظیمات و احرازگذارها — {milestone}',
+  'project.tabImport': 'درون‌ریزی — {milestone}',
+  'project.tabTerminal': 'پایانه — {milestone}',
+  'project.tabSoon': 'هنوز ساخته نشده است. این تب، در همان نسخه اضافه‌اش می‌کند.',
+  'project.summary': 'خلاصهٔ پروژه',
+  'project.fieldUpdated': 'آخرین تغییر',
+  'project.slugIsLabel':
+    'نام، برچسب است. این شناسه، نشانی پروژه است و با تغییر نام دست نمی‌خورد.',
+
+  // ── The command palette ──────────────────────────────────────────────────
+  'palette.title': 'فهرست فرمان‌ها',
+  'palette.placeholder': 'برای یافتن فرمان یا پروژه بنویسید',
+  'palette.hint': 'کلیدهای جهت حرکت می‌کنند، Enter اجرا می‌کند، Escape می‌بندد.',
+  'palette.noMatch': 'چیزی یافت نشد.',
+  'palette.openProject': 'باز کردن {slug}',
+  'palette.createProject': 'ایجاد پروژه',
+  'palette.goToAudit': 'رفتن به گزارش رویدادها',
+  'palette.switchLocale': 'تغییر زبان به {language}',
+
   'telegram.title': 'اعلان‌های تلگرام',
   'telegram.configured': 'تنظیم‌شده',
   'telegram.notConfigured': 'تنظیم نشده',
@@ -255,6 +315,7 @@ const fa: Dict = {
   'error.notFound': 'چنین چیزی وجود ندارد.',
   'error.conflict': 'این کار در وضعیت کنونی پنل ممکن نیست.',
   'error.tooLarge': 'این درخواست بزرگ‌تر از حد بود.',
+  'error.insufficientStorage': 'روی حجم جای کافی برای پروژهٔ دیگری نیست. کمی فضا آزاد کنید و دوباره تلاش کنید.',
   'error.badRequest': 'پنل نتوانست این درخواست را بخواند.',
   'error.server': 'مشکلی در سرور رخ داد. دلیلش در لاگ است، نه اینجا.',
   'error.network': 'دسترسی به پنل ممکن نشد.',
@@ -263,7 +324,7 @@ const fa: Dict = {
   // ── Not found ────────────────────────────────────────────────────────────
   'notFound.title': 'چنین صفحه‌ای نیست',
   'notFound.explain': 'این نشانی بخشی از پنل نیست.',
-  'notFound.home': 'رفتن به نمای کلی',
+  'notFound.home': 'رفتن به پروژه‌ها',
 };
 
 export default fa;

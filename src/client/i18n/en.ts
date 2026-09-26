@@ -22,6 +22,8 @@ export const en = {
   'app.name': 'Control Panel',
   'app.signOut': 'Sign out',
   'app.signedInAs': 'Signed in as {username}',
+  'app.buildId': 'Build {id}',
+  'nav.projects': 'Projects',
   'nav.overview': 'Overview',
   'nav.sessions': 'Sessions',
   'nav.security': 'Security',
@@ -184,6 +186,67 @@ export const en = {
   'secrets.saved': 'Saved.',
   'secrets.empty': 'No secrets are stored yet.',
 
+  // ── Projects ─────────────────────────────────────────────────────────────
+  'projects.title': 'Projects',
+  'projects.explain':
+    'A project is a workspace with its own identity and its own credentials. The name is a label: the identifier underneath it never changes, so renaming cannot move a folder or invalidate anything stored for it.',
+  'projects.caption': 'Projects with their identifiers, dates and settings state',
+  'projects.empty': 'No projects yet. Create the first one.',
+  'projects.colSlug': 'Name',
+  'projects.colUuid': 'Identifier',
+  'projects.colCreated': 'Created',
+  'projects.colSettings': 'Settings',
+  'projects.isolated': 'Isolated',
+  'projects.shared': 'Shared',
+  'projects.slugLabel': 'Name',
+  'projects.slugHint':
+    'Two to forty letters, digits or hyphens. This is the label, not the address.',
+  'projects.isolatedLabel': 'Keep this project’s settings separate',
+  'projects.isolatedHint':
+    'Isolated means the project gets its own settings rather than the shared default.',
+  'projects.create': 'Create a project',
+  'projects.open': 'Open',
+  'projects.rename': 'Rename',
+  'projects.save': 'Save',
+  'projects.delete': 'Delete',
+  'projects.deleteTitle': 'Delete {slug}?',
+  'projects.deleteWarn':
+    'This destroys the project directory on the volume: its workspace, its Claude home and every credential stored for it. It cannot be undone.',
+  'projects.deleteConfirm': 'Delete permanently',
+  'projects.created': 'Created {slug}.',
+  'projects.createdAdjusted':
+    'The name {requested} was taken, so the project was created as {slug}.',
+  'projects.slugSaved': 'Renamed to {slug}.',
+  'projects.slugAdjusted': '{requested} was taken, so the project is now called {slug}.',
+  'projects.settingsSaved': 'Saved.',
+  'projects.deleted': 'Deleted {slug}.',
+
+  // ── One project ──────────────────────────────────────────────────────────
+  'project.notFound': 'No project has that identifier.',
+  'project.tabs': 'Project sections',
+  'project.tabSummary': 'Summary',
+  'project.tabFiles': 'Files — {milestone}',
+  'project.tabPortability': 'Portability — {milestone}',
+  'project.tabTelegram': 'Telegram — {milestone}',
+  'project.tabSettings': 'Settings and credentials — {milestone}',
+  'project.tabImport': 'Import — {milestone}',
+  'project.tabTerminal': 'Terminal — {milestone}',
+  'project.tabSoon': 'Not built yet. The milestone on this tab will add it.',
+  'project.summary': 'Project summary',
+  'project.fieldUpdated': 'Last changed',
+  'project.slugIsLabel':
+    'The name is a label. This identifier is the address of the project, and a rename leaves it alone.',
+
+  // ── The command palette ──────────────────────────────────────────────────
+  'palette.title': 'Command palette',
+  'palette.placeholder': 'Type to find a command or a project',
+  'palette.hint': 'Arrow keys move, Enter runs, Escape closes.',
+  'palette.noMatch': 'Nothing matches.',
+  'palette.openProject': 'Open {slug}',
+  'palette.createProject': 'Create a project',
+  'palette.goToAudit': 'Go to the audit log',
+  'palette.switchLocale': 'Switch to {language}',
+
   'telegram.title': 'Telegram notifications',
   'telegram.configured': 'Configured',
   'telegram.notConfigured': 'Not configured',
@@ -264,6 +327,8 @@ export const en = {
   'error.notFound': 'That does not exist.',
   'error.conflict': 'That cannot be done in the panel’s current state.',
   'error.tooLarge': 'That request was too large.',
+  'error.insufficientStorage':
+    'There is not enough room on the volume for another project. Free some space and try again.',
   'error.badRequest': 'The panel could not read that request.',
   'error.server': 'Something went wrong on the server. The reason is in the log, not here.',
   'error.network': 'The panel could not be reached.',
@@ -272,7 +337,7 @@ export const en = {
   // ── Not found ────────────────────────────────────────────────────────────
   'notFound.title': 'No such page',
   'notFound.explain': 'This address is not part of the panel.',
-  'notFound.home': 'Go to the overview',
+  'notFound.home': 'Go to projects',
 } as const;
 
 /** The shape every other locale is declared against. */

@@ -488,6 +488,12 @@ bdi {
   text-align: start;
 }
 
+/* A checkbox takes the platform's size, not the field's: `inline-size: 100%` above is about a
+ * text input, and applied to a checkbox it is a checkbox stretched across the whole column. */
+.field input[type='checkbox'] {
+  inline-size: auto;
+}
+
 .hint {
   font-size: var(--text-xs);
   color: var(--ink-tertiary);
@@ -631,6 +637,10 @@ bdi {
   min-inline-size: 47ch;
 }
 
+.table-projects {
+  min-inline-size: 109ch;
+}
+
 col.col-expander {
   width: 4ch;
 }
@@ -665,6 +675,10 @@ col.col-label {
 
 col.col-action {
   width: 15ch;
+}
+
+col.col-uuid {
+  width: 40ch;
 }
 
 /* `col-flex` declares no width on purpose: in a fixed layout the columns that declare none share
@@ -791,6 +805,93 @@ col.col-action {
   border-radius: var(--radius-sm);
   background: var(--surface-raised);
   opacity: var(--skeleton-mid);
+}
+
+/* ── The tabs ──────────────────────────────────────────────────────────────
+ * One real tab and five that are specified but not built. The unbuilt ones keep `aria-disabled`
+ * rather than `disabled` — see `pages/Project.tsx` — and here they read as unavailable: dimmed,
+ * not hidden, and still hit-testable so the cursor says "not yet" rather than "not here".
+ */
+.tablist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1);
+  border-block-end: var(--border-w) solid var(--hairline);
+  margin-block-end: var(--s3);
+}
+
+.tab {
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--ink-tertiary);
+  background: transparent;
+  border: 0;
+  border-block-end: var(--rule-w) solid transparent;
+  padding: var(--s2) var(--s3);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tab-on {
+  color: var(--ink-primary);
+  border-block-end-color: var(--accent);
+}
+
+.tab[aria-disabled='true'] {
+  cursor: default;
+}
+
+.tabpanel {
+  /* Focusable, so the panel is a stop for a keyboard user who has just used the tablist —
+   * the one thing `role="tabpanel"` without `tabindex` does not give them. */
+  outline-offset: var(--focus-offset);
+}
+
+/* ── The command palette's own parts ───────────────────────────────────────
+ * The overlay itself is `.dialog`; only the input and the list are new. No class here may be
+ * named `overlay`, `modal`, `popup`, `palette` or `dropdown` — the client-style scan reads a
+ * `className=` attribute holding one of those as a hand-rolled overlay, which is exactly what
+ * a `<dialog>` makes unnecessary.
+ */
+.command-input {
+  font: inherit;
+  color: var(--ink-primary);
+  background: var(--bg);
+  border: var(--border-w) solid var(--hairline-strong);
+  border-radius: var(--radius);
+  padding: var(--s2) var(--s3);
+  inline-size: 100%;
+  margin-block-end: var(--s2);
+}
+
+.command-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-block-size: 50vh;
+  overflow-block: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+.command-item {
+  color: var(--ink-secondary);
+  border-radius: var(--radius);
+  padding: var(--s2) var(--s3);
+  cursor: pointer;
+}
+
+/* Selected, which is a *state*: it is where the list starts and where Enter lands, so it is
+ * readable without motion and stays readable with motion switched off. */
+.command-on {
+  color: var(--ink-primary);
+  background: var(--surface-raised);
+}
+
+.command-empty {
+  color: var(--ink-tertiary);
+  font-size: var(--text-sm);
+  padding: var(--s2) var(--s3);
 }
 
 /* ── The dialog ───────────────────────────────────────────────────────────
@@ -963,6 +1064,8 @@ col.col-action {
   .chip,
   .expander,
   .select-wrap select,
+  .tab,
+  .command-item,
   .side nav a,
   .table tbody tr > td,
   .table tbody tr > th {

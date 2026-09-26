@@ -54,6 +54,26 @@ describe('the dictionaries', () => {
     }
   });
 
+  it('has no hard-coded digit that should have come from a locale formatter', () => {
+    // A digit written into a dictionary is a number the formatter never saw: Persian would
+    // render it in Latin because the string was built by hand, and a *translated* figure
+    // ('512 MB') is wrong in a second way — different digits, decimal mark and separator.
+    // The one exemption is a milestone label (`M2.5`), which is an identifier and stays as
+    // typed in both languages.
+    const MILESTONE = /M\d+(?:\.\d+)*/g;
+    const offenders: string[] = [];
+    for (const key of KEYS) {
+      for (const [lang, value] of [
+        ['en', en[key]],
+        ['fa', fa[key]],
+      ] as const) {
+        const stripped = value.replace(MILESTONE, '');
+        if (/\d/.test(stripped)) offenders.push(`${lang}.${key}: ${value}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
   it('names the same parameters in both languages', () => {
     // A Persian template that dropped `{count}` would render a sentence with a number
     // missing, and one that invented `{total}` would render the placeholder text. Neither is

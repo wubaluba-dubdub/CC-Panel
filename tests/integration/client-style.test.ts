@@ -446,6 +446,48 @@ describe('M2.1.1 — motion is inside the reduced-motion guard', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('covers `overlay` wherever it allows `display` to be discrete, and the reverse', () => {
+    // The one rule here that no other test can see. `display` alone keeps a closing dialog
+    // rendered but lets it leave the top layer on the next frame, so the rest of the exit
+    // animation plays *behind* the page — which looks like a defect in the page rather than in
+    // the stylesheet, and is invisible to every assertion in this file that reads a value.
+    const discreteOf = (value: string): Set<string> => {
+      const seen = new Set<string>();
+      for (const part of topLevelParts(value)) {
+        if (part.includes('allow-discrete')) seen.add(part.split(/\s+/)[0]!);
+      }
+      return seen;
+    };
+    // The detector itself, driven against both shapes: a one-sided declaration must be
+    // distinguishable from a paired one, or the scan below passes for the wrong reason.
+    expect([...discreteOf('display var(--t-standard) allow-discrete')]).toEqual(['display']);
+    expect([
+      ...discreteOf(
+        'display var(--t-standard) allow-discrete, overlay var(--t-standard) allow-discrete',
+      ),
+    ]).toEqual(['display', 'overlay']);
+
+    const offenders: string[] = [];
+    let paired = 0;
+    for (const decl of allDeclarations()) {
+      if (decl.property !== 'transition' && decl.property !== 'transition-behavior') continue;
+      if (!decl.value.includes('allow-discrete')) continue;
+      const discrete = discreteOf(decl.value);
+      if (discrete.has('display') && discrete.has('overlay')) paired += 1;
+      for (const property of discrete) {
+        const other = property === 'display' ? 'overlay' : 'display';
+        if (!discrete.has(other)) {
+          offenders.push(
+            `${decl.file}:${decl.line} transitions ${property} with allow-discrete and leaves ${other} out`,
+          );
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+    // Not vacuous: the dialog and its backdrop are both in the stylesheet today.
+    expect(paired).toBeGreaterThanOrEqual(2);
+  });
+
   it('scans values that would fail it — the patterns are not vacuous', () => {
     expect(topLevelParts('opacity var(--t-fast) var(--ease), transform var(--t-slow) var(--ease)')).toEqual([
       'opacity var(--t-fast) var(--ease)',

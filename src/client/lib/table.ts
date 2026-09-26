@@ -47,6 +47,13 @@ export const COLUMN_CH = {
   /** One button. */
   action: 15,
   /**
+   * A project's uuid: exactly 36 characters, plus the four hyphens it already contains. Sized
+   * rather than squeezed into `scope` (24) because a uuid that wraps is a uuid two lines of a
+   * four-line cell have to be read across, and the identifier is the one column here whose value
+   * is compared character by character against a terminal.
+   */
+  uuid: 40,
+  /**
    * The one column that takes what is left. Not a width: a **minimum**, which is what the
    * table's own `min-inline-size` is computed from. A percentage would resolve against a table
    * width that itself depends on these numbers.
@@ -143,6 +150,46 @@ export const SECRETS_TABLE = {
 } as const;
 
 /**
+ * The projects list, at `/`.
+ *
+ * Expandable, because a project's controls — rename, the settings preference, delete — are a
+ * form, and a form in a table cell is a row whose height is set by whichever input is tallest.
+ * The detail row spans every column and holds them, which is the same place the sessions list
+ * puts its raw client string.
+ */
+export const PROJECTS_TABLE = {
+  name: 'projects',
+  caption: 'projects.caption',
+  expandable: true,
+  columns: [
+    // The slug is a link to the project's screen, and the flex size is its budget: it is the
+    // one column whose content is a label the operator typed.
+    { key: 'projects.colSlug', size: 'flex' },
+    { key: 'projects.colUuid', size: 'uuid' },
+    { key: 'projects.colCreated', size: 'stamp' },
+    {
+      key: 'projects.colSettings',
+      size: 'level',
+      labels: ['projects.isolated', 'projects.shared'],
+    },
+  ],
+} as const;
+
+/** The project screen's summary panel: five pairs, one per line. */
+export const PROJECT_SUMMARY_TABLE: KeyValueSpec = {
+  name: 'kv',
+  caption: 'project.summary',
+  labelSize: 'label',
+  labels: [
+    'projects.colSlug',
+    'projects.colUuid',
+    'projects.colCreated',
+    'project.fieldUpdated',
+    'projects.colSettings',
+  ],
+};
+
+/**
  * A key/value report is not a data table and does not pretend to be one: it has no header row,
  * its label column is a column of `<th scope="row">`, and its rows are pairs rather than records.
  * It shares the column sizes, the caption rule and the minimum-width rule, and nothing else.
@@ -173,11 +220,12 @@ export const TELEGRAM_TABLE: KeyValueSpec = {
 };
 
 /** Every table in the client, for the scans. A table that is not here is not asserted. */
-export const ALL_TABLES: readonly TableSpec[] = [SESSIONS_TABLE, AUDIT_TABLE, SECRETS_TABLE];
+export const ALL_TABLES: readonly TableSpec[] = [SESSIONS_TABLE, AUDIT_TABLE, SECRETS_TABLE, PROJECTS_TABLE];
 
-export const ALL_KEY_VALUE_TABLES: readonly KeyValueSpec[] = [TELEGRAM_TABLE];
+export const ALL_KEY_VALUE_TABLES: readonly KeyValueSpec[] = [TELEGRAM_TABLE, PROJECT_SUMMARY_TABLE];
 
 /** The cell keys each table's rows must supply. A missing one is a compile error. */
 export type SessionColumnKey = (typeof SESSIONS_TABLE)['columns'][number]['key'];
 export type AuditColumnKey = (typeof AUDIT_TABLE)['columns'][number]['key'];
 export type SecretColumnKey = (typeof SECRETS_TABLE)['columns'][number]['key'];
+export type ProjectColumnKey = (typeof PROJECTS_TABLE)['columns'][number]['key'];

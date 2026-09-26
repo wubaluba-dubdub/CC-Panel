@@ -1220,6 +1220,21 @@ what the plan calls for.
   properties, `@property --gauge-fill`, and everything inside the reduced-motion guard.
   **Deferred with reasons:** relative time, a stacked table layout for a narrow viewport, and
   view transitions — all three in `docs/UI.md` §6 with their arguments.
+- **M2.2 — projects with portable identity: done (server + screens; no file browser).**
+  Migration **012** (`projects`: uuid, slug with `slug_normalized`, `isolated_settings`, plus
+  R8's provenance and review columns), the repository, the store — staging sibling → `rename`
+  → one transaction with the audit append inside it, quarantine on a failed commit, a disk
+  guard, and the read-only `diagnoseProjectDirs()` that names rowless directories and never
+  deletes one — the five routes, and `docs/PROJECTS.md` as the specification. Client: `/` is
+  the projects home (create form, `PROJECTS_TABLE`, per-row rename/settings/delete through a
+  `<Dialog>`), `/projects/<uuid>` is the project screen with six `aria-disabled` tabs naming
+  the milestone that will build them, Cmd/Ctrl+K opens the command palette, and
+  `resolveBuildIdentity()` puts the build id in a post-login LTR island that
+  `tests/integration/build.test.ts` proves absent from every pre-login surface. CLI:
+  `npm run project:path -- <slug>` resolves slug → uuid → workspace path and prints nothing
+  else on success. **Deferred with reasons:** the six unbuilt tabs and everything behind them
+  (file browser M2.3, portability M2.4, Telegram M2.5, settings M2.6, import M2.8, terminal
+  M3), Playwright, and the §6 list in `docs/UI.md`.
 - No terminal or Claude Code integration (Phase 3).
 
 ## The client
@@ -1234,7 +1249,7 @@ rule. The decisions rather than the code:
   `PANEL_MASTER_KEY`. `react`/`react-dom` are in **`dependencies`** and not `devDependencies`:
   the bundle ships to the browser, and `npm audit --omit=dev` is a build gate here, so the
   audit has to be able to see the code the operator actually runs. Declined with reasons: a
-  router (120 lines instead), any CSS-in-JS (unusable under this CSP), Tailwind, a QR renderer,
+  router (150 lines instead), any CSS-in-JS (unusable under this CSP), Tailwind, a QR renderer,
   a date library (`Intl` gives a Jalali calendar), an icon set.
 - **The base path is a build-time problem with a runtime answer.** `vite build` emits
   `__PANEL_BASE__`; the server substitutes the real prefix into `index.html` once at boot and
@@ -1292,15 +1307,16 @@ rule. The decisions rather than the code:
   figures describe the host, and a disarmed watchdog rule names its reason code.
 
 ## Next Steps (Phase 2)
-M2.1 is done and M2.1.1 has repaired what the operator found in it, so the next one is
-**M2.2 — projects with portable identity** (migration **012**, carrying R8's provenance and
-review columns with it). **M2.2's four screens must be built on M2.1.1's primitives**: a card
-that holds a table opts into `card-wide` and puts the table in a `<ScrollRegion>`; every table is
-`<DataTable>` with a definition in `lib/table.ts`, a character budget per column and a caption;
-every timestamp is `<Time>`; the command palette is a `<dialog>` opened with `showModal()`,
-because a card clips and a positioned descendant of one cannot escape it; and no polled value may
-appear in a React key. The command palette is recorded there
-too: it is the first milestone where it has anything to search.
+M2.1 and M2.1.1 built the shell and repaired it, and **M2.2 is now built** — server, screens,
+CLI, `docs/PROJECTS.md`. The next one is **M2.3 — the file browser (R4)**, whose containment
+rules are already specified in `docs/FILES.md` and whose first obligation is the one every
+path-taking route shares: call the single containment function before a byte is read. M2.2's
+screens set the pattern a new screen follows — a card that holds a table opts into `card-wide`
+and puts the table in a `<ScrollRegion>`; every table is `<DataTable>` with a definition in
+`lib/table.ts`, a character budget per column and a caption; every timestamp is `<Time>`; an
+overlay is a `<dialog>` opened with `showModal()` through `components/ui.tsx`, because a card
+clips and a positioned descendant of one cannot escape it; and no polled value may appear in a
+React key. Disabled tabs on the project screen say which milestone builds them.
 
 See `PLAN.md` §*M2 — Phase 2* for the milestone map and the blocking decisions,
 §*Decisions taken after M2.0* for the twelve answers each milestone has to respect, and

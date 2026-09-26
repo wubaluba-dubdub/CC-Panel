@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { renderBootstrapScript } from '../../src/server/plugins/base-path.js';
+import { resolveBuildIdentity } from '../../src/server/utils/build-info.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const DIST = join(ROOT, 'dist');
@@ -247,6 +249,65 @@ describe('Part 1 — the client build satisfies the shipped CSP', () => {
     expect(files.filter((f) => f.endsWith('.map'))).toEqual([]);
     for (const file of files) {
       expect(readFileSync(join(CLIENT, 'assets', file), 'utf-8')).not.toContain('sourceMappingURL');
+    }
+  });
+});
+
+/**
+ * The build id, on the built output rather than on a response.
+ *
+ * `GET /api/auth/me` is the only route that carries it, and `tests/integration/build-identity.test.ts`
+ * asserts that from the server's side — but that test runs in an environment with no Railway
+ * variables, so the value it is guarding is `null` there and every absence assertion passes
+ * vacuously. What is asserted here is a **synthesised** build id: the same resolver, handed a
+ * documented SHA, must produce a value that appears on no surface the browser gets before it is
+ * signed in.
+ *
+ * What this cannot see: it reads files, not responses. It does not prove that the shell served
+ * to an anonymous client is byte-identical to the file on disk, and it cannot see a value that
+ * reaches the page only at runtime from somewhere else. The standing server test covers the
+ * response half.
+ */
+describe('M2.2 — the build id is absent from every pre-login surface', () => {
+  const CLIENT = join(DIST, 'client');
+  /** A documented SHA, so the assertion has something to look for. */
+  const SHA = 'feedfacecafe1234';
+  const buildId = resolveBuildIdentity({ RAILWAY_GIT_COMMIT_SHA: SHA }).buildId!;
+
+  it('resolves a real id from a documented variable, so the absence is not vacuous', () => {
+    expect(buildId).toBe('feedfac');
+    expect(buildId.length).toBe(7);
+    expect(resolveBuildIdentity({})).toEqual({ buildId: null, source: 'none' });
+  });
+
+  it('keeps that id out of the shell, bootstrap.js and every static asset', () => {
+    const surfaces: [string, string][] = [
+      ['dist/client/index.html', readFileSync(join(CLIENT, 'index.html'), 'utf-8')],
+      [
+        'bootstrap.js',
+        renderBootstrapScript({
+          basePath: 'example-base',
+          locale: 'en',
+          csrfCookieName: 'panel_csrf',
+        }),
+      ],
+      ...readdirSync(join(CLIENT, 'assets'))
+        .filter((file) => /\.(?:js|css)$/.test(file))
+        .map(
+          (file): [string, string] => [
+            `assets/${file}`,
+            readFileSync(join(CLIENT, 'assets', file), 'utf-8'),
+          ],
+        ),
+    ];
+    expect(surfaces.length).toBeGreaterThan(3);
+    for (const [name, body] of surfaces) {
+      expect(body.includes(buildId), `${name} carries the build id`).toBe(false);
+      // The variable name as well: a client that read it would be reading a secret-shaped
+      // environment variable from a bundle, and the bundle is served before login.
+      expect(body.includes('RAILWAY_GIT_COMMIT_SHA'), `${name} names the SHA variable`).toBe(
+        false,
+      );
     }
   });
 });

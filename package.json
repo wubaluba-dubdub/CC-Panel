@@ -20,6 +20,7 @@
     "telegram:set": "node --env-file-if-exists=.env node_modules/tsx/dist/cli.mjs src/server/cli/telegram-set.ts",
     "telegram:test": "node --env-file-if-exists=.env node_modules/tsx/dist/cli.mjs src/server/cli/telegram-test.ts",
     "telegram:discover": "node --env-file-if-exists=.env node_modules/tsx/dist/cli.mjs src/server/cli/telegram-discover.ts",
+    "project:path": "node --env-file-if-exists=.env node_modules/tsx/dist/cli.mjs src/server/cli/project-path.ts",
     "acceptance": "bash scripts/acceptance.sh",
     "build:client": "vite build",
     "dev:client": "vite build --watch",

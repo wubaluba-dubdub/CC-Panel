@@ -256,6 +256,7 @@ export function Dialog({
   title,
   children,
   dismissable = true,
+  onBackdrop,
 }: {
   open: boolean;
   onClose: () => void;
@@ -263,6 +264,13 @@ export function Dialog({
   children: ReactNode;
   /** False for a disclosure the operator must acknowledge — Escape is disabled with it. */
   dismissable?: boolean;
+  /**
+   * Called when the click lands on the dialog element itself rather than on anything inside it
+   * — which is how a click on the backdrop is delivered, and also how a click on the dialog's
+   * own padding is. The command palette closes on it; the confirmation dialogs do not, so a
+   * stray click beside "Delete permanently" cannot be how a delete is abandoned or taken.
+   */
+  onBackdrop?: () => void;
 }): ReactNode {
   const ref = useRef<HTMLDialogElement>(null);
 
@@ -278,6 +286,9 @@ export function Dialog({
       ref={ref}
       className="dialog"
       aria-label={typeof title === 'string' ? title : undefined}
+      onClick={(event) => {
+        if (onBackdrop !== undefined && event.target === event.currentTarget) onBackdrop();
+      }}
       onCancel={(event) => {
         // Escape. Refused for a one-time disclosure — the recovery codes are shown once, and a
         // stray keypress must not be how they are lost.

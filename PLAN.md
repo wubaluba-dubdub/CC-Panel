@@ -479,6 +479,48 @@ event, no dependency, and nothing under `src/server` changed.
     markup per breakpoint, which is its own decision); and view transitions (a second rendering
     path to reason about on a panel whose perimeter is exact).
 
+### Decisions taken in M2.2 (2026-09-26)
+
+Numbered on from the list above. 32–37 are the UI half; the server half's decisions are in
+`docs/PROJECTS.md` and in §*M2.2 — projects* below.
+
+32. **The uuid is the project and the slug is the label (M2.2).** Every route, directory name
+    and AAD component uses the uuid; the slug is display and command-line lookup, normalised and
+    uniqueness-checked on the server only. A rename is therefore a database write that moves no
+    folder and invalidates no AAD, and the project screen is addressed as
+    `/projects/<uuid>` — with `CANONICAL_UUID` validated in the router, so a malformed or
+    unknown uuid falls through to not-found rather than to a fetch. The client's
+    `normalize('NFC').toLowerCase()` comparison is copy for the notice, not validation.
+33. **`renamed` answers two different questions, and the screen does not trust it (M2.2).** On
+    create it means a collision forced a `-N` suffix; on `PATCH` it means the stored label
+    actually moved. The screen compares the returned slug against what it requested to choose
+    between "renamed to X" and "your name was taken, so it is X" — the server remains the only
+    authority, and no client-side rule is duplicated as if it were one.
+34. **A disabled milestone tab is `aria-disabled`, and there is no roving tabindex (M2.2).**
+    The `disabled` attribute would take an unbuilt tab out of the tab order, so a keyboard user
+    never learns the milestone exists; all six share one visually hidden `aria-describedby`
+    naming the reason. Arrow-key roving is not adopted because the panel below the tablist is
+    focusable too, and a roving index that swallows Left/Right takes navigation away from it —
+    written down in `docs/UI.md` §5 so the next reader does not "fix" it.
+35. **The command palette is the `<Dialog>` primitive with one new prop (M2.2).** `onBackdrop`
+    fires only when `event.target === event.currentTarget`, so a click on the dialog's own
+    padding cannot close a half-typed query; focus is restored to the opener, except after a
+    command runs, when the screen is changing and the control is about to unmount. No class may
+    be named `overlay`/`modal`/`popup`/`palette`/`dropdown`, because the scan that enforces
+    "every overlay is a `<dialog>`" looks for overlay-shaped class names — the palette uses
+    `.command-*`.
+36. **The build id is a post-login fact (M2.2).** `resolveBuildIdentity()` takes it from
+    `RAILWAY_GIT_COMMIT_SHA` (seven characters) or `BUILD_ID`, and renders it into an LTR island
+    beside the signed-in name. Its **absence** from the shell HTML, from `bootstrap.js` and from
+    every built asset is asserted in `tests/integration/build.test.ts`, which is the part that
+    matters: a build id in a pre-login surface is a version oracle for a stranger.
+37. **`project:path` resolves through the repository, never through the filesystem (M2.2).**
+    slug → `slug_normalized` → uuid → `workspace`, on a connection opened `readonly` with
+    `fileMustExist`, printing the absolute path alone on success and one fixed line on stderr
+    for every failure. Scanning folders would have made a rowless directory discoverable as if
+    it were a project, which is the state `diagnoseProjectDirs()` exists to report rather than
+    to exploit.
+
 ### Decisions taken in M1.8 (2026-09-05)
 
 Numbered on from the list above so the whole set stays checkable. 13–15 are built here;

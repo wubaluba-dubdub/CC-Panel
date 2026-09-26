@@ -39,9 +39,9 @@ const SHA_ENV_VARS = [
   'GITHUB_SHA',
 ] as const;
 
-function readShaFromEnv(): string | null {
+function readShaFromEnv(env: NodeJS.ProcessEnv): string | null {
   for (const name of SHA_ENV_VARS) {
-    const value = process.env[name];
+    const value = env[name];
     if (typeof value === 'string' && value.length >= SHA_LENGTH) {
       return value.slice(0, SHA_LENGTH);
     }
@@ -50,12 +50,19 @@ function readShaFromEnv(): string | null {
 }
 
 /**
- * Resolved once, at import time. Reads environment variables, which are
- * immutable after process start. No timestamp fallback: a generated value
- * would be process identity, not build identity.
+ * Resolves a build identity from a supplied environment.
+ *
+ * Exported and parameterised for one reason: the suite has to be able to ask what
+ * *would* be exposed under a documented SHA, so it can prove that value appears on
+ * no pre-login surface. `process.env` in a test run has no Railway variables, so
+ * reading only from it would make that assertion vacuously true — the build id would
+ * be `null` everywhere and "not present in the shell" would be a test of nothing.
+ *
+ * The production entry point below still resolves once, at import time, from the
+ * real environment.
  */
-function resolveBuildIdentity(): BuildIdentity {
-  const sha = readShaFromEnv();
+export function resolveBuildIdentity(env: NodeJS.ProcessEnv = process.env): BuildIdentity {
+  const sha = readShaFromEnv(env);
   if (sha !== null) {
     return { buildId: sha, source: 'env' };
   }
@@ -63,4 +70,9 @@ function resolveBuildIdentity(): BuildIdentity {
   return { buildId: null, source: 'none' };
 }
 
+/**
+ * Resolved once, at import time. Reads environment variables, which are
+ * immutable after process start. No timestamp fallback: a generated value
+ * would be process identity, not build identity.
+ */
 export const BUILD_IDENTITY: BuildIdentity = resolveBuildIdentity();

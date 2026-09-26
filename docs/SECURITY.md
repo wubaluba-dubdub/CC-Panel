@@ -394,8 +394,10 @@ decides. **Ordered by what would be most damaging to discover late.**
     the failure is a blank page **only on refresh**, which is exactly the shape that survives
     a demo and breaks in use.
 
-14. **Zero CSP violations, on every screen.** Console tab, then visit all five screens and
-    open the step-up prompt, the recovery-codes dialog and the base-path dialog. No message
+14. **Zero CSP violations, on every screen.** Console tab, then visit all eight routes (six in
+    the header, plus a project screen and a project the panel does not know) and
+    open the step-up prompt, the recovery-codes dialog, the base-path dialog and the command
+    palette. No message
     containing "Content Security Policy". The one to look for specifically is a **style**
     violation on the resource gauge: it is the only component whose geometry comes from data,
     and it deliberately uses `setProperty('--gauge-fill', …)` rather than a `style` prop
@@ -513,8 +515,8 @@ Ordered, again, by what would be most damaging to discover late.
     so. A dialog whose bottom is missing points at **(a)** — an overlay that is not a `<dialog>`
     opened with `showModal()`. The same applies to the base-path dialog, on a disposable install
     only.
-29. **Nothing crosses a card's border, on any screen, in either direction.** Visit all five
-    screens in English, then all five in فارسی, and look at every card's edge and its four
+29. **Nothing crosses a card's border, on any screen, in either direction.** Visit every
+    screen in English, then every screen in فارسی, and look at every card's edge and its four
     rounded corners. Nothing — no table, no divider, no header, no button — may be drawn on or
     past the border. This is the defect the milestone exists for: on the reported screen the
     REVOKE header and the row's bottom border were drawn across the card's right border and its
@@ -579,9 +581,56 @@ Ordered, again, by what would be most damaging to discover late.
     point up when open, and the skeleton must still be visible while a table loads. Motion
     removed is correct; a state removed with it is a bug.
 40. **Lighthouse accessibility still passes its floor, on every screen, in both directions.**
-    Run it on all five screens in English and in فارسی. The tables, the captions, the region
+    Run it on all eight routes in English and in فارسی. The tables, the captions, the region
     landmarks, the expander's `aria-expanded` and the `<time>` elements are all new since M2.1,
     and a table is the single easiest thing in HTML to make unreadable to a screen reader.
+41. **The Command palette opens on the keyboard, sits in the top layer, and traps nothing.**
+    Press Cmd+K (Ctrl+K) on any screen: the dialog must appear **above** the header and above
+    the card that was focused, never behind a card's clipped edge — a card owns its edges, so a
+    palette that is a positioned descendant of one is drawn underneath it. Press Escape and it
+    must close; press Cmd+K again while it is open and it must close rather than stack a second
+    one. Arrow keys must move between items, Enter must run the focused item, and the list must
+    wrap at both ends.
+42. **Focus returns to where it came from, and never to the document body.** Open the palette
+    from the *Create project* button, close it with Escape, and `Tab` must move to *Create
+    project* again — not to the first link in the page. With no focusable element to restore to
+    (opened from a click on the page background), it must fall back to the skip link's target,
+    `<main>`, so the next Tab is still inside the content.
+43. **A click on the backdrop closes the palette; a click inside it never does.** Click the dim
+    area outside the dialog and it must close. Then open it again and click the dialog's own
+    padding — the gap between the input and the dialog's border — and it must **stay** open.
+    The distinction is `event.target === event.currentTarget`, and a palette that closes on a
+    click inside its own box makes typing a query impossible the moment the pointer strays.
+44. **The palette leaves the page rather than vanishing.** Close it with reduced motion *off* and
+    watch the exit: the dialog must fade and shrink away, not disappear on the frame it was
+    removed. With `prefers-reduced-motion: reduce` it must go immediately, with no information
+    lost — the rules are paired (`display` and `overlay` are both discrete, both transitioned),
+    and a palette that exits under reduced motion while other dialogs do not is an unpaired
+    selector.
+45. **A screen reader announces the palette as a dialog, and each result as an option.** With
+    VoiceOver or NVDA: the dialog must be announced by its title, the input must be reachable as
+    a combobox, the results as a listbox of options, and the highlighted result must follow the
+    arrow keys (`aria-activedescendant`). A palette that is only a list of links is unusable
+    without sight.
+46. **The build id is nowhere before you sign in.** Sign out, view source on the shell HTML, on
+    `bootstrap.js` and on the served bundle: the seven-character `RAILWAY_GIT_COMMIT_SHA`
+    abbreviation must not appear in any of them. It is a *post*-login footer under the signed-in
+    name, in an LTR island, and it never reaches the pre-login surface or a cacheable asset —
+    `tests/integration/build.test.ts` asserts exactly this.
+47. **The project screen's disabled tabs are focusable and explain themselves.** Tab into the
+    project screen: *Summary* must be the selected tab, and the six unbuilt tabs must each take
+    focus, announce `aria-disabled`, and point at one shared reason ("This milestone is not
+    built yet"). A tab that cannot receive focus is a tab a keyboard user never learns exists;
+    `disabled` (the attribute) would do exactly that, which is why the code uses
+    `aria-disabled` instead.
+48. **The projects list never leaks a path.** View source on `/`: no `workspace`, no `.path`, no
+    `PANEL_DATA_DIR` value, no directory name. The list is rows of uuid, slug, timestamps and a
+    settings flag — the on-disk layout is a server fact, and `tests/integration/m22-ui.test.ts`
+    scans every project-touching file for the field names the API does not return.
+49. **Lighthouse accessibility still passes its floor with the palette and the tabs added.**
+    Run it on `/`, on a project screen and on Overview, in both directions. The dialog's `role`,
+    the tablist's labelling and the new footer are all screen-reader surface that a score above
+    the floor does not by itself prove correct.
 
 ## Secrets
 

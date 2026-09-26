@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
+import { CANONICAL_UUID } from '../../shared/project-identity.js';
 
 /**
  * The router, hand-written, and the reason is standing rule 4.
  *
- * There are five routes. React Router is ~20 kB of runtime dependency inside the container that
+ * There are eight routes (seven screens plus the catch-all). React Router is ~20 kB of runtime dependency inside the container that
  * holds `PANEL_MASTER_KEY`, and its two features this panel would use — a `basename` and a
  * catch-all — are the twenty lines below. The rest of it (loaders, nested layouts, lazy route
  * modules, a data layer) is surface this panel has no use for and would have to keep auditing.
@@ -25,6 +26,8 @@ import { useCallback, useEffect, useState } from 'react';
  */
 
 export type Route =
+  | { name: 'projects' }
+  | { name: 'project'; uuid: string }
   | { name: 'overview' }
   | { name: 'sessions' }
   | { name: 'security' }
@@ -34,12 +37,25 @@ export type Route =
 
 /** The paths, as one table, so a link and a route cannot disagree. */
 export const ROUTES: { path: string; route: Route }[] = [
-  { path: '/', route: { name: 'overview' } },
+  { path: '/', route: { name: 'projects' } },
+  { path: '/overview', route: { name: 'overview' } },
   { path: '/sessions', route: { name: 'sessions' } },
   { path: '/security', route: { name: 'security' } },
   { path: '/secrets', route: { name: 'secrets' } },
   { path: '/audit', route: { name: 'audit' } },
 ];
+
+/**
+ * The one parameterised route: `/projects/<uuid>`.
+ *
+ * Matched *after* the table, because every other route is a constant and a constant is
+ * cheaper to compare than a pattern. The captured segment is the whole identity — the
+ * slug is a label and must not appear in the address bar, because renaming a project
+ * has to be a database write and not a redirect. It is lowercased here so `/projects/
+ * <UPPER>` and `/projects/<lower>` are one route, exactly as the server lowercases the
+ * uuid before it looks anything up.
+ */
+const PROJECT_PATH = /^\/projects\/([^/]+)$/;
 
 function base(): string {
   return window.__BASE__ ?? '';
@@ -60,7 +76,24 @@ export function routeFor(path: string): Route {
   // Trailing slashes are equivalent: `/sessions/` and `/sessions` are one route, because a
   // browser will produce both and a 404 for one of them is a bug the operator cannot explain.
   const normalised = path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path;
-  return ROUTES.find((entry) => entry.path === normalised)?.route ?? { name: 'not-found', path };
+  const exact = ROUTES.find((entry) => entry.path === normalised);
+  if (exact !== undefined) return exact.route;
+
+  const project = PROJECT_PATH.exec(normalised);
+  const segment = project?.[1];
+  if (segment !== undefined) {
+    const uuid = segment.toLowerCase();
+    // A segment that is not a canonical uuid is not a project. The panel only ever
+    // produces canonical ones, so accepting anything else would put an arbitrary
+    // string into the screen's identity — and into every request that screen makes.
+    if (CANONICAL_UUID.test(uuid)) return { name: 'project', uuid };
+  }
+  return { name: 'not-found', path };
+}
+
+/** The address of one project, so a link and the command palette cannot disagree. */
+export function projectPath(uuid: string): string {
+  return `/projects/${uuid}`;
 }
 
 /** The `href` for a link: the prefix plus the path, and the only place the two are joined. */

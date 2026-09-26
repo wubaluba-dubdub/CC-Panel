@@ -1,21 +1,27 @@
+import { useCallback, useEffect, useState } from 'react';
 import { Link, useRouter, type Route } from './lib/router.js';
 import { useLocale, LOCALES } from './i18n/index.js';
 import { Button } from './components/ui.js';
-import { api } from './lib/api.js';
+import { CommandPalette } from './components/CommandPalette.js';
+import { Ltr } from './components/Ltr.js';
+import { api, listProjects } from './lib/api.js';
 import { Audit } from './pages/Audit.js';
 import { Overview } from './pages/Overview.js';
+import { Project } from './pages/Project.js';
+import { Projects } from './pages/Projects.js';
 import { Secrets } from './pages/Secrets.js';
 import { Security } from './pages/Security.js';
 import { Sessions } from './pages/Sessions.js';
-import type { MeResponse } from '../shared/types.js';
+import type { MeResponse, ProjectDto } from '../shared/types.js';
 
 /**
- * The shell: navigation, the signed-in identity, sign out, and the language switch.
+ * The shell: navigation, the signed-in identity, sign out, the language switch, the project
+ * list the home screen and the palette share, and the command palette itself.
  *
- * **No command palette.** It has nothing to search until there are projects — the only things it
- * could offer are the five links already on screen — and a palette that lists five links teaches
- * the operator that it is not worth opening. Recorded for M2.2, where projects give it something
- * to find.
+ * ── Why the project list lives here ─────────────────────────────────────────
+ * Two screens want it: the home screen renders it, and the palette searches it. One request on
+ * mount, one `reload()` after any create/rename/delete, and both consumers read the same array —
+ * so a mutation cannot leave the palette offering a project that has just been deleted.
  *
  * Three things a frame has to get right, and all three are keyboard or screen-reader properties
  * that a mouse never exercises: a skip link that is reachable (off-screen, never
@@ -32,22 +38,45 @@ export function Shell({
   onSignedOut: () => void;
   refresh: () => Promise<void>;
 }): React.JSX.Element {
-  const { t } = useLocale();
+  const { t, ts } = useLocale();
   const { route, path, navigate } = useRouter();
+  const [projects, setProjects] = useState<ProjectDto[] | null>(null);
+  const [listFailed, setListFailed] = useState(false);
+  /** Counted, not boolean: a second "create" while already on the home screen must refocus. */
+  const [createIntent, setCreateIntent] = useState(0);
 
-  // Called from two places: the button below, and the current session's row on the sessions
-  // screen — where "revoke this session" is a sign-out and must go through the endpoint that
-  // clears the cookie rather than through `DELETE /api/sessions/:id`, which would leave the tab
-  // holding a dead cookie until its next request 401s.
+  const loadProjects = useCallback(async () => {
+    try {
+      const res = await listProjects();
+      setProjects(res.projects);
+      setListFailed(false);
+    } catch {
+      // Keep whatever was on screen: a stale list behind an error notice is more useful than an
+      // empty list that says the panel has no projects.
+      setListFailed(true);
+      setProjects((previous) => previous ?? []);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadProjects();
+  }, [loadProjects]);
+
+  // Called from three places: the sign-out button below, the current session's row on the
+  // sessions screen, and the command palette — where all three mean the same thing and must go
+  // through the endpoint that clears the cookie rather than through `DELETE /api/sessions/:id`.
   const signOut = async (): Promise<void> => {
     try {
       await api.post('/api/auth/logout');
     } finally {
-      // Locally forgotten either way: the cookie is already gone from the server's point of
-      // view, and a failed logout must not leave the operator looking at a signed-in shell.
       onSignedOut();
     }
   };
+
+  const requestCreate = useCallback(() => {
+    navigate('/');
+    setCreateIntent((count) => count + 1);
+  }, [navigate]);
 
   return (
     <div className="shell">
@@ -56,8 +85,11 @@ export function Shell({
       </a>
       <div className="side">
         <span className="brand">{t('app.name')}</span>
-        <nav aria-label={useLocale().ts('app.name')}>
+        <nav aria-label={ts('app.name')}>
           <Link to="/" navigate={navigate} ariaCurrent={path === '/'}>
+            {t('nav.projects')}
+          </Link>
+          <Link to="/overview" navigate={navigate} ariaCurrent={route.name === 'overview'}>
             {t('nav.overview')}
           </Link>
           <Link to="/sessions" navigate={navigate} ariaCurrent={route.name === 'sessions'}>
@@ -75,6 +107,11 @@ export function Shell({
         </nav>
         <div className="identity">
           <span>{t('app.signedInAs', { username: me.username })}</span>
+          {/* The build id, only here: `MeResponse` carries it behind a full or pre session, and
+              nothing in the pre-login shell, in `bootstrap.js` or in any static asset holds it. */}
+          {me.buildId === null ? null : (
+            <span className="hint">{t('app.buildId', { id: <Ltr>{me.buildId}</Ltr> })}</span>
+          )}
           <LocaleSwitch />
           <Button onClick={() => void signOut()}>{t('app.signOut')}</Button>
         </div>
@@ -93,9 +130,19 @@ export function Shell({
             navigate={navigate}
             me={me}
             onSignOut={() => void signOut()}
+            projects={projects}
+            listFailed={listFailed}
+            reloadProjects={() => void loadProjects()}
+            createIntent={createIntent}
           />
         </div>
       </main>
+      <CommandPalette
+        projects={projects ?? []}
+        navigate={navigate}
+        onCreate={requestCreate}
+        onSignOut={() => void signOut()}
+      />
     </div>
   );
 }
@@ -136,17 +183,38 @@ function LocaleSwitch(): React.JSX.Element {
 function Screen({
   route,
   refresh,
+  navigate,
   me,
   onSignOut,
+  projects,
+  listFailed,
+  reloadProjects,
+  createIntent,
 }: {
   route: Route;
   refresh: () => Promise<void>;
   navigate: (path: string) => void;
   me: MeResponse;
   onSignOut: () => void;
+  projects: readonly ProjectDto[] | null;
+  listFailed: boolean;
+  reloadProjects: () => void;
+  createIntent: number;
 }): React.JSX.Element {
   const { t } = useLocale();
   switch (route.name) {
+    case 'projects':
+      return (
+        <Projects
+          projects={projects}
+          error={listFailed}
+          reload={reloadProjects}
+          createIntent={createIntent}
+          navigate={navigate}
+        />
+      );
+    case 'project':
+      return <Project uuid={route.uuid} navigate={navigate} />;
     case 'overview':
       return <Overview />;
     case 'sessions':

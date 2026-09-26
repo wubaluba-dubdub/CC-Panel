@@ -548,6 +548,57 @@ permit: `tests/integration/build.test.ts` asserts that the emitted stylesheet co
 `data:` URL and that every `url()` in it is relative — the rule that keeps a font from being
 inlined. A triangle needs no exception to either.
 
+### The command palette
+
+`components/CommandPalette.tsx`, mounted once by the shell so one instance serves every screen.
+Cmd+K (or Ctrl+K — **both** modifiers are checked, because a Mac and a PC are not the same key)
+toggles it; it is the first thing in this panel with a keyboard shortcut of its own.
+
+- **It is the `<Dialog>` primitive, not a special case.** A palette that is a positioned
+  descendant of a card is drawn under the card's clipped edge — §5's containment rule decides
+  this, which is why the overlay section above anticipates it. The palette adds one prop to the
+  primitive: `onBackdrop`, which fires only when `event.target === event.currentTarget`, so a
+  click on the dialog's own padding does not close a half-typed query.
+- **No class may be named `overlay`, `modal`, `popup`, `palette` or `dropdown`.** The scan that
+  enforces "every overlay is a `<dialog>`" looks for overlay-*shaped* class names, so a
+  correctly-built palette must not carry one anyway; the palette uses `.command-*` and the tabs
+  use `.tab*`.
+- **Focus returns to the element that opened it**, falling back to `<main>` when there is none.
+  After a command *runs*, the restore is skipped — the screen is about to change and putting
+  focus back on a control that has unmounted is how focus ends up on `<body>`.
+- **The list is a real combobox/listbox pair**: `role="combobox"` on the input with
+  `aria-expanded` and `aria-activedescendant`, `role="listbox"` on the results, `role="option"`
+  on each. No roving `tabindex` inside the list: the input keeps focus and the descendant id
+  moves, which is what the pattern prescribes.
+- Commands are built in a `useMemo` from the project list the shell already holds, filtered on
+  the lowercased query. The palette fetches nothing.
+
+### Tabs
+
+The project screen has seven of them, six disabled. The rules:
+
+- `role="tablist"` / `role="tab"` / `role="tabpanel"`, with `aria-controls` from each tab to its
+  panel and `aria-labelledby` back. The summary tab is the only one that is `aria-selected`.
+- **An unbuilt tab is `aria-disabled="true"`, never the `disabled` attribute.** `disabled` takes
+  the control out of the tab order, so a keyboard user would never learn the milestone exists.
+  All six share one visually hidden `aria-describedby` naming the reason, rather than six
+  copies of the same sentence.
+- **No roving tabindex, and that is a decision.** The pattern's arrow-key navigation assumes the
+  tabs are the only thing in the toolbar's focus sequence; here the panel below is focusable too,
+  and a roving index that swallows Left/Right would take navigation away from it. Each tab is
+  normally focusable and announces what it is. Recorded here so the next person does not "fix"
+  it without reading this paragraph.
+
+### The projects table
+
+`PROJECTS_TABLE` in `lib/table.ts`: the row expander (4ch), the slug (flex, 25ch), the uuid
+(40ch), the created stamp (24ch) and the settings flag (16ch) — five sizes summing to 109, which
+is what `.table-projects` declares as `min-inline-size`. The uuid is sized rather than squeezed
+into the generic 24ch scope column because a uuid that wraps is a uuid read across two lines of
+a four-line cell, and this one is compared character by character against a terminal. The uuid
+column is `width: 40ch` on the `<col>`, the one physical sizing property in the stylesheet,
+allowed for the reason in §5.
+
 ---
 
 ## 6. Motion
@@ -659,11 +710,17 @@ and not only the prose.
 | every metadata value is capped, by code point; the raw form is the stored form | `tests/unit/audit-meta.test.ts` |
 | every transition, animation and `@keyframes` rule is inside the reduced-motion guard | `tests/integration/client-style.test.ts` |
 | only the allowlisted properties are animated, and `display`/`overlay` only with `allow-discrete` | `tests/integration/client-style.test.ts` |
+| every `display` transition is paired with an `overlay` one (and the reverse), both discrete | the same file's `discreteOf` pairing scan |
 | `--gauge-fill` is registered with `@property`, and its transition is switched off explicitly under `reduce` | `tests/integration/client-style.test.ts` |
 | the routed region is keyed by the route, and no `key={…}` names a polled value | `tests/integration/client-style.test.ts` |
 | the built shell carries no inline script, no inline style, no `style` attribute, no `data:` URL, and every `url()` in the CSS is relative | `tests/integration/build.test.ts` |
 | the base-path sentinel is in the file on disk and gone from every served body | `tests/integration/build.test.ts`, `tests/integration/base-path.test.ts` |
 | both dictionaries cover the same keys, name the same parameters, and share no untranslated value | `tests/unit/i18n.test.ts` |
+| no digit survives in either dictionary once `M2.2`-style milestone markers are stripped | the same file's digit scan |
+| the build id appears in no pre-login surface: not the shell HTML, not `bootstrap.js`, not an asset | `tests/integration/build.test.ts` |
+| the project screens use exactly the seven `ProjectDto` fields, and name no path and no `workspace` | `tests/integration/m22-ui.test.ts` |
+| only `components/ui.tsx` renders a `<dialog>`; the palette and the delete dialog go through it | `tests/integration/m22-ui.test.ts` |
+| the project tabs carry `aria-disabled` (not `disabled`), one shared reason, and a labelled tablist | `tests/integration/m22-ui.test.ts` |
 
 Two things no scan can reach, and both are the operator's:
 
@@ -729,9 +786,12 @@ Two properties, asserted in `tests/integration/error-codes.test.ts`:
 
 ### Routing
 
-Hand-written, `src/client/lib/router.tsx`, ~120 lines including the comments. Five routes;
-React Router's two features this panel would use are a `basename` and a catch-all, and the
-rest is dependency surface inside the container that holds `PANEL_MASTER_KEY`.
+Hand-written, `src/client/lib/router.tsx`, ~150 lines including the comments. Eight routes —
+projects, the per-project screen (`/projects/<uuid>`, validated against `CANONICAL_UUID` and
+falling through to not-found rather than to a fetch), overview, sessions, security, secrets,
+audit and the catch-all — and React Router's two features this panel would use are a `basename`
+and a catch-all, so the rest is dependency surface inside the container that holds
+`PANEL_MASTER_KEY`.
 
 The base path is stripped on the way in and added on the way out, **in that file only** —
 the same rule `lib/api.ts` follows for requests. A component that knew the prefix could leak
@@ -790,7 +850,7 @@ runtime image (`npm prune --omit=dev`).
 
 | Not taken | Instead | Why |
 | :--- | :--- | :--- |
-| a router (React Router, wouter, …) | 120 lines in `lib/router.tsx` | five routes; the two features needed are a basename and a catch-all |
+| a router (React Router, wouter, …) | 150 lines in `lib/router.tsx` | eight routes; the two features needed are a basename and a catch-all |
 | any CSS-in-JS | plain CSS with custom properties | unusable under `style-src 'self'` with no nonce and no SSR; a static scan forbids the package names |
 | Tailwind v4 | plain CSS | the logical-property scan is exact over CSS and unsound over `className` strings; and a native binary in the builder |
 | a QR renderer | the `otpauth://` URI and the secret in a copyable block | ~50 KB to save typing 32 base32 characters once per install |
@@ -842,6 +902,11 @@ Not a pass at the end; the properties a mouse never exercises:
   top layer, which is what keeps it out of every clipping context on the page. A one-time
   disclosure (recovery codes, a new base path) sets `dismissable={false}` and refuses Escape,
   because a stray keypress must not be how ten codes are lost.
+- **The command palette** is a dialog with `role` from the platform, a combobox whose
+  `aria-activedescendant` moves with the arrow keys, and focus restored to whatever opened it.
+- **The project tabs** announce `aria-disabled` and one shared, visually hidden reason; the
+  panel below is focusable, so the tabs are not given a roving index that would swallow Left
+  and Right (§5).
 - **Reduced motion** removes every transition and animation, and never removes information: a
   state is above the guard and only the travel between two states is inside it.
 

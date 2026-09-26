@@ -16,6 +16,12 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getDb } from '../db.js';
+// Canonical lowercase UUID — what `crypto.randomUUID()` emits and what this service
+// names directories. In `src/shared` because the router validates the same shape on
+// `/projects/<uuid>` and neither half may import the other to get it. It rejects
+// empty, `:`, `/`, `.`, `..`, NUL and any non-canonical shape before the string is
+// ever joined into an AAD or into a path.
+import { CANONICAL_UUID } from '../../shared/project-identity.js';
 import type { DiskReading } from './resources.service.js';
 import { readDisk } from './resources.service.js';
 import {
@@ -173,13 +179,6 @@ export interface ProjectDirsDiagnostic {
   /** Entries excluded from `rowless`, sorted by name. */
   readonly ignored: readonly ProjectDirIgnored[];
 }
-
-/**
- * Canonical lowercase UUID (what `crypto.randomUUID()` emits and what this
- * service names directories). Rejects empty, `:`, `/`, `.`, `..`, NUL, and
- * any non-canonical shape before the string is ever joined into an AAD.
- */
-const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** Closed set of future project credentials. No arbitrary table/name input. */
 export type ProjectCredentialKind = 'api_key' | 'hook_token';
