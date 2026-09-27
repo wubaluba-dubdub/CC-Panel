@@ -119,7 +119,12 @@ export function Overview(): React.JSX.Element {
           `os.totalmem()` mistake the server side exists to avoid. */}
       {meta.source === 'os' ? <Notice kind="warn">{t('resources.hostWide')}</Notice> : null}
 
-      <Card title={t('resources.memory')}>
+      {/* The four gauges in one responsive grid: side by side when the screen can hold two,
+          one under the other when it cannot, and never four one-column cards each stretched to
+          the full reading measure. `docs/UI.md` §*The two measures* is where the pairing rule
+          lives; this wrapper is the only thing the screen contributes to it. */}
+      <div className="pair">
+        <Card title={t('resources.memory')}>
         {memoryFraction === null ? (
           <>
             <p>{t('resources.noLimit')}</p>
@@ -229,7 +234,8 @@ export function Overview(): React.JSX.Element {
               : formatDuration(watchdog.cpuSampleWindowMs, locale)}
           </Mono>
         </p>
-      </Card>
+        </Card>
+      </div>
     </>
   );
 }

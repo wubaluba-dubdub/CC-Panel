@@ -144,8 +144,13 @@ export function Security({
       {error === null ? null : <Notice kind="danger">{error}</Notice>}
       {done === null ? null : <Notice kind="ok">{done}</Notice>}
 
-      {/* ── Password ───────────────────────────────────────────────────────── */}
-      <Card title={t('security.password.title')}>
+      {/* Two pairs rather than four full-width cards: the password form and the recovery-codes
+          action belong together, and the two irreversible ones belong together. Each pair
+          collapses to a single column below the width at which two cards would each be
+          narrower than the form inside them. */}
+      <div className="pair">
+        {/* ── Password ───────────────────────────────────────────────────────── */}
+        <Card title={t('security.password.title')}>
         <Notice kind="warn">{t('security.password.consequence')}</Notice>
         <form
           onSubmit={(event) => {
@@ -190,7 +195,8 @@ export function Security({
         <Button kind="danger" onClick={() => void regenerateCodes()} busy={busy}>
           {t('security.recovery.submit')}
         </Button>
-      </Card>
+        </Card>
+      </div>
 
       {/* Shown exactly once, and not dismissable by Escape: these ten strings exist nowhere
           else after this dialog closes. */}
@@ -226,8 +232,9 @@ export function Security({
         </Button>
       </Dialog>
 
-      {/* ── Two-factor off ─────────────────────────────────────────────────── */}
-      <Card title={t('security.2fa.title')}>
+      <div className="pair">
+        {/* ── Two-factor off ─────────────────────────────────────────────────── */}
+        <Card title={t('security.2fa.title')}>
         <Notice kind="danger">{t('security.2fa.consequence')}</Notice>
         <Button
           kind="danger"
@@ -236,8 +243,20 @@ export function Security({
         >
           {t('security.2fa.submit')}
         </Button>
-      </Card>
+        </Card>
 
+        {/* ── The base path ──────────────────────────────────────────────────── */}
+      <Card title={t('security.basePath.title')}>
+        <Notice kind="danger">{t('security.basePath.consequence')}</Notice>
+        <Button kind="danger" onClick={() => setConfirmBasePath(true)} disabled={busy}>
+          {t('security.basePath.submit')}
+        </Button>
+        </Card>
+      </div>
+
+      {/* Both confirmations sit after the pair they belong to rather than between its two
+          cards: a `<dialog>` between them would split the grid, and `showModal()` puts it in
+          the top layer anyway, so its position in the document buys nothing. */}
       <Dialog
         open={confirmDisable}
         onClose={() => setConfirmDisable(false)}
@@ -251,14 +270,6 @@ export function Security({
           <Button onClick={() => setConfirmDisable(false)}>{t('common.cancel')}</Button>
         </div>
       </Dialog>
-
-      {/* ── The base path ──────────────────────────────────────────────────── */}
-      <Card title={t('security.basePath.title')}>
-        <Notice kind="danger">{t('security.basePath.consequence')}</Notice>
-        <Button kind="danger" onClick={() => setConfirmBasePath(true)} disabled={busy}>
-          {t('security.basePath.submit')}
-        </Button>
-      </Card>
 
       <Dialog
         open={confirmBasePath}

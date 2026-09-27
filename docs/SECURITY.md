@@ -496,8 +496,8 @@ When one of these fails it is almost always one of three causes, and the item sa
 suspect first:
 
 - **(a) the rule was bypassed** — an element that does not go through the primitive: a table not
-  rendered by `components/Table.tsx`, a card without `card-wide`, a timestamp not rendered by
-  `<Time>`;
+  rendered by `components/Table.tsx`, a card not rendered by `components/ui.tsx`, a timestamp not
+  rendered by `<Time>`;
 - **(b) the engine does not support the feature** — `overflow: clip`, `@property`,
   `@starting-style`, `transition-behavior: allow-discrete`, `:has()`-free though this panel uses
   none. Each has a stated degradation; the check is whether the degradation is what you get;

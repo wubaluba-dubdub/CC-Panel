@@ -241,6 +241,13 @@ export const en = {
   'palette.title': 'Command palette',
   'palette.placeholder': 'Type to find a command or a project',
   'palette.hint': 'Arrow keys move, Enter runs, Escape closes.',
+  /**
+   * The combination that is guaranteed to reach the page. It is the one printed on the button
+   * because `Ctrl+K` is claimed by Chrome on Windows for its omnibox, and a hint that names a
+   * keystroke the browser may keep is a hint the operator has to unlearn. No digits, and
+   * different from the Persian value, both of which `tests/unit/i18n.test.ts` asserts.
+   */
+  'palette.shortcut': 'Ctrl+Shift+P',
   'palette.noMatch': 'Nothing matches.',
   'palette.openProject': 'Open {slug}',
   'palette.createProject': 'Create a project',

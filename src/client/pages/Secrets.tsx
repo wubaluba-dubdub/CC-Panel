@@ -183,32 +183,38 @@ export function Secrets(): React.JSX.Element {
         </Card>
       )}
 
-      <Card title={t('secrets.set')}>
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            void save();
-          }}
-        >
-          <Field id="secret-scope" label={t('secrets.scope')} value={scope} onChange={setScope} ltr disabled={busy} />
-          <Field id="secret-name" label={t('secrets.name')} value={name} onChange={setName} ltr disabled={busy} />
-          <Field
-            id="secret-value"
-            label={t('secrets.value')}
-            value={value}
-            onChange={setValue}
-            type="password"
-            autoComplete="off"
-            ltr
-            disabled={busy}
-          />
-          <Button type="submit" kind="primary" busy={busy} disabled={name === '' || value === ''}>
-            {t('secrets.save')}
-          </Button>
-        </form>
-      </Card>
+      {/* The form and the channel side by side: both are "configure something", both are the
+          same kind of card, and at the full content width they read as two unrelated panels
+          rather than as the two halves of one screen. The table above them keeps the whole
+          column, because four columns of secret metadata is what the wide measure is for. */}
+      <div className="pair">
+        <Card title={t('secrets.set')}>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void save();
+            }}
+          >
+            <Field id="secret-scope" label={t('secrets.scope')} value={scope} onChange={setScope} ltr disabled={busy} />
+            <Field id="secret-name" label={t('secrets.name')} value={name} onChange={setName} ltr disabled={busy} />
+            <Field
+              id="secret-value"
+              label={t('secrets.value')}
+              value={value}
+              onChange={setValue}
+              type="password"
+              autoComplete="off"
+              ltr
+              disabled={busy}
+            />
+            <Button type="submit" kind="primary" busy={busy} disabled={name === '' || value === ''}>
+              {t('secrets.save')}
+            </Button>
+          </form>
+          </Card>
 
-      <TelegramCard status={telegram} onTest={() => void sendTest()} busy={busy} />
+        <TelegramCard status={telegram} onTest={() => void sendTest()} busy={busy} />
+      </div>
     </>
   );
 }

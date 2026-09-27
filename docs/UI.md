@@ -65,6 +65,7 @@ Three rules about colour:
 | `--border-w` / `--rule-w` | 1 / 3 px | a hairline, and a notice's edge |
 | `--focus-w` / `--focus-offset` | 2 / 2 px | the focus ring, which never animates |
 | `--measure-prose` / `--measure-wide` | 76ch / 132ch | see below |
+| `--measure-field` | 44ch | the width a control grows to inside a full-width card |
 | `--measure-auth` / `--measure-dialog` / `--measure-boot` | 44ch / 52ch / 60ch | the sign-in card, a modal, the diagnostic page |
 | `--side-w` | 220px | the navigation column |
 | `--table-max-block` | 70vh | how tall a table gets before it scrolls inside its card |
@@ -73,14 +74,37 @@ Three rules about colour:
 
 ### The two measures
 
-`.main` may grow to `--measure-wide`, and **every direct child of the routed region is clamped
-back to `--measure-prose`**. So every screen is laid out exactly as it was, except a card that
-opts into `card-wide` — which is the card holding a data table.
+`.main` is the screen container: it grows to `--measure-wide` and is **centred in the column the
+shell leaves for it** with `margin-inline: auto`. Without the centring it hugged the navigation
+column and the remainder of the column was one unaccounted-for strip of background on the far
+side — 661px of it at 1920. Below the cap it is fluid, so once the column is narrower than
+`--measure-wide` the container fills it and `margin-inline: auto` has nothing to spend: measured,
+the cap is 1038.6px of border box, so the two are the same measurement from a 1259px viewport
+down and the centring is a no-op there.
 
-The reason is that prose and a table want different widths for the same reason: 76 characters is
-a reading measure, and four timestamp columns plus a client column is not reading. Clamped to
-the prose measure, the sessions table scrolled horizontally on a 1920px display for a reason
-that had nothing to do with the display.
+**Every direct child of the routed region starts at `--measure-prose`**, and a handful opt out
+because they are not prose: a card, the element two cards sit in (`.pair`), and the tab strip and
+tab panel, which have to be the width of the card the panel contains or the rule under the tabs
+ends short of the table below it. Two class selectors, so the opt-out beats `.screen > *` on
+specificity rather than on source order. A card therefore fills the content grid — cards in one
+screen align to its two edges, and a full-width section is full width of *the grid*, not of the
+viewport. `card-wide` still marks the card that holds a data table; since every card now fills
+the grid it changes no measurement, and it is kept as that marker rather than deleted.
+
+The reason prose and a table want different widths is the same one: 76 characters is a reading
+measure, and four timestamp columns plus a client column is not reading. Clamped to the prose
+measure, the sessions table scrolled horizontally on a 1920px display for a reason that had
+nothing to do with the display.
+
+Two related cards sit in one `.pair` — a grid on `minmax(0, 1fr)` tracks that becomes two columns
+above 1100px and collapses to one below it, so two half-width cards are never squeezed into a
+column that cannot hold them. Overview's four gauges, Security's four sections and Secrets'
+form and channel are pairs; a screen whose cards are unrelated (Projects' list and create form)
+leaves them stacked and full width instead.
+
+`--measure-field` is the third number, and it is not a third measure of *content*: a control reads
+its expected length from its own width, and an input stretched across a full-width card asks for
+an essay. It caps `.field input` and `.field textarea`; tables, prose and labels keep the grid.
 
 ### Type
 
@@ -551,9 +575,30 @@ inlined. A triangle needs no exception to either.
 ### The command palette
 
 `components/CommandPalette.tsx`, mounted once by the shell so one instance serves every screen.
-Cmd+K (or Ctrl+K — **both** modifiers are checked, because a Mac and a PC are not the same key)
-toggles it; it is the first thing in this panel with a keyboard shortcut of its own.
+It is the first thing in this panel with a keyboard shortcut of its own — and, since the browser
+claimed the obvious one, the first thing with three ways in.
 
+- **A visible button in the navigation column**, `.command-trigger`, with the localized title as
+  its name and the shortcut as a `<kbd>` under the label rather than beside it: the column gives
+  a control 156px of content width and a label plus a key combination on one line is wider than
+  that. It works by click, Enter and Space because it is a real `<button type="button">`.
+- **`Ctrl+Shift+P` is the reliable keyboard path.** `Ctrl+K` is reserved by Chrome on Windows
+  for the browser's own address bar, and a reservation that deep is not something an in-page
+  handler can defeat — the keystroke never reaches `window`. Cmd+K and Ctrl+K stay bound as
+  best-effort compatibility for the operator whose muscle memory already has them.
+- **`aria-keyshortcuts` advertises `Control+Shift+P Meta+K` and never `Control+K`.** Every
+  advertised combination is decomposed by the test into modifiers and a key and matched against
+  the handler, so a shortcut the page cannot honour cannot be promised. The `<kbd>` hint is
+  `Ctrl+Shift+P` in both dictionaries, for the same reason: a hint naming a keystroke the
+  browser may keep is a hint the operator has to unlearn.
+- **The handler never fires inside a control the operator is typing into** — `input`, `textarea`,
+  `select` and `contenteditable` own their own keystrokes. The one exception is the palette's own
+  query field, identified by reference: without it the combination that opened the palette could
+  not close it while that field has focus, and the second activation would do nothing at all.
+- **The open state lives in the shell**, not in the palette, because `showModal()` makes the rest
+  of the document inert — an opener inside the dialog could never be activated a second time. One
+  component and one boolean, so a second activation cannot stack a second palette: it can only
+  turn this one off.
 - **It is the `<Dialog>` primitive, not a special case.** A palette that is a positioned
   descendant of a card is drawn under the card's clipped edge — §5's containment rule decides
   this, which is why the overlay section above anticipates it. The palette adds one prop to the
@@ -585,6 +630,14 @@ The project screen has seven of them, six disabled. The rules:
   the control out of the tab order, so a keyboard user would never learn the milestone exists.
   All six share one visually hidden `aria-describedby` naming the reason, rather than six
   copies of the same sentence.
+- **An unbuilt tab also *looks* unbuilt, in three states.** Colour alone could not say so,
+  because an unselected-but-available tab is the same tertiary ink: the available tab sits at
+  `--ink-secondary`, the unbuilt one at `--ink-tertiary` with a dotted rule under the text, and
+  the hover rule is `:not([aria-disabled='true'])` so an available tab answers the pointer and an
+  unbuilt one does not. The cursor (`default`) is the fourth signal and not the first, because a
+  keyboard user never sees it. The global focus ring applies to both, deliberately — a tab that
+  cannot be reached is a tab a screen-reader user never learns exists — and the dotted rule
+  stays visible under the ring, which is what makes the focused-and-disabled state readable.
 - **No roving tabindex, and that is a decision.** The pattern's arrow-key navigation assumes the
   tabs are the only thing in the toolbar's focus sequence; here the panel below is focusable too,
   and a roving index that swallows Left/Right would take navigation away from it. Each tab is
@@ -723,6 +776,15 @@ and not only the prose.
 | the project screens use exactly the seven `ProjectDto` fields, and name no path and no `workspace` | `tests/integration/m22-ui.test.ts` |
 | only `components/ui.tsx` renders a `<dialog>`; the palette and the delete dialog go through it | `tests/integration/m22-ui.test.ts` |
 | the project tabs carry `aria-disabled` (not `disabled`), one shared reason, and a labelled tablist | `tests/integration/m22-ui.test.ts` |
+| the palette has a visible trigger in the shell, and every combination `aria-keyshortcuts` advertises decomposes into a binding the handler has | `tests/integration/m22-browser-review.test.ts` |
+| the palette's shortcut is never handled inside an `input`, `textarea`, `select` or `contenteditable` control, and `open` has exactly one owner | the same file |
+| no `palette.*` value in either dictionary names `Ctrl+K`, `Cmd+K` or `⌘K` | the same file |
+| `.main` is centred in its column; `.screen > *` is clamped to prose and exactly five selectors opt out | the same file |
+| cards pair on one responsive `minmax(0, 1fr)` grid, and only Overview, Security and Secrets pair | the same file |
+| `--measure-field` is defined only in `tokens.css` and is what caps `.field input` and `.field textarea` | the same file |
+| `.screen > h1` and `.side nav a` are `nowrap`, and the `.ltr` island inside a title is not | the same file |
+| an unbuilt tab differs from an available one in default and hover, and is still never `disabled` | the same file |
+| exactly one component reads `buildId`, inside `<Ltr>`, with no authentication-stage gate | the same file |
 
 Two things no scan can reach, and both are the operator's:
 

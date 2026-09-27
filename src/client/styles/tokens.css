@@ -95,13 +95,17 @@
   --focus-offset: 2px;
 
   /* ── Measures ────────────────────────────────────────────────────────────
-   * `--measure-prose` is a reading measure and applies to every direct child of `.main`.
-   * `--measure-wide` is what a card holding a data table is allowed to grow to, because a
-   * table is not prose and four timestamp columns do not fit a reading measure. See
-   * `docs/UI.md` §*The two measures*.
+   * `--measure-prose` is a reading measure, and it is what every direct child of the routed
+   * region starts at — a card, a pair of cards or the tab strip opts out of it.
+   * `--measure-wide` is the widest the screen container itself may get, because a table is
+   * not prose and four timestamp columns do not fit a reading measure.
+   * `--measure-field` is the one a control grows to: an input stretched to a full-width card
+   * is a control whose length says nothing about the value it expects. See `docs/UI.md`
+   * §*The two measures*.
    */
   --measure-prose: 76ch;
   --measure-wide: 132ch;
+  --measure-field: 44ch;
   --measure-auth: 44ch;
   --measure-dialog: 52ch;
   --measure-boot: 60ch;

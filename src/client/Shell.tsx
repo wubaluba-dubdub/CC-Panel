@@ -44,6 +44,14 @@ export function Shell({
   const [listFailed, setListFailed] = useState(false);
   /** Counted, not boolean: a second "create" while already on the home screen must refocus. */
   const [createIntent, setCreateIntent] = useState(0);
+  /**
+   * The palette's open state lives **here**, not inside `CommandPalette`, and that is what makes
+   * the button below possible: a `<dialog>` opened with `showModal()` puts the rest of the
+   * document into the inert state, so the control that opened it cannot be clicked a second time.
+   * Lifting the state lets the button describe itself as the opener (`aria-expanded`) and leaves
+   * the dialog as the single owner of the close state machine it already owns.
+   */
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   const loadProjects = useCallback(async () => {
     try {
@@ -85,6 +93,22 @@ export function Shell({
       </a>
       <div className="side">
         <span className="brand">{t('app.name')}</span>
+        {/* The palette's visible entry. `aria-keyshortcuts` advertises the combination that is
+            guaranteed to reach this page (`Control+Shift+P`) and the best-effort one for macOS
+            (`Meta+K`), and deliberately not `Control+K`, which Chrome on Windows claims for its
+            own omnibox before the page ever sees it — advertising a shortcut the browser may
+            swallow is a lie the operator pays for in keystrokes. The rendered hint is the
+            guaranteed one, for the same reason. */}
+        <button
+          type="button"
+          className="btn command-trigger"
+          aria-expanded={paletteOpen}
+          aria-keyshortcuts="Control+Shift+P Meta+K"
+          onClick={() => setPaletteOpen((was) => !was)}
+        >
+          <span>{t('palette.title')}</span>
+          <kbd className="kbd">{t('palette.shortcut')}</kbd>
+        </button>
         <nav aria-label={ts('app.name')}>
           <Link to="/" navigate={navigate} ariaCurrent={path === '/'}>
             {t('nav.projects')}
@@ -140,6 +164,8 @@ export function Shell({
         </div>
       </main>
       <CommandPalette
+        open={paletteOpen}
+        setOpen={setPaletteOpen}
         projects={projects ?? []}
         navigate={navigate}
         onCreate={requestCreate}

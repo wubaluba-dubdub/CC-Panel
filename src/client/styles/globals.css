@@ -223,11 +223,45 @@ bdi {
   gap: var(--s1);
 }
 
+/* ── The command palette's entry in the shell ─────────────────────────────
+ * A visible button, because Ctrl+K is reserved by the browser on Windows and no in-page
+ * handler can be relied on to see it — so the palette has to be openable by something the
+ * browser does not claim. The shortcut sits **under** the label rather than beside it: the
+ * navigation column gives a control 156px of content width, and a label plus a key
+ * combination on one line is wider than that in either dictionary.
+ *
+ * `.command-trigger` rather than a class naming the palette itself: the client-style scan
+ * reads any `className` holding "palette" as a hand-rolled overlay, which is exactly what
+ * this button is not — the overlay is a `<dialog>` opened with `showModal()`.
+ */
+.command-trigger {
+  display: flex;
+  flex-direction: column;
+  align-items: start;
+  gap: var(--s1);
+  text-align: start;
+}
+
+/* The hint is a key combination, not prose: the mono face keeps `Ctrl+Shift+P` legible at
+ * the smallest size in the type scale, and tertiary ink because it is the thing the label
+ * already says. */
+.kbd {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 400;
+  color: var(--ink-tertiary);
+}
+
 .side nav a {
   color: var(--ink-secondary);
   text-decoration: none;
   padding: var(--s2) var(--s3);
   border-radius: var(--radius);
+  /* A destination name is one line. The longest entry in either dictionary is
+   * `گزارش رویدادها`, which measures under 95px in the 156px the navigation column gives it,
+   * so the rule cannot be the thing that overflows — it is what stops a future translation
+   * from wrapping a two-word label into a link that no longer looks like one destination. */
+  white-space: nowrap;
 }
 
 .side nav a[aria-current='page'] {
@@ -251,11 +285,16 @@ bdi {
 }
 
 /* ── The two measures ─────────────────────────────────────────────────────
- * `.main` may grow to the wide measure, and **every direct child of the routed region is
- * clamped back to the reading measure** — so every screen is laid out exactly as it was,
- * except a card that opts into `card-wide` for a data table. Four timestamp columns do not fit a reading measure, and
- * a table that has to scroll on a 1920px display because prose reads better at 76 characters
- * is the measure being applied to the wrong kind of content.
+ * `.main` is the screen container: it grows to the wide measure and is **centred in the
+ * column the shell leaves for it**, so the routed region sits in the same place whether the
+ * display is 1920px or 1088px wide. Without the centring it hugs the navigation column and
+ * the remainder of the column is one unaccounted-for strip of background on the far side.
+ *
+ * **Every direct child of the routed region starts at the reading measure**, and a handful
+ * of them opt out of it because they are not prose: a card, a pair of cards, the tab strip
+ * and the tab panel. Four timestamp columns do not fit a reading measure, and a table that
+ * has to scroll on a 1920px display because prose reads better at 76 characters is the
+ * measure being applied to the wrong kind of content.
  */
 .main {
   padding: var(--s5) var(--s4);
@@ -264,6 +303,10 @@ bdi {
   /* The screen-change animation shifts by `--enter-shift`; without this the shift is a
    * horizontal scrollbar on the document for the duration of the animation. */
   overflow-x: clip;
+  /* The grid column is `minmax(0, 1fr)` up to `--measure-wide` and the remainder of a wider
+   * column has to go somewhere. `margin-inline: auto` is the whole fix; `.main` is a grid
+   * item, so an auto logical margin centres it against the *column*, not the viewport. */
+  margin-inline: auto;
 }
 
 /* The routed region. Keyed by the route in `Shell.tsx` and by nothing else, so the enter
@@ -272,10 +315,33 @@ bdi {
   max-inline-size: var(--measure-prose);
 }
 
+/* The opt-out. Two class selectors, so each beats `.screen > *` on specificity rather than
+ * on source order, and every one of them names a non-prose section of a screen. A card fills
+ * the column rather than being clipped to a reading measure; `.pair` is the grouping element
+ * two cards sit in; the tab strip and the tab panel have to be the width of the card the
+ * panel contains or the rule under the tabs ends short of the table below them. */
+.screen > .card,
+.screen > .card-wide,
+.screen > .pair,
+.screen > .tablist,
+.screen > .tabpanel {
+  max-inline-size: none;
+}
+
 .screen > h1 {
   font-size: var(--text-2xl);
   font-weight: 600;
   margin-block: 0 var(--s2);
+  /* A screen title is one line. `--measure-prose` on this element is resolved in the title's
+   * own font, so the box is ~991px at 28px — comfortably wider than every title in both
+   * dictionaries, which is what makes the rule safe rather than merely intended. */
+  white-space: nowrap;
+}
+
+/* …and the one title that is not dictionary text: a project slug is an arbitrary identifier,
+ * so the rule above yields inside it rather than pushing the heading off the card. */
+.screen > h1 .ltr {
+  white-space: normal;
 }
 
 .lede {
@@ -362,6 +428,32 @@ bdi {
  * a card that is taller than its content. */
 .card > :last-child {
   margin-block-end: 0;
+}
+
+/* ── Paired cards ─────────────────────────────────────────────────────────
+ * Two related cards side by side when the column can hold them, one under the other when it
+ * cannot — and never two half-width cards squeezed into a column that cannot fit them, which
+ * is why both tracks are `minmax(0, 1fr)` and why the threshold is a column width rather than
+ * a viewport width: below 1100px the shell still reserves 220px for the navigation column,
+ * so a two-up split would leave each card narrower than the control inside it.
+ *
+ * `margin-block-end` is dropped from the cards themselves because the gap already spaces them
+ * and a card with both is a pair that is 16px out of step with everything around it.
+ */
+.pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s4);
+}
+
+.pair > .card {
+  margin-block-end: 0;
+}
+
+@media (min-width: 1100px) {
+  .pair {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 /* ── The scroll region ────────────────────────────────────────────────────
@@ -479,6 +571,12 @@ bdi {
   border-radius: var(--radius);
   padding: var(--s2) var(--s3);
   inline-size: 100%;
+  /* A control reads its expected length from its own width: a field stretched across a
+   * full-width card asks for an essay, and a password field that long says nothing about the
+   * password. `ch` resolves in the field's own font, so the measure is the same number of
+   * characters wherever the card sits. Tables and prose keep the grid; this is the one thing
+   * in it that is capped. */
+  max-inline-size: var(--measure-field);
 }
 
 /* A code, a token or a password is a left-to-right island even in a Persian form: the digits
@@ -809,8 +907,15 @@ col.col-uuid {
 
 /* ── The tabs ──────────────────────────────────────────────────────────────
  * One real tab and five that are specified but not built. The unbuilt ones keep `aria-disabled`
- * rather than `disabled` — see `pages/Project.tsx` — and here they read as unavailable: dimmed,
- * not hidden, and still hit-testable so the cursor says "not yet" rather than "not here".
+ * rather than `disabled` — see `pages/Project.tsx` — and here they read as unavailable. The
+ * colour alone cannot say so, because an *unselected* tab is the same tertiary ink: what
+ * separates the two states is a dimmer colour, a dotted rule under the text, and a hover that
+ * changes nothing — three signals, none of which is a cursor, since the cursor is the one a
+ * reviewer with a mouse is looking at and the one a keyboard user never sees.
+ *
+ * They stay in the tab order and keep the global focus ring: a tab that cannot be reached is
+ * a tab a screen-reader user never learns exists, which is the reason `aria-disabled` is used
+ * and `disabled` is not.
  */
 .tablist {
   display: flex;
@@ -823,7 +928,9 @@ col.col-uuid {
 .tab {
   font: inherit;
   font-size: var(--text-sm);
-  color: var(--ink-tertiary);
+  /* Secondary, not tertiary: this is the ink an available-but-unselected tab sits at, and the
+   * tertiary token is reserved below for the ones that are not built yet. */
+  color: var(--ink-secondary);
   background: transparent;
   border: 0;
   border-block-end: var(--rule-w) solid transparent;
@@ -838,7 +945,10 @@ col.col-uuid {
 }
 
 .tab[aria-disabled='true'] {
+  color: var(--ink-tertiary);
   cursor: default;
+  text-decoration: underline;
+  text-decoration-style: dotted;
 }
 
 .tabpanel {
@@ -1023,6 +1133,12 @@ col.col-uuid {
 .side nav a:hover {
   color: var(--ink-primary);
   background: var(--surface-hover);
+}
+
+/* An available tab answers the pointer; an unbuilt one does not, which is what makes the
+ * difference visible in the hover state rather than only in the default one. */
+.tab:hover:not([aria-disabled='true']) {
+  color: var(--ink-primary);
 }
 
 .expander:hover {
