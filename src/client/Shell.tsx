@@ -93,21 +93,19 @@ export function Shell({
       </a>
       <div className="side">
         <span className="brand">{t('app.name')}</span>
-        {/* The palette's visible entry. `aria-keyshortcuts` advertises the combination that is
-            guaranteed to reach this page (`Control+Shift+P`) and the best-effort one for macOS
-            (`Meta+K`), and deliberately not `Control+K`, which Chrome on Windows claims for its
-            own omnibox before the page ever sees it — advertising a shortcut the browser may
-            swallow is a lie the operator pays for in keystrokes. The rendered hint is the
-            guaranteed one, for the same reason. */}
+        {/* The palette's entry, and the only one this panel promises. A real `<button>` is the
+            portable keyboard contract: Tab reaches it and Enter or Space activates it, on every
+            browser, operating system, extension and keyboard layout. There is deliberately no
+            `aria-keyshortcuts` and no `<kbd>` hint — no in-page app can guarantee a global
+            chord, so advertising one would be a promise the browser is free to break;
+            `Cmd/Ctrl+K` stays bound underneath as undocumented best-effort compatibility. */}
         <button
           type="button"
           className="btn command-trigger"
           aria-expanded={paletteOpen}
-          aria-keyshortcuts="Control+Shift+P Meta+K"
           onClick={() => setPaletteOpen((was) => !was)}
         >
-          <span>{t('palette.title')}</span>
-          <kbd className="kbd">{t('palette.shortcut')}</kbd>
+          {t('palette.title')}
         </button>
         <nav aria-label={ts('app.name')}>
           <Link to="/" navigate={navigate} ariaCurrent={path === '/'}>

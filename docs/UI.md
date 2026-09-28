@@ -102,6 +102,15 @@ column that cannot hold them. Overview's four gauges, Security's four sections a
 form and channel are pairs; a screen whose cards are unrelated (Projects' list and create form)
 leaves them stacked and full width instead.
 
+**A `.pair` owns its external rhythm on the same terms a card does.** The grid `gap` spaces the
+cards *inside* one wrapper and `.pair > .card { margin-block-end: 0 }` leaves one owner of that
+gap — but it also took the wrapper's spacing away from whatever follows it, so Security's two
+wrappers met border-to-border with the horizontal gap correct and the vertical one absent. The
+wrapper now carries `margin-block-end: var(--s4)`, the token `.card` uses, on the shared rule.
+It is *end* and not the `margin-block` shorthand, which would stack a start margin on the
+previous sibling's own end margin and double the gap Overview and Secrets must not gain; and it
+cannot be `.pair + .pair`, because a closed `<dialog>` between the wrappers is `display: none`.
+
 `--measure-field` is the third number, and it is not a third measure of *content*: a control reads
 its expected length from its own width, and an input stretched across a full-width card asks for
 an essay. It caps `.field input` and `.field textarea`; tables, prose and labels keep the grid.
@@ -575,26 +584,28 @@ inlined. A triangle needs no exception to either.
 ### The command palette
 
 `components/CommandPalette.tsx`, mounted once by the shell so one instance serves every screen.
-It is the first thing in this panel with a keyboard shortcut of its own — and, since the browser
-claimed the obvious one, the first thing with three ways in.
+It is the first thing in this panel with a keyboard shortcut of its own — and the first thing to
+be told, after a real Windows check, that a web page cannot promise one.
 
 - **A visible button in the navigation column**, `.command-trigger`, with the localized title as
-  its name and the shortcut as a `<kbd>` under the label rather than beside it: the column gives
-  a control 156px of content width and a label plus a key combination on one line is wider than
-  that. It works by click, Enter and Space because it is a real `<button type="button">`.
-- **`Ctrl+Shift+P` is the reliable keyboard path.** `Ctrl+K` is reserved by Chrome on Windows
-  for the browser's own address bar, and a reservation that deep is not something an in-page
-  handler can defeat — the keystroke never reaches `window`. Cmd+K and Ctrl+K stay bound as
-  best-effort compatibility for the operator whose muscle memory already has them.
-- **`aria-keyshortcuts` advertises `Control+Shift+P Meta+K` and never `Control+K`.** Every
-  advertised combination is decomposed by the test into modifiers and a key and matched against
-  the handler, so a shortcut the page cannot honour cannot be promised. The `<kbd>` hint is
-  `Ctrl+Shift+P` in both dictionaries, for the same reason: a hint naming a keystroke the
-  browser may keep is a hint the operator has to unlearn.
+  its name. It works by click, Enter and Space because it is a real `<button type="button">`,
+  and that is the whole keyboard contract: **Tab to the button, then Enter or Space.** Native
+  button semantics are the portable path — every browser, every operating system, every
+  extension, every keyboard layout — and no global chord an in-page app can name is.
+- **There is no `aria-keyshortcuts` and no `<kbd>` hint, on purpose.** `Ctrl+K` never reaches
+  `window` on Chrome for Windows (the omnibox owns it), and the previous correction's
+  `Ctrl+Shift+P` is Windows **Print** on the operator's own machine — one browser-reserved chord
+  swapped for another, and neither of them is ours to promise. There is no universal global
+  chord to offer in their place either, so the panel advertises none: a promise the browser is
+  free to break is one the operator pays for in keystrokes.
+- **`Cmd/Ctrl+K` remains bound as undocumented best-effort compatibility**, narrowed to the
+  plain combination so nothing claims `Ctrl+Shift+K` either, and named as dependable nowhere —
+  not in a hint, not in an attribute, not in a dictionary value. It is not the acceptance path;
+  the button above is.
 - **The handler never fires inside a control the operator is typing into** — `input`, `textarea`,
   `select` and `contenteditable` own their own keystrokes. The one exception is the palette's own
-  query field, identified by reference: without it the combination that opened the palette could
-  not close it while that field has focus, and the second activation would do nothing at all.
+  query field, identified by reference: without it the retained chord could not close the palette
+  while that field has focus, and a second activation would do nothing at all.
 - **The open state lives in the shell**, not in the palette, because `showModal()` makes the rest
   of the document inert — an opener inside the dialog could never be activated a second time. One
   component and one boolean, so a second activation cannot stack a second palette: it can only
@@ -776,11 +787,14 @@ and not only the prose.
 | the project screens use exactly the seven `ProjectDto` fields, and name no path and no `workspace` | `tests/integration/m22-ui.test.ts` |
 | only `components/ui.tsx` renders a `<dialog>`; the palette and the delete dialog go through it | `tests/integration/m22-ui.test.ts` |
 | the project tabs carry `aria-disabled` (not `disabled`), one shared reason, and a labelled tablist | `tests/integration/m22-ui.test.ts` |
-| the palette has a visible trigger in the shell, and every combination `aria-keyshortcuts` advertises decomposes into a binding the handler has | `tests/integration/m22-browser-review.test.ts` |
-| the palette's shortcut is never handled inside an `input`, `textarea`, `select` or `contenteditable` control, and `open` has exactly one owner | the same file |
+| the palette's visible trigger is a real button with a localized name and `aria-expanded`, and carries no `aria-keyshortcuts` | `tests/integration/m22-browser-review.test.ts` |
+| no `Ctrl+Shift+P` binding, no `<kbd>` hint and no `palette.shortcut` dictionary key survive anywhere in the client | the same file |
+| no documentation line names a palette chord and calls it dependable in the same sentence | the same file |
+| the palette's best-effort handler is never consulted inside an `input`, `textarea`, `select` or `contenteditable` control, and `open` has exactly one owner | the same file |
 | no `palette.*` value in either dictionary names `Ctrl+K`, `Cmd+K` or `⌘K` | the same file |
 | `.main` is centred in its column; `.screen > *` is clamped to prose and exactly five selectors opt out | the same file |
 | cards pair on one responsive `minmax(0, 1fr)` grid, and only Overview, Security and Secrets pair | the same file |
+| `.pair` carries its own external `margin-block-end` on `--s4`, its children carry none, and nothing uses a physical property outside `PHYSICAL_ALLOWED` | the same file, plus `tests/integration/client-discipline.test.ts` |
 | `--measure-field` is defined only in `tokens.css` and is what caps `.field input` and `.field textarea` | the same file |
 | `.screen > h1` and `.side nav a` are `nowrap`, and the `.ltr` island inside a title is not | the same file |
 | an unbuilt tab differs from an available one in default and hover, and is still never `disabled` | the same file |

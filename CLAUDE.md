@@ -1228,7 +1228,8 @@ what the plan calls for.
   deletes one — the five routes, and `docs/PROJECTS.md` as the specification. Client: `/` is
   the projects home (create form, `PROJECTS_TABLE`, per-row rename/settings/delete through a
   `<Dialog>`), `/projects/<uuid>` is the project screen with six `aria-disabled` tabs naming
-  the milestone that will build them, Cmd/Ctrl+K opens the command palette, and
+  the milestone that will build them, the command palette opens from its visible button
+  (`Tab`, then Enter or Space — no global chord is promised), and
   `resolveBuildIdentity()` puts the build id in a post-login LTR island that
   `tests/integration/build.test.ts` proves absent from every pre-login surface. CLI:
   `npm run project:path -- <slug>` resolves slug → uuid → workspace path and prints nothing

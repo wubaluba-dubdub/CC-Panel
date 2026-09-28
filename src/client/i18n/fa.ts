@@ -227,10 +227,6 @@ const fa: Dict = {
   'palette.title': 'فهرست فرمان‌ها',
   'palette.placeholder': 'برای یافتن فرمان یا پروژه بنویسید',
   'palette.hint': 'کلیدهای جهت حرکت می‌کنند، Enter اجرا می‌کند، Escape می‌بندد.',
-  // The same guaranteed combination, with the word for "shortcut" in front of it: the value has
-  // to differ from the English one (the dictionary test fails otherwise), and a bare copy of the
-  // Latin string would have been exactly the paste that rule exists to catch.
-  'palette.shortcut': 'میان‌بر Ctrl+Shift+P',
   'palette.noMatch': 'چیزی یافت نشد.',
   'palette.openProject': 'باز کردن {slug}',
   'palette.createProject': 'ایجاد پروژه',

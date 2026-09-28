@@ -194,6 +194,16 @@ describe('M2.1 — the client keeps to its own rules', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('keeps the physical-property allowlist at exactly its two explained entries', () => {
+    // An allowlist that grows one entry per review is a rule that has stopped being one. Both
+    // entries carry a written reason; a third has to earn one here first.
+    expect(PHYSICAL_ALLOWED.size).toBe(2);
+    for (const [key, reason] of PHYSICAL_ALLOWED) {
+      expect(key, `${key} must name a file and a property`).toMatch(/^[^:]+:[a-z-]+$/);
+      expect(reason.length, `${key} needs a real reason`).toBeGreaterThan(80);
+    }
+  });
+
   it('scans code that would fail it — the patterns are not vacuous', () => {
     // A rule enforced by a regex that cannot match is a rule that is not enforced. Every
     // pattern is driven against the shape it exists to catch.

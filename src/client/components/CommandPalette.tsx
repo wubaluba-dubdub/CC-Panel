@@ -6,17 +6,15 @@ import { projectPath } from '../lib/router.js';
 import type { ProjectDto } from '../../shared/types.js';
 
 /**
- * The command palette: a visible button in the shell, Ctrl+Shift+P as the reliable keyboard
- * fallback, Cmd/Ctrl+K as best-effort compatibility, and Escape to leave.
+ * The command palette: a visible button in the shell as the one entry this panel promises, and
+ * Cmd/Ctrl+K as undocumented best-effort compatibility, with Escape to leave.
  *
- * ── Why there are three entry paths ──────────────────────────────────────────
- * `Ctrl+K` is claimed by Chrome on Windows for the browser's own address bar, and a reservation
- * that deep is not something an in-page handler can defeat: the keystroke simply never reaches
- * `window`. So the palette is openable by something the browser does not claim — a real button
- * in the navigation column, and `Ctrl+Shift+P` — while `Cmd/Ctrl+K` stays bound for the operator
- * whose muscle memory already has it. Which one worked is not the operator's mistake, and the
- * hint printed on the button is the combination that is guaranteed rather than the one that is
- * merely conventional.
+ * ── Why the button is the contract and the chord is not ────────────────────
+ * There is no global chord an in-page web app can promise: `Ctrl+K` is the Chrome omnibox,
+ * `Ctrl+Shift+P` is Windows Print, and what survives one browser is claimed by an extension or
+ * a keyboard layout on the next. So the promise is a real `<button type="button">` — Tab
+ * reaches it, Enter or Space activates it — and `Cmd/Ctrl+K` stays bound underneath as
+ * undocumented best-effort compatibility that no hint, attribute or dictionary value names.
  *
  * ── Why it is a `<dialog>` opened with `showModal()` ────────────────────────
  * Top layer, a focus trap, an inert background and a working Escape are four things a hand-made
@@ -127,22 +125,20 @@ export function CommandPalette({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      // Both modifiers kept as they were: a Mac and a PC are not the same key, and neither is
-      // the only keyboard this panel has to answer to.
+      // Best-effort compatibility, and nothing more. Both modifiers kept as they were: a Mac
+      // and a PC are not the same key, and neither is the only keyboard this panel answers to.
       if (!event.metaKey && !event.ctrlKey) return;
       const key = event.key.toLowerCase();
-      // `Ctrl+Shift+P` is the combination that is guaranteed to reach this handler. The `k`
-      // bindings stay as best-effort compatibility and are deliberately narrowed to the plain
-      // combination, so the page does not claim `Ctrl+Shift+K` as well.
-      const reliable = event.ctrlKey && event.shiftKey && key === 'p';
-      const compat = key === 'k' && !event.shiftKey;
-      if (!reliable && !compat) return;
+      // Narrowed to the plain `k` so the page does not claim `Ctrl+Shift+K` as well, and `p` is
+      // not bound at all: `Ctrl+Shift+P` is the operator's Print path on Windows. Nothing
+      // advertises what is left, because the visible button is the only entry this promises.
+      if (key !== 'k' || event.shiftKey) return;
       // Never a keystroke that belongs to a control the operator is typing into: `input`,
       // `textarea`, `select` and a `contenteditable` region own their own shortcuts, and a
       // global handler that fires in one of them takes the keystroke from the field. The
       // single exception is the palette's own query field, identified by reference rather than
-      // by tag — the combination that opened the palette has to be able to close it while that
-      // field has focus, or the second activation would do nothing at all.
+      // by tag — the retained chord has to be able to close the palette while that field has
+      // focus, or the second activation would do nothing at all.
       if (event.target !== inputRef.current && isTypingTarget(event.target)) return;
       event.preventDefault();
       if (open) {

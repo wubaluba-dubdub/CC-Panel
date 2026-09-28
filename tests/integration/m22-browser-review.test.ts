@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { clientFiles, relativeToClient, stripCssComments } from '../helpers/css.js';
 import { en } from '../../src/client/i18n/en.js';
 import fa from '../../src/client/i18n/fa.js';
@@ -48,22 +49,17 @@ function rule(css: string, selector: RegExp): string {
   return body![1]!;
 }
 
-/** `Control` is the combination's spelling and `ctrl` is the event property's. */
-function modifierProperty(modifier: string): string {
-  return modifier === 'Control' ? 'ctrl' : modifier.toLowerCase();
-}
-
 // ── 1. Command palette entry ───────────────────────────────────────────────
 
 describe('M2.2 review — the palette is openable without a browser-reserved key', () => {
   /**
-   * The visible button, by the three things it has to carry.
+   * The visible button, by the four things it has to carry — and the two it must not.
    *
-   * What this sees: `Shell.tsx` renders a real `<button>` whose class, accessible shortcut
-   * advertisement and localized hint are the ones the correction specified. What it does not
-   * see: that the button is on screen, that Enter and Space activate it, or that a screen
-   * reader announces it — those are the native `<button>` and a real name, and they are in the
-   * browser evidence.
+   * What this sees: `Shell.tsx` renders a real `<button>` whose class, localized name and
+   * `aria-expanded` are the ones the correction specified, and carries neither an
+   * `aria-keyshortcuts` attribute nor a `<kbd>` hint. What it does not see: that the button is
+   * on screen, that Enter and Space activate it, or that a screen reader announces it — those
+   * are the native `<button>` and a real name, and they are in the browser evidence.
    *
    * `.command-trigger` rather than a class naming the palette: the client-style scan reads any
    * `className` holding "palette" as a hand-rolled overlay, which is the one thing this is not.
@@ -73,48 +69,59 @@ describe('M2.2 review — the palette is openable without a browser-reserved key
     expect(shell).toContain('<button');
     expect(shell).toContain('type="button"');
     expect(shell).toContain('className="btn command-trigger"');
-    expect(shell).toContain('aria-keyshortcuts="Control+Shift+P Meta+K"');
     expect(shell).toContain("t('palette.title')");
-    expect(shell).toContain("t('palette.shortcut')");
     // The state it describes lives in the shell, which is what makes a button possible at all:
     // `showModal()` makes the rest of the document inert, so an opener inside the dialog could
     // never be activated a second time.
     expect(shell).toContain('const [paletteOpen, setPaletteOpen] = useState(false);');
     expect(shell).toContain('aria-expanded={paletteOpen}');
+
+    // And the two things a real Windows check showed the previous correction got wrong: no
+    // advertised chord and no printed key hint. A web page cannot promise either.
+    expect(shell, 'the trigger must not advertise a global shortcut').not.toContain(
+      'aria-keyshortcuts',
+    );
+    expect(shell, 'the trigger must not print a key hint').not.toContain('<kbd');
+    expect(shell, 'the hint must not be read from the dictionary').not.toContain(
+      'palette.shortcut',
+    );
   });
 
   /**
-   * Every advertised combination is bound, and `Control+K` is not advertised.
+   * Nothing is advertised, and the Windows Print chord is not bound.
    *
-   * What this sees: each entry of the `aria-keyshortcuts` string, decomposed into modifiers and
-   * a key, and then a token for each of them in the handler. What it does not see: whether the
-   * key actually arrives — which on Windows Chrome it may not, and that is precisely why the
-   * combination Chrome claims is the one left off the list. A shortcut the browser can swallow
-   * is not one the button should promise.
+   * What this sees: the shell carries no `aria-keyshortcuts` at all; no client source rebinds
+   * `Ctrl+Shift+P`; the stylesheet keeps no `.kbd` rule; and what is left of the handler is the
+   * plain `Cmd/Ctrl+K` best-effort compatibility, still guarded by `event.shiftKey` so it cannot
+   * claim `Ctrl+Shift+K` either. What it does not see: whether the retained chord ever arrives —
+   * on Windows Chrome it may not, which is exactly why nothing promises it.
    */
-  it('advertises only shortcuts the handler binds', () => {
+  it('advertises no chord at all and binds no Ctrl+Shift+P', () => {
     const shell = client('Shell.tsx');
     const palette = client('CommandPalette.tsx');
-    const raw = shell.match(/aria-keyshortcuts="([^"]+)"/);
-    expect(raw, 'the trigger must carry aria-keyshortcuts').not.toBeNull();
-    const advertised = raw![1]!.split(/\s+/);
-    expect(advertised.length).toBeGreaterThan(0);
 
-    for (const combination of advertised) {
-      const parts = combination.split('+');
-      const key = parts.pop()!.toLowerCase();
-      expect(palette, `${combination}: no binding for key ${key}`).toContain(`key === '${key}'`);
-      for (const modifier of parts) {
-        const token = `event.${modifierProperty(modifier)}Key`;
-        expect(palette, `${combination}: no binding for ${modifier}`).toContain(token);
-      }
+    expect(shell).not.toContain('aria-keyshortcuts');
+
+    // No `key === 'p'` binding survives anywhere in the client, in code rather than in prose.
+    for (const file of clientFiles(/\.tsx?$/)) {
+      const source = code(file);
+      expect(source, `${relativeToClient(file)} still binds Ctrl+Shift+P`).not.toMatch(
+        /key\s*===\s*'p'/,
+      );
+      expect(source, `${relativeToClient(file)} still renders a <kbd> hint`).not.toContain('<kbd');
     }
+    expect(styleSheet('globals.css'), 'the hint class must be gone with the hint').not.toMatch(
+      /\.kbd\s*\{/,
+    );
 
-    expect(advertised).not.toContain('Control+K');
-    expect(advertised).not.toContain('Meta+Shift+K');
-    // And the reliable one is reachable only with both of its modifiers, so a stray
-    // `Ctrl+P` (the browser's own print command) is not stolen by this handler.
-    expect(palette).toContain('event.ctrlKey && event.shiftKey && key === \'p\'');
+    // The retained best-effort half: plain `k`, both modifiers, and a shift test it can only
+    // fail — so `Ctrl+Shift+K` is not claimed by accident while `Ctrl+Shift+P` is not bound.
+    expect(palette).toContain("key !== 'k'");
+    expect(palette).toContain('event.shiftKey');
+    expect(palette).not.toMatch(/shiftKey\s*&&/);
+    expect(palette.indexOf('event.shiftKey')).toBeLessThan(
+      palette.indexOf('event.preventDefault()'),
+    );
   });
 
   /**
@@ -124,7 +131,7 @@ describe('M2.2 review — the palette is openable without a browser-reserved key
    * `contenteditable`, and is consulted *before* `preventDefault()` — so a keystroke inside a
    * form field is the field's and is never intercepted. What it does not see: the single
    * exception, which is the palette's own query field identified by reference — without it the
-   * combination that opened the palette could not close it while it has focus, and "repeated
+   * retained chord could not close the palette while that field has focus, and "repeated
    * activation closes" would be unreachable rather than merely untested.
    */
   it('never fires while the operator is typing in a control they own', () => {
@@ -166,16 +173,16 @@ describe('M2.2 review — the palette is openable without a browser-reserved key
   });
 
   /**
-   * The hint is the guaranteed combination, in both languages.
+   * No dictionary value is a hint, and none of them names a chord.
    *
-   * What this sees: the rendered hint is `Ctrl+Shift+P`, the Persian value is not a copy of it
-   * (the dictionary test would fail anyway), and **no** `palette.*` value in either language
-   * names `Ctrl+K`, `Cmd+K` or `⌘K`. What it does not see: a claim about Chrome's omnibox —
-   * the prohibition is on the string, so a test can never encode one.
+   * What this sees: `palette.shortcut` is gone from both dictionaries, and every remaining
+   * `palette.*` value matches neither `Ctrl+K`/`Cmd+K`/`⌘K` nor `Ctrl+Shift+P`. What it does
+   * not see: a rendered `<kbd>` — the shell assertion above owns that, and the stylesheet one
+   * owns the class it would have carried.
    */
-  it('prints a hint that is true on the platform the operator is using', () => {
-    expect(en['palette.shortcut']).toBe('Ctrl+Shift+P');
-    expect(fa['palette.shortcut']).not.toBe(en['palette.shortcut']);
+  it('prints no key hint in either language', () => {
+    expect(Object.keys(en)).not.toContain('palette.shortcut');
+    expect(Object.keys(fa)).not.toContain('palette.shortcut');
 
     const paletteKeys = Object.keys(en).filter((key) => key.startsWith('palette.'));
     expect(paletteKeys.length).toBeGreaterThan(5);
@@ -187,8 +194,40 @@ describe('M2.2 review — the palette is openable without a browser-reserved key
         expect(value, `${lang}.${key} advertises a browser-reserved key`).not.toMatch(
           /(?:Ctrl|Cmd|Control|⌘)\+K\b/,
         );
+        expect(value, `${lang}.${key} advertises the Windows Print chord`).not.toMatch(
+          /Ctrl\+Shift\+P/i,
+        );
       }
     }
+  });
+
+  /**
+   * Documentation may explain why no chord is promised; it may not promise one.
+   *
+   * What this sees: no line of any specification both names a chord (`Ctrl…`, `Cmd…`, `⌘…`,
+   * `Cmd/Ctrl`) and calls it `reliable` or a `guarantee` — the window is a line, so a claim
+   * wrapped across a break is still caught. What it does not see: whether a chord works; that
+   * is the operator's Windows check, reported rather than asserted, because headless Linux
+   * cannot observe it.
+   */
+  it('calls no palette chord dependable in any specification', () => {
+    const root = join(import.meta.dirname, '..', '..');
+    const chord = /(?:Ctrl|Cmd|Control|⌘)\s*\+|Cmd\/Ctrl/;
+    const promise = /reliable|guarantee/i;
+    const docs = [
+      ...readdirSync(join(root, 'docs')).map((name) => join('docs', name)),
+      'PLAN.md',
+      'CLAUDE.md',
+      'README.md',
+    ];
+    expect(docs.length, 'the scan must actually have documents').toBeGreaterThan(5);
+    const offenders = docs.flatMap((doc) =>
+      readFileSync(join(root, doc), 'utf-8')
+        .split('\n')
+        .map((line, index) => `${doc}:${index + 1}: ${line}`)
+        .filter((row) => chord.test(row) && promise.test(row)),
+    );
+    expect(offenders, 'a chord named and promised on one line').toEqual([]);
   });
 });
 
@@ -253,6 +292,33 @@ describe('M2.2 review — one content grid, two measures, one field measure', ()
     expect(globals).toMatch(
       /@media \(min-width: 1100px\) \{\s*\.pair \{\s*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/,
     );
+  });
+
+  /**
+   * A pair wrapper's own external rhythm, on the shared rule.
+   *
+   * What this sees: `.pair` carries `margin-block-end: var(--s4)` — the token `.card` uses — and
+   * only the end margin, so nothing stacks on the previous sibling's own end margin; its
+   * children keep `margin-block-end: 0`, so the internal grid `gap` still has one owner; and the
+   * rhythm is not `.pair + .pair`, which Security's interposed `<dialog>` would never match.
+   * What it does not see: the measured 24px between Security's two wrappers — that is the
+   * browser half of the evidence.
+   */
+  it('gives each pair wrapper the same external rhythm a card has', () => {
+    const globals = styleSheet('globals.css');
+    const pair = rule(globals, /\.pair \{/);
+    expect(pair).toContain('margin-block-end: var(--s4);');
+    // The shorthand would add a start margin that stacks on the previous sibling's own end
+    // margin — the double gap Overview and Secrets must not gain.
+    expect(pair, 'only the end margin, never the shorthand').not.toContain('margin-block:');
+    expect(pair, 'no physical margin property').not.toMatch(/margin-(?:top|bottom)\s*:/);
+    expect(styleSheet('tokens.css')).toMatch(/--s4: \d+px;/);
+    expect(rule(globals, /\.card \{/)).toContain('margin-block-end: var(--s4);');
+    expect(rule(globals, /\.pair > \.card \{/)).toContain('margin-block-end: 0;');
+    expect(globals, 'not an adjacent sibling — a dialog sits between the wrappers').not.toContain(
+      '.pair + .pair',
+    );
+    expect(client('Security.tsx')).toContain('<Dialog');
   });
 
   /**

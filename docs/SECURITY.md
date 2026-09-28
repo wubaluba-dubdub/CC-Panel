@@ -585,12 +585,15 @@ Ordered, again, by what would be most damaging to discover late.
     landmarks, the expander's `aria-expanded` and the `<time>` elements are all new since M2.1,
     and a table is the single easiest thing in HTML to make unreadable to a screen reader.
 41. **The Command palette opens on the keyboard, sits in the top layer, and traps nothing.**
-    Press Cmd+K (Ctrl+K) on any screen: the dialog must appear **above** the header and above
+    Press `Tab` until the *Command palette* button in the navigation column has focus, then
+    press Enter (or Space), on any screen: the dialog must appear **above** the header and above
     the card that was focused, never behind a card's clipped edge — a card owns its edges, so a
-    palette that is a positioned descendant of one is drawn underneath it. Press Escape and it
-    must close; press Cmd+K again while it is open and it must close rather than stack a second
-    one. Arrow keys must move between items, Enter must run the focused item, and the list must
-    wrap at both ends.
+    palette that is a positioned descendant of one is drawn underneath it. That is the only
+    keyboard path this panel promises; there is no global chord a web page can guarantee across
+    browsers, operating systems, extensions and keyboard layouts, which is why the trigger
+    carries no `aria-keyshortcuts` and prints no `<kbd>` hint. Press Escape and it must close;
+    open it a second time and it must close rather than stack a second one. Arrow keys must move
+    between items, Enter must run the focused item, and the list must wrap at both ends.
 42. **Focus returns to where it came from, and never to the document body.** Open the palette
     from the *Create project* button, close it with Escape, and `Tab` must move to *Create
     project* again — not to the first link in the page. With no focusable element to restore to
@@ -609,7 +612,7 @@ Ordered, again, by what would be most damaging to discover late.
     `prefers-reduced-motion: reduce` it must go immediately, with no information lost — the
     rules are paired (`display` and `overlay` are both discrete, both transitioned), and a
     palette that exits under reduced motion while other dialogs do not is an unpaired selector.
-    The same path serves Escape, Cmd/Ctrl+K, a Cancel button and a backdrop click, so any
+    The same path serves Escape, a Cancel button and a backdrop click, so any
     dialog in the panel vanishing on the frame it was dismissed means `close()` was reached
     before the transition finished.
 45. **A screen reader announces the palette as a dialog, and each result as an option.** With

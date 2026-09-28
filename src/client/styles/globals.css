@@ -224,11 +224,11 @@ bdi {
 }
 
 /* ── The command palette's entry in the shell ─────────────────────────────
- * A visible button, because Ctrl+K is reserved by the browser on Windows and no in-page
- * handler can be relied on to see it — so the palette has to be openable by something the
- * browser does not claim. The shortcut sits **under** the label rather than beside it: the
- * navigation column gives a control 156px of content width, and a label plus a key
- * combination on one line is wider than that in either dictionary.
+ * A visible button, and the only entry this panel promises: a real `<button type="button">` is
+ * reached with Tab and activated with Enter or Space on every browser, operating system,
+ * extension and keyboard layout, which is more than any in-page global chord can claim. So
+ * there is no `<kbd>` hint and no `aria-keyshortcuts` — a chord the browser, an extension or a
+ * keyboard layout may keep before the page sees it is a promise this panel will not make.
  *
  * `.command-trigger` rather than a class naming the palette itself: the client-style scan
  * reads any `className` holding "palette" as a hand-rolled overlay, which is exactly what
@@ -240,16 +240,6 @@ bdi {
   align-items: start;
   gap: var(--s1);
   text-align: start;
-}
-
-/* The hint is a key combination, not prose: the mono face keeps `Ctrl+Shift+P` legible at
- * the smallest size in the type scale, and tertiary ink because it is the thing the label
- * already says. */
-.kbd {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  font-weight: 400;
-  color: var(--ink-tertiary);
 }
 
 .side nav a {
@@ -437,13 +427,26 @@ bdi {
  * a viewport width: below 1100px the shell still reserves 220px for the navigation column,
  * so a two-up split would leave each card narrower than the control inside it.
  *
- * `margin-block-end` is dropped from the cards themselves because the gap already spaces them
- * and a card with both is a pair that is 16px out of step with everything around it.
+ * `margin-block-end` is dropped from the cards themselves because the grid `gap` already
+ * spaces them and a card with both is a pair that is 24px out of step with everything around
+ * it — and because a wrapper that borrowed its children's margins would stop owning its own
+ * edges the moment a second pair followed it.
+ *
+ * **The wrapper's external rhythm is `--s4`, the same token `.card` uses.** Zeroing the last
+ * child's margin took the pair's only spacing away from whatever follows it, so two wrappers
+ * stacked border-to-border — Security is two of them, and the `<Dialog>` between them is
+ * `display: none` while closed, so an adjacent-sibling rule (`.pair + .pair`) would not match
+ * there at all. The margin sits on the wrapper rather than on a sibling combinator for that
+ * reason, and it is `margin-block-end` rather than the `margin-block` shorthand: a start
+ * margin would add to the previous sibling's own end margin and double the gap before the
+ * pair, which is the accident Overview and Secrets must not gain. One owner, one token, one
+ * logical property, on the shared rule rather than on a page.
  */
 .pair {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--s4);
+  margin-block-end: var(--s4);
 }
 
 .pair > .card {
