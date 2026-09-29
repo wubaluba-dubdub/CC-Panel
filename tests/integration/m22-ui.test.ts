@@ -342,6 +342,45 @@ describe('M2.2 — every close trigger uses one controlled path', () => {
   });
 });
 
+describe('M2.2 — a failed step-up keeps the session standing', () => {
+  const login = client('pages/Login.tsx');
+  /** The dialog alone, so a rule is not satisfied by `Login()`'s own `bad_credentials` branch —
+   * which is a *login* failure, where the pre-session genuinely is the end of the road. */
+  const stepUp = login.slice(
+    login.indexOf('export function StepUpForm('),
+    login.indexOf('export function useCachedLocale('),
+  );
+
+  it('sends its submission through the one request that opts out of drop-to-login', () => {
+    // The behavioural half lives in `tests/unit/step-up-client.test.ts`: `requestStepUp()`'s 401
+    // does not fire `onUnauthenticated`, so `forget()` never runs and the shell stays up. What
+    // only this file can see is that the dialog actually uses it. Posting to the raw path is
+    // exactly the call that returned the operator to the sign-in screen mid-dialog in
+    // production, with the deletion still pending behind it.
+    expect(login.indexOf('export function StepUpForm(')).toBeGreaterThan(-1);
+    expect(login.indexOf('export function useCachedLocale(')).toBeGreaterThan(
+      login.indexOf('export function StepUpForm('),
+    );
+    expect(stepUp).toContain('requestStepUp(password, code)');
+    expect(stepUp).not.toContain('/api/auth/step-up');
+    expect(stepUp).not.toContain('noStepUp');
+    expect(stepUp).not.toContain('noRedirect');
+  });
+
+  it('shows one generic message for every credential failure, naming none of them', () => {
+    // The server answers `bad_credentials` for a wrong password, a wrong code, a replayed code
+    // and a wrong recovery code alike, so the dialog cannot tell them apart — and must not try
+    // to. Every credential failure falls through to the default branch's existing localized
+    // string; the three conditions that are not about a credential at all (another attempt is
+    // running, the operator must wait, the panel is unreachable) keep their own words.
+    expect(stepUp).not.toContain('bad_credentials');
+    expect(stepUp).toMatch(/else\s*\{\s*setError\(t\('stepup\.failed'\)\);/);
+    expect(stepUp).toContain("setError(t('login.inProgress'))");
+    expect(stepUp).toContain("setError(t('login.rateLimited'");
+    expect(stepUp).toContain("setError(t('error.network'))");
+  });
+});
+
 describe('M2.2 — what none of these assertions can see', () => {
   it('states the limit in the file that keeps it honest', () => {
     // Layout, focus return, backdrop hit-testing, the exit animation and screen-reader output

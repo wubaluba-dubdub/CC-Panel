@@ -81,6 +81,11 @@ request() {
 # `#` cannot see the session cookie at all.
 cookie_from_jar() {
   local name="$1"
+  # Every fresh login starts with `rm -f "$JAR"`, and curl does not create the file until a
+  # response sets a cookie — so this runs on a path that does not exist yet, several times a
+  # step. awk would print its own "cannot open" fatal to stderr on each of them; the honest
+  # answer is the same empty one, and an empty token is what the caller already handles.
+  [ -f "$JAR" ] || return 0
   awk -F'\t' -v want="$name" '
     { sub(/^#HttpOnly_/, "", $1) }
     NF >= 7 && $6 == want { print $7 }
@@ -182,15 +187,18 @@ fi
 step '2c. a deep link is answered with the shell, so a hard refresh works'
 request GET "${BASE_URL}/${BASE_PATH}/security" '' 'accept: text/html,application/xhtml+xml'
 expect_status 200 'GET a client route that no server route matches'
+# Checked against *this* response, while LAST_BODY still holds it. The check used to sit below
+# the request that follows, so it read the JSON 404 body instead of the shell and failed a deep
+# link that was served correctly.
+case "$LAST_BODY" in
+*'id="root"'*) pass 'the deep link returns the shell' ;;
+*) fail 'the deep link did not return the shell — a hard refresh of any route will 404' ;;
+esac
 
 # And the same path without an HTML Accept is the JSON 404, which is what keeps a mistyped
 # asset URL a 404 in the network panel instead of a page that fails to parse as JavaScript.
 request GET "${BASE_URL}/${BASE_PATH}/security"
 expect_status 404 'GET the same path without asking for HTML'
-case "$LAST_BODY" in
-*'id="root"'*) pass 'the deep link returns the shell' ;;
-*) fail 'the deep link did not return the shell — a hard refresh of any route will 404' ;;
-esac
 
 step '3. stage one — the password'
 request POST "${API}/auth/login" "{\"username\":\"${USERNAME}\",\"password\":\"${PASSWORD}\"}"

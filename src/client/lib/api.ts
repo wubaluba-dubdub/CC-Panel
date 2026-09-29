@@ -4,6 +4,7 @@ import type {
   ErrorResponse,
   ProjectDto,
   ProjectListResponse,
+  StepUpResponse,
   UpdateProjectRequest,
 } from '../../shared/types.js';
 import { isErrorCode } from '../../shared/types.js';
@@ -130,7 +131,10 @@ export function readCsrfToken(): string | null {
 interface RequestOptions {
   /** Suppress the automatic step-up retry. Used by the step-up call itself. */
   noStepUp?: boolean;
-  /** Suppress the drop-to-login on 401. Used by `me()`, which asks *whether* there is one. */
+  /**
+   * Suppress the drop-to-login on 401. Used by `me()`, which asks *whether* there is one, and
+   * by `requestStepUp()`, whose 401 means *wrong credentials* rather than *session gone*.
+   */
   noRedirect?: boolean;
   signal?: AbortSignal;
 }
@@ -255,6 +259,33 @@ export const api = {
   del: <T>(path: string, options?: RequestOptions): Promise<T> =>
     send<T>('DELETE', path, undefined, options),
 };
+
+/**
+ * `POST /api/auth/step-up`, with the two flags that make a wrong credential a wrong credential
+ * rather than a lost session.
+ *
+ * The server answers **401 `bad_credentials`** for a wrong password, a wrong or replayed code
+ * or a wrong recovery code, and deliberately leaves the full session standing. So the client
+ * must not run its "the session is gone" path on it:
+ *
+ *  - `noRedirect`: a 401 here must not fire `onUnauthenticated`. That handler is what calls
+ *    `forget()`, and firing it is what dropped the whole shell to the sign-in screen from
+ *    inside the dialog that had just been opened — with the original destructive request still
+ *    pending behind it. The 401 is thrown back to the dialog as an `ApiError` instead, and the
+ *    dialog renders its own generic, localized message.
+ *  - `noStepUp`: step-up must never prompt for step-up. The prompt it would open is *this*
+ *    dialog, so re-opening it from its own submission would be a loop with no way out.
+ *
+ * Both flags live here rather than at the call site, so a second caller cannot get them half
+ * right: this is the one request in the client whose 401 does not mean *signed out*.
+ */
+export function requestStepUp(password: string, code: string): Promise<StepUpResponse> {
+  return api.post<StepUpResponse>(
+    '/api/auth/step-up',
+    { password, code },
+    { noStepUp: true, noRedirect: true },
+  );
+}
 
 /**
  * The project routes, as functions rather than as string paths a screen has to build.

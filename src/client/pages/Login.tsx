@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Button, Card, CopyButton, Field, Notice, Status } from '../components/ui.js';
 import { MonoBlock } from '../components/Ltr.js';
 import { useLocale, LOCALES } from '../i18n/index.js';
-import { api, ApiError, NetworkError } from '../lib/api.js';
+import { api, ApiError, NetworkError, requestStepUp } from '../lib/api.js';
 import { formatDuration } from '../lib/format.js';
 import type {
   EnrollmentResponse,
@@ -379,6 +379,14 @@ export function Login({ onAuthenticated }: { onAuthenticated: () => void }): Rea
  * Driven by `lib/api.ts` rather than by a screen: any request can come back
  * `403 step_up_required`, and the wrapper opens this, waits, and retries the original request
  * exactly once. A screen that handled its own step-up would handle it four different ways.
+ *
+ * The submission goes through `requestStepUp()`, which sends `noRedirect`. A rejected
+ * credential answers **401 `bad_credentials`** and leaves the session standing, and without
+ * `noRedirect` that 401 was read by the API layer as *the session is gone*: `forget()` ran,
+ * the shell dropped to the sign-in screen behind this dialog, and the request that opened the
+ * dialog was left pending. The 401 arrives here as an `ApiError` instead, and every credential
+ * failure — password, code, replayed code, recovery code — falls through to the one generic
+ * message below, because the server does not say which one was wrong and neither may this.
  */
 export function StepUpForm({
   onGranted,
@@ -402,7 +410,7 @@ export function StepUpForm({
     setBusy(true);
     setError(null);
     try {
-      await api.post('/api/auth/step-up', { password, code }, { noStepUp: true });
+      await requestStepUp(password, code);
       setPassword('');
       setCode('');
       onGranted();
@@ -414,6 +422,9 @@ export function StepUpForm({
       } else if (err instanceof NetworkError) {
         setError(t('error.network'));
       } else {
+        // Every credential failure lands here — the server answers `bad_credentials` for all of
+        // them and says which one it was only to the audit log. The dialog stays open and the
+        // session stays up, so the operator simply types it again or cancels.
         setError(t('stepup.failed'));
       }
     } finally {
