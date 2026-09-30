@@ -49,8 +49,9 @@ target is outside.
 
 Syntactic rejections, before any filesystem call: absolute paths; any component equal to `..`
 or `.`; empty components; NUL and C0/C1 control characters; backslashes; a component with a
-leading or trailing space or dot; a path not equal to its NFC normalisation; a component over
-255 **bytes** or a path over 4096 bytes.
+leading or trailing space, or a trailing dot — a **leading** dot is allowed, because
+`.gitignore`, `.env.example` and `.claude/settings.json` must be openable; a path not equal to
+its NFC normalisation; a component over 255 **bytes** or a path over 4096 bytes.
 
 **Bytes, not characters.** `ext4`'s limit is 255 bytes and a Persian filename is two bytes
 per character, so a 200-character name that looks fine in the UI is 400 bytes and fails at
